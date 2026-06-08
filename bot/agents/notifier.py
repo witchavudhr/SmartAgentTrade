@@ -11,6 +11,7 @@ from config.settings import (
     MODEL_SMART, TRADING_PAIR
 )
 from agents import chart_analyst
+from agents import bias_analyst, news_scout
 from agents.trade_log import log_trade, format_report
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -28,11 +29,15 @@ bot_state = {
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏢 *SmartAgentTrade* พร้อมแล้ว!\n\n"
-        "คำสั่งที่ใช้ได้:\n"
-        "/scan — สแกนหา setup ตอนนี้\n"
+        "📡 *Analysis*\n"
+        "/scan — สแกนหา setup (เช็ค bias + news อัตโนมัติ)\n"
+        "/bias — ดู HTF direction H1/H4/Daily\n"
+        "/news — เช็คข่าว Economic Calendar\n\n"
+        "⚙️ *Control*\n"
         "/status — ดูสถานะ bot\n"
         "/pause — หยุดสแกนชั่วคราว\n"
-        "/resume — เริ่มสแกนใหม่\n"
+        "/resume — เริ่มสแกนใหม่\n\n"
+        "📊 *Report*\n"
         "/report — สรุป trade ทั้งหมด\n"
         "/ask [คำถาม] — ถามอะไรก็ได้\n\n"
         "หรือพิมข้อความถามได้เลยครับ 🤖",
@@ -42,23 +47,60 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังสแกน XAUUSD M5...")
 
-    analysis = chart_analyst.analyze()
-    message = chart_analyst.format_signal_message(analysis)
+    # เช็ค news ก่อน — ถ้าใกล้ข่าวให้บล็อก
+    blocked, block_reason = news_scout.should_block_trade()
+    if blocked:
+        await update.message.reply_text(
+            f"🚫 *หยุดสแกน*\n{block_reason}\n\nจะสแกนใหม่หลังข่าวผ่านไปครับ",
+            parse_mode="Markdown"
+        )
+        return
 
+    # วิเคราะห์ chart (M5)
+    _, smc_summary = chart_analyst.get_price_data()
+    analysis = chart_analyst.analyze(smc_summary)
     bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if analysis.get("signal") in ["BUY", "SELL"]:
-        bot_state["pending_signal"] = analysis
+    if analysis.get("signal") not in ["BUY", "SELL"]:
+        await update.message.reply_text(
+            chart_analyst.format_signal_message(analysis),
+            parse_mode="Markdown"
+        )
+        return
 
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
-                InlineKeyboardButton("❌ Skip", callback_data="skip")
-            ]
-        ])
-        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
-    else:
-        await update.message.reply_text(message, parse_mode="Markdown")
+    # เช็ค bias — signal ต้องตรงกับ HTF
+    await update.message.reply_text("🌍 เช็ค HTF Bias...")
+    bias = bias_analyst.analyze()
+    trade_dir = bias.get("trade_direction", "BOTH")
+    signal = analysis.get("signal")
+
+    bias_conflict = (
+        (signal == "BUY" and trade_dir == "SELL_ONLY") or
+        (signal == "SELL" and trade_dir == "BUY_ONLY")
+    )
+
+    if bias_conflict:
+        await update.message.reply_text(
+            f"⚠️ *Bias ขัดแย้ง — ยกเลิก Setup*\n"
+            f"Signal: `{signal}` แต่ HTF บอก `{trade_dir}`\n"
+            f"Reasoning: {bias.get('reasoning', '')}",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ทุกอย่างผ่าน — ส่ง alert
+    analysis["htf_bias"] = bias.get("overall_bias")
+    analysis["bias_aligned"] = not bias_conflict
+    bot_state["pending_signal"] = analysis
+
+    message = chart_analyst.format_signal_message(analysis)
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
+            InlineKeyboardButton("❌ Skip", callback_data="skip")
+        ]
+    ])
+    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = "🟢 กำลังทำงาน" if bot_state["is_running"] else "🔴 หยุดอยู่"
@@ -86,6 +128,18 @@ async def cmd_resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     report = format_report()
     await update.message.reply_text(report, parse_mode="Markdown")
+
+async def cmd_bias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🌍 กำลังวิเคราะห์ HTF Bias (H1/H4/Daily)...")
+    bias = bias_analyst.analyze()
+    message = bias_analyst.format_bias_message(bias)
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📰 กำลังเช็ค Economic Calendar...")
+    news = news_scout.analyze()
+    message = news_scout.format_news_message(news)
+    await update.message.reply_text(message, parse_mode="Markdown")
 
 async def cmd_ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     question = " ".join(ctx.args) if ctx.args else ""
@@ -204,6 +258,8 @@ def run():
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("ask", cmd_ask))
+    app.add_handler(CommandHandler("bias", cmd_bias))
+    app.add_handler(CommandHandler("news", cmd_news))
 
     # Callback (ปุ่ม)
     app.add_handler(CallbackQueryHandler(handle_callback))

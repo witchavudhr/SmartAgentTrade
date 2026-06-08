@@ -224,8 +224,8 @@ Settings    → ปรับ mode, risk level
 |--------|---------|
 | UI สวยงาม (Virtual Office) | Phase 3 — React + dark theme + agent cards |
 | Agent Avatar | Midjourney generate ทีหลัง |
-| MT5 Integration | ส่งคำสั่งเทรดจริง — ทำหลังจาก bot stable แล้ว |
-| Cloud Server | ย้ายจาก Mac ไป DigitalOcean เมื่อพร้อม live |
+| MT5 Integration | ส่งคำสั่งเทรดจริง — ทำหลังจาก bot stable แล้ว (มี EA + VPS พร้อมแล้ว) |
+| Cloud Server | มี VPS อยู่แล้ว — ย้าย bot ขึ้น VPS เมื่อพร้อม live |
 | Daily Auto Report | ส่งสรุปทุกเช้าอัตโนมัติ |
 
 ---
