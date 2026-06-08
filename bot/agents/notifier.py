@@ -11,6 +11,7 @@ from config.settings import (
     MODEL_SMART, TRADING_PAIR
 )
 from agents import chart_analyst
+from agents.trade_log import log_trade, format_report
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -83,23 +84,8 @@ async def cmd_resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("▶️ เริ่มสแกนใหม่แล้ว")
 
 async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    log = bot_state["trade_log"]
-
-    if not log:
-        await update.message.reply_text("📋 ยังไม่มี trade ที่บันทึกครับ")
-        return
-
-    confirmed = [t for t in log if t["action"] == "confirmed"]
-    skipped = [t for t in log if t["action"] == "skipped"]
-
-    await update.message.reply_text(
-        f"📈 *Trade Report*\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"Setup ที่พบทั้งหมด: `{len(log)}`\n"
-        f"✅ Confirmed: `{len(confirmed)}`\n"
-        f"❌ Skipped: `{len(skipped)}`",
-        parse_mode="Markdown"
-    )
+    report = format_report()
+    await update.message.reply_text(report, parse_mode="Markdown")
 
 async def cmd_ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     question = " ".join(ctx.args) if ctx.args else ""
@@ -152,18 +138,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ ไม่มี signal ที่รอ confirm")
         return
 
-    # บันทึกลง trade log
-    log_entry = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "signal": signal.get("signal"),
-        "confidence": signal.get("confidence"),
-        "entry_zone": signal.get("entry_zone"),
-        "stop_loss": signal.get("stop_loss"),
-        "take_profit": signal.get("take_profit"),
-        "action": "confirmed" if action == "confirm" else "skipped",
-        "reasoning": signal.get("reasoning")
-    }
+    # บันทึกลง SQLite trade log
+    trade_action = "confirmed" if action == "confirm" else "skipped"
+    trade_id = log_trade(signal, trade_action)
 
+    log_entry = {"trade_id": trade_id, "action": trade_action}
     bot_state["trade_log"].append(log_entry)
     bot_state["pending_signal"] = None
 
