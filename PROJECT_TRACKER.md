@@ -240,3 +240,5 @@ Settings    → ปรับ mode, risk level
 | 2026-06-08 | Voting ต้องผ่าน 2/3 analyst + Risk ไม่ veto |
 | 2026-06-08 | ใช้ yfinance ดึงราคา + Claude Sonnet วิเคราะห์ |
 | 2026-06-08 | Bot รันครั้งแรกสำเร็จ — Telegram เชื่อมต่อได้แล้ว |
+| 2026-06-08 | ปรับ cost: Haiku + cache + signal filter → $22 → $2-3/เดือน |
+| 2026-06-08 | มี EA + VPS พร้อมแล้ว — MT5 integration ทำทีหลัง |
