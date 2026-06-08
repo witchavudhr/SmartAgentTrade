@@ -6,7 +6,7 @@
 ## Overall Progress
 
 ```
-Phase 1 — Foundation         [ 60% ] ██████░░░░
+Phase 1 — Foundation         [ 75% ] ███████░░░
 Phase 2 — Full Voting        [ 0%  ] ░░░░░░░░░░
 Phase 3 — Virtual Office     [ 0%  ] ░░░░░░░░░░
 Phase 4 — Self-Improvement   [ 0%  ] ░░░░░░░░░░
@@ -61,6 +61,7 @@ Agent vote ผิดบ่อย → weight ต่ำลง
 - [x] สร้าง Telegram Bot (ผ่าน @BotFather)
 - [x] สร้าง project structure
 - [x] เขียน Chart Analyst agent (yfinance + Claude Sonnet)
+- [x] เขียน SMC Engine (Python port จาก LuxAlgo + Sweep detection)
 - [x] เขียน Telegram Handler (โต้ตอบได้)
 - [ ] เพิ่ม indicator จริง (RSI, EMA, pandas-ta)
 - [ ] เขียน Trade Log (บันทึก CSV/SQLite)
@@ -79,10 +80,16 @@ Agent vote ผิดบ่อย → weight ต่ำลง
 
 ### Tech ที่ใช้ตอนนี้
 ```
-ดึงราคา: yfinance (GC=F Gold Futures)
-วิเคราะห์: Claude Sonnet (pattern จาก OHLCV)
-Notification: python-telegram-bot
-Auto scan: ทุก 15 นาที (job-queue)
+ดึงราคา:  yfinance (GC=F Gold Futures)
+SMC:      smc_engine.py (Python port จาก LuxAlgo)
+          - Swing Points, BOS, CHoCH
+          - Order Blocks + mitigation
+          - Fair Value Gaps
+          - Liquidity Sweep ✅ (เพิ่มเติมจาก LuxAlgo)
+          - Equal Highs/Lows
+วิเคราะห์: Claude Sonnet (context + entry/exit จาก SMC data)
+Telegram:  python-telegram-bot + job-queue
+Auto scan: ทุก 15 นาที
 ```
 
 ### Definition of Done
