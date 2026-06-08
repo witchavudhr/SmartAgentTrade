@@ -12,6 +12,10 @@ from config.settings import ANTHROPIC_API_KEY, MODEL_FAST, NEWS_BLOCK_MINUTES
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# Cache
+_cache: dict = {"result": None, "timestamp": None}
+CACHE_MINUTES = 30
+
 # Keywords ที่กระทบ Gold
 GOLD_KEYWORDS = [
     "USD", "US", "Federal Reserve", "Fed", "FOMC",
@@ -132,9 +136,18 @@ def should_block_trade() -> tuple[bool, str]:
     return False, ""
 
 
-def analyze() -> dict:
-    """วิเคราะห์ข่าววันนี้และแจ้งความเสี่ยง"""
-    upcoming = get_upcoming_news(minutes_ahead=240)  # 4 ชั่วโมงข้างหน้า
+def analyze(force: bool = False) -> dict:
+    """วิเคราะห์ข่าววันนี้ — cache 30 นาที"""
+    global _cache
+
+    if not force and _cache["result"] and _cache["timestamp"]:
+        age = (datetime.now() - _cache["timestamp"]).total_seconds() / 60
+        if age < CACHE_MINUTES:
+            cached = dict(_cache["result"])
+            cached["from_cache"] = True
+            return cached
+
+    upcoming = get_upcoming_news(minutes_ahead=240)
     blocked, block_reason = should_block_trade()
 
     # ให้ Claude วิเคราะห์ผลกระทบ
@@ -172,7 +185,18 @@ def analyze() -> dict:
         elif "```" in text:
             text = text.split("```")[1].split("```")[0].strip()
 
-        result = json.loads(text)
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            # Fallback ถ้า Haiku ตอบ JSON ไม่สมบูรณ์
+            result = {
+                "risk_level": "medium",
+                "safe_to_trade": not blocked,
+                "block_until": None,
+                "key_event": upcoming[0].get("event") if upcoming else None,
+                "gold_impact": "volatile",
+                "reasoning": "มีข่าว High Impact — ระวังด้วย"
+            }
     else:
         result = {
             "risk_level": "low",
@@ -187,6 +211,10 @@ def analyze() -> dict:
     result["is_blocked"] = blocked
     result["block_reason"] = block_reason
     result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result["from_cache"] = False
+
+    _cache["result"] = result
+    _cache["timestamp"] = datetime.now()
 
     return result
 

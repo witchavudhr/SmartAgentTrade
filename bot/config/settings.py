@@ -23,5 +23,9 @@ NEW_YORK_SESSION_END = os.getenv("NEW_YORK_SESSION_END", "04:00")
 NEWS_BLOCK_MINUTES = int(os.getenv("NEWS_BLOCK_MINUTES", 30))
 
 # Models
-MODEL_FAST = "claude-haiku-4-5"    # scan, filter
-MODEL_SMART = "claude-sonnet-4-5"  # analyze, judge
+MODEL_FAST = "claude-haiku-4-5"    # bias, news, filter (ถูก 12x)
+MODEL_SMART = "claude-sonnet-4-5"  # final chart decision เท่านั้น
+
+# Cache settings
+BIAS_CACHE_MINUTES = 60    # HTF bias cache 1 ชั่วโมง
+NEWS_CACHE_MINUTES = 30    # News cache 30 นาที

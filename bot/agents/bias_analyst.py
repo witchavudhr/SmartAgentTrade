@@ -8,11 +8,15 @@ import pandas as pd
 import anthropic
 import json
 from datetime import datetime
-from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
+from config.settings import ANTHROPIC_API_KEY, MODEL_FAST
 from agents.smc_engine import SMCEngine, summarize
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc = SMCEngine(swing_length=5)
+
+# Cache
+_cache: dict = {"result": None, "timestamp": None}
+CACHE_MINUTES = 60
 
 
 def get_htf_data() -> dict:
@@ -55,8 +59,19 @@ def get_htf_data() -> dict:
     return result
 
 
-def analyze() -> dict:
-    """วิเคราะห์ HTF bias แล้วให้ Claude สรุป"""
+def analyze(force: bool = False) -> dict:
+    """วิเคราะห์ HTF bias แล้วให้ Claude สรุป — cache 1 ชั่วโมง"""
+    global _cache
+
+    # คืน cache ถ้ายังไม่หมดอายุ
+    if not force and _cache["result"] and _cache["timestamp"]:
+        age = (datetime.now() - _cache["timestamp"]).total_seconds() / 60
+        if age < CACHE_MINUTES:
+            cached = dict(_cache["result"])
+            cached["from_cache"] = True
+            cached["cache_age_min"] = round(age)
+            return cached
+
     htf_data = get_htf_data()
 
     prompt = f"""คุณคือ Bias Analyst ผู้เชี่ยวชาญ Higher Timeframe Analysis
@@ -88,7 +103,7 @@ def analyze() -> dict:
 }}"""
 
     response = client.messages.create(
-        model=MODEL_SMART,
+        model=MODEL_FAST,
         max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -102,6 +117,11 @@ def analyze() -> dict:
     result = json.loads(text)
     result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     result["raw_htf"] = htf_data
+    result["from_cache"] = False
+
+    # บันทึก cache
+    _cache["result"] = result
+    _cache["timestamp"] = datetime.now()
 
     return result
 

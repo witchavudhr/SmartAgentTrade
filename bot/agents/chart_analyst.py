@@ -31,6 +31,25 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
 
     return df, summary
 
+def has_signal(smc_summary: dict) -> bool:
+    """
+    เช็คเบื้องต้นว่ามี setup ที่น่าสนใจมั้ย (ไม่ใช้ Claude API)
+    ถ้าไม่มี → ไม่เรียก Claude เลย ประหยัด cost
+    """
+    if not smc_summary:
+        return False
+
+    has_sweep = smc_summary.get("last_sweep") is not None
+    has_ob = smc_summary.get("active_ob") is not None
+    has_structure = (smc_summary.get("last_bos") is not None or
+                     smc_summary.get("last_choch") is not None)
+    bias = smc_summary.get("bias", "neutral")
+
+    # ต้องมีอย่างน้อย 2 ใน 3 เงื่อนไข
+    score = sum([has_sweep, has_ob, has_structure])
+    return score >= 2 and bias != "neutral"
+
+
 def analyze(smc_summary: dict = None) -> dict:
     """ส่ง SMC summary ให้ Claude วิเคราะห์ context และตัดสินใจ"""
 
@@ -39,6 +58,19 @@ def analyze(smc_summary: dict = None) -> dict:
 
     if smc_summary is None:
         return {"error": "ดึงข้อมูลราคาไม่ได้"}
+
+    # เช็คก่อน — ถ้าไม่มี signal อย่าเสียเงินเรียก Claude
+    if not has_signal(smc_summary):
+        return {
+            "signal": "NO_TRADE",
+            "confidence": 0,
+            "current_price": smc_summary.get("current_price"),
+            "analyzed_at": smc_summary.get("analyzed_at"),
+            "smc_bias": smc_summary.get("bias"),
+            "had_sweep": False,
+            "reasoning": "SMC Engine ไม่พบ setup ที่ครบเงื่อนไข",
+            "claude_called": False
+        }
 
     prompt = f"""คุณคือ Chart Analyst ผู้เชี่ยวชาญ Smart Money Concepts (SMC)
 
@@ -87,6 +119,7 @@ def analyze(smc_summary: dict = None) -> dict:
     result["current_price"] = smc_summary.get("current_price")
     result["smc_bias"] = smc_summary.get("bias")
     result["had_sweep"] = smc_summary.get("last_sweep") is not None
+    result["claude_called"] = True
 
     return result
 
