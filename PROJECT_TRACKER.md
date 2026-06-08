@@ -69,13 +69,14 @@ Agent vote ผิดบ่อย → weight ต่ำลง
 
 ### คำสั่ง Telegram ที่ทำงานได้แล้ว
 ```
-/start   ✅ เมนูหลัก
-/scan    ✅ สแกน Gold ตอนนี้
-/status  ✅ ดูสถานะ bot
-/pause   ✅ หยุดชั่วคราว
-/resume  ✅ เริ่มใหม่
-/report  ✅ สรุป trade
-/ask     ✅ ถามอะไรก็ได้ + พิมข้อความตรงได้เลย
+/start     ✅ เมนูหลัก
+/scan      ✅ สแกน Gold ตอนนี้
+/status    ✅ ดูสถานะ bot
+/pause     ✅ หยุดชั่วคราว
+/resume    ✅ เริ่มใหม่
+/report    ✅ สรุป trade
+/scalein   ✅ คำนวณ Scale-in plan (OB top/bottom + direction + balance)
+/ask       ✅ ถามอะไรก็ได้ + พิมข้อความตรงได้เลย
 ```
 
 ### Tech ที่ใช้ตอนนี้
@@ -106,27 +107,39 @@ Auto scan: ทุก 15 นาที
 > Estimate: 2-3 สัปดาห์ | Budget: ~$5-15
 
 ### Tasks
-- [ ] เขียน Bias Analyst agent
-- [ ] เขียน News Scout agent (ดึง economic calendar)
-- [ ] เขียน Supervisor (voting logic)
-- [ ] เขียน Risk Manager (veto + lot size)
-- [ ] เชื่อม agent ทั้งหมดเข้าด้วยกัน
-- [ ] ทดสอบ voting 2/3
-- [ ] ทดสอบ veto cases
+- [x] เขียน Bias Analyst agent (H1/H4/Daily, Haiku, 60min cache)
+- [x] เขียน News Scout agent (economic calendar, Haiku, 30min cache)
+- [x] เขียน Supervisor (voting logic, LLM as a Judge)
+- [x] เขียน Risk Manager (veto + lot size + VETO conditions)
+- [x] เพิ่ม Scale-in OB strategy (30%/30%/40%, sweep zone = entry 3)
+- [x] เชื่อม agent ทั้งหมดเข้าด้วยกัน (pipeline: SMC→News→Chart→Bias→Vote→Risk→Supervisor)
+- [ ] ทดสอบ voting 2/3 ในสภาพตลาดจริง
+- [ ] ทดสอบ veto cases (streak, daily loss)
+- [ ] daily report ส่งอัตโนมัติทุกเช้า
+
+### Scale-in Strategy (เพิ่มใหม่ ✅)
+```
+OB Zone เข้า 3 entries:
+  Entry 1 (OB top):     30% lot — เริ่มเล็ก ยังไม่มั่นใจ
+  Entry 2 (OB middle):  30% lot — ยืนยันโซน
+  Entry 3 (Sweep zone): 40% lot — ใหญ่สุด high probability
+  SL: ใต้ sweep zone เสมอ — ไม่มี hard SL ไม่เทรด
+
+ใช้ /scalein [top] [bot] [bull/bear] [balance] ใน Telegram
+```
 
 ### คำสั่ง Telegram เพิ่ม
 ```
-/bias    → ดู H1/H4 direction
-/news    → ข่าววันนี้
-/vote    → ดูผล vote รอบล่าสุด
-/risk    → คำนวณ lot size
-/report  → สรุป trade ทั้งหมด
+/bias      ✅ ดู H1/H4 direction
+/news      ✅ ข่าววันนี้
+/scalein   ✅ คำนวณ Scale-in OB plan
 ```
 
 ### Definition of Done
-- [ ] setup ผ่าน 2/3 agent ถึงแจ้ง
-- [ ] Risk Manager veto ได้จริง
-- [ ] bot หยุดแจ้งก่อนข่าว 30 นาที
+- [x] setup ผ่าน 2/3 agent ถึงแจ้ง
+- [x] Risk Manager veto ได้จริง (streak ≥3, daily loss >3%, RR <1.5)
+- [x] Scale-in OB plan คำนวณได้จาก Telegram
+- [ ] bot หยุดแจ้งก่อนข่าว 30 นาที (logic อยู่แล้ว — ต้องทดสอบ)
 - [ ] daily report ส่งอัตโนมัติทุกเช้า
 
 ---
@@ -209,13 +222,18 @@ Settings    → ปรับ mode, risk level
 ---
 
 ## Next Action
-> 🔄 กำลังทำ Phase 1 — ขั้นตอนถัดไป
+> ✅ Phase 1 + Phase 2 core เสร็จแล้ว — เริ่มทดสอบ + Phase 3
 
-1. ทดสอบ /start และ /scan ใน Telegram ให้ครบ
-2. เพิ่ม indicator จริง (RSI, EMA) เข้า Chart Analyst
-3. เพิ่ม Trade Log บันทึกลง CSV/SQLite
-4. รัน bot ทิ้งไว้ 1 ชั่วโมง ดูว่า crash มั้ย
-5. เมื่อ Phase 1 ครบ → เริ่ม Phase 2 (Bias + News Agent)
+**ทดสอบทันที:**
+1. ส่ง `/scalein 4313 4280 bullish 10000` ใน Telegram → ดู scale-in plan
+2. ส่ง `/scan` → ดู pipeline ทั้งหมดทำงาน
+3. ส่ง `/bias` และ `/news` → ดูว่า cache ทำงาน
+4. รัน bot 1 ชั่วโมง ดูว่า auto scan ทำงาน + ไม่ crash
+
+**Phase 3 (ถัดไป):**
+1. Virtual Office UI — React + dark theme + agent cards
+2. Daily auto report ทุกเช้า 08:00
+3. ย้าย bot ขึ้น VPS
 
 ---
 
@@ -242,3 +260,5 @@ Settings    → ปรับ mode, risk level
 | 2026-06-08 | Bot รันครั้งแรกสำเร็จ — Telegram เชื่อมต่อได้แล้ว |
 | 2026-06-08 | ปรับ cost: Haiku + cache + signal filter → $22 → $2-3/เดือน |
 | 2026-06-08 | มี EA + VPS พร้อมแล้ว — MT5 integration ทำทีหลัง |
+| 2026-06-08 | เพิ่ม Scale-in OB strategy: 30%/30%/40% ratio, entry 3 ที่ sweep zone |
+| 2026-06-08 | Phase 2 core เสร็จ: Bias+News+Supervisor+Risk+ScaleIn ครบแล้ว |

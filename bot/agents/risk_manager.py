@@ -1,11 +1,17 @@
 """
-Risk Manager — คำนวณ lot size + VETO power
+Risk Manager — คำนวณ lot size + VETO power + Scale-in OB entries
 Rules:
   - Max risk 2% ต่อ trade
   - H4 ขัด bias → ลด lot 50%
   - Loss streak 3 ครั้ง → VETO หยุดเทรด
   - Daily loss > 3% → VETO หยุดทั้งวัน
   - Drawdown > 10% → VETO หยุดทั้งสัปดาห์
+
+Scale-in OB Strategy:
+  - Entry 1 (OB top):    30% lot — เริ่มเล็ก ยังไม่แน่ใจ
+  - Entry 2 (OB middle): 30% lot — เพิ่มเมื่อราคายืนยัน
+  - Entry 3 (Sweep zone): 40% lot — ใหญ่สุด high probability
+  SL อยู่ใต้ Sweep zone เสมอ
 """
 
 import sqlite3
@@ -67,6 +73,96 @@ def get_daily_pnl_pct(balance: float) -> float:
     # แปลง pips → dollar → %
     dollar_pnl = total_pips * GOLD_PIP_VALUE_PER_LOT
     return (dollar_pnl / balance * 100) if balance > 0 else 0
+
+
+def calculate_scale_in(
+    ob_top: float,
+    ob_bottom: float,
+    sl_price: float,
+    balance: float,
+    risk_pct: float = None,
+    sweep_buffer_pips: float = 10.0,
+    direction: str = "bullish"
+) -> dict:
+    """
+    คำนวณ Scale-in entries ใน OB zone
+
+    Bullish OB (Buy):
+      Entry 1: ob_top           → 30% lot (เริ่มเล็ก)
+      Entry 2: ob_middle        → 30% lot
+      Entry 3: ob_bottom - buf  → 40% lot (sweep zone, ใหญ่สุด)
+      SL: ob_bottom - buf - 5 pips
+
+    Bearish OB (Sell):
+      Entry 1: ob_bottom        → 30% lot
+      Entry 2: ob_middle        → 30% lot
+      Entry 3: ob_top + buf     → 40% lot
+      SL: ob_top + buf + 5 pips
+    """
+    if risk_pct is None:
+        risk_pct = MAX_RISK_PERCENT
+
+    ob_range = abs(ob_top - ob_bottom)
+    ob_middle = (ob_top + ob_bottom) / 2
+    sweep_buf = sweep_buffer_pips * 0.1  # pips → price
+
+    if direction == "bullish":
+        e1 = round(ob_top, 2)
+        e2 = round(ob_middle, 2)
+        e3 = round(ob_bottom - sweep_buf, 2)
+        sl = round(ob_bottom - sweep_buf - 0.5, 2)
+    else:  # bearish
+        e1 = round(ob_bottom, 2)
+        e2 = round(ob_middle, 2)
+        e3 = round(ob_top + sweep_buf, 2)
+        sl = round(ob_top + sweep_buf + 0.5, 2)
+
+    # SL distance จาก average entry
+    avg_entry = (e1 * 0.3 + e2 * 0.3 + e3 * 0.4)
+    sl_pips = abs(avg_entry - sl) * 10
+
+    # Total lot สำหรับ risk ที่กำหนด
+    total_lot = calculate_lot(balance, sl_pips, risk_pct)
+
+    # แบ่งตาม ratio 30/30/40
+    lot1 = max(0.01, round(total_lot * 0.30, 2))
+    lot2 = max(0.01, round(total_lot * 0.30, 2))
+    lot3 = max(0.01, round(total_lot * 0.40, 2))
+
+    return {
+        "strategy": "scale_in",
+        "direction": direction,
+        "ob_range_pips": round(ob_range * 10, 1),
+        "sweep_buffer_pips": sweep_buffer_pips,
+        "entries": [
+            {
+                "label": "Entry 1 — OB Top (เริ่มเล็ก)",
+                "price": e1,
+                "lot": lot1,
+                "weight": "30%",
+                "note": "เพิ่งเข้า OB ยังไม่แน่ใจ"
+            },
+            {
+                "label": "Entry 2 — OB Middle",
+                "price": e2,
+                "lot": lot2,
+                "weight": "30%",
+                "note": "ราคาลงมาในโซน เพิ่มความมั่นใจ"
+            },
+            {
+                "label": "Entry 3 — Sweep Zone (ใหญ่สุด)",
+                "price": e3,
+                "lot": lot3,
+                "weight": "40%",
+                "note": f"ใต้ OB {sweep_buffer_pips} pips — high probability"
+            }
+        ],
+        "stop_loss": sl,
+        "sl_pips": round(sl_pips, 1),
+        "total_lot": round(lot1 + lot2 + lot3, 2),
+        "total_risk_pct": risk_pct,
+        "avg_entry": round(avg_entry, 2)
+    }
 
 
 def calculate_lot(balance: float, sl_pips: float, risk_pct: float = None) -> float:
@@ -197,6 +293,37 @@ def evaluate(
         "daily_pnl_pct": round(daily_pnl, 2),
         "notes": " | ".join(notes) if notes else "✅ ปกติ"
     }
+
+
+def format_scale_in_message(scale: dict) -> str:
+    """แปลง scale-in plan เป็น Telegram message"""
+    direction = scale.get("direction", "bullish")
+    emoji = "🟢" if direction == "bullish" else "🔴"
+    entries = scale.get("entries", [])
+
+    lines = [
+        f"{emoji} *Scale-in Plan — {direction.upper()}*",
+        f"━━━━━━━━━━━━━━━━━",
+        f"📐 OB Range: `{scale.get('ob_range_pips')} pips`",
+        f"🌊 Sweep Buffer: `{scale.get('sweep_buffer_pips')} pips` ใต้ OB",
+        f"",
+    ]
+
+    for i, e in enumerate(entries, 1):
+        lines.append(
+            f"*Entry {i}* ({e['weight']}) — `{e['price']}`\n"
+            f"  📦 Lot: `{e['lot']}` | {e['note']}"
+        )
+
+    lines += [
+        f"",
+        f"🛑 SL: `{scale.get('stop_loss')}` ({scale.get('sl_pips')} pips)",
+        f"📦 Total Lot: `{scale.get('total_lot')}`",
+        f"💰 Total Risk: `{scale.get('total_risk_pct')}%`",
+        f"📍 Avg Entry: `{scale.get('avg_entry')}`",
+    ]
+
+    return "\n".join(lines)
 
 
 def format_risk_message(risk: dict, analysis: dict) -> str:

@@ -39,6 +39,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/resume — เริ่มสแกนใหม่\n\n"
         "📊 *Report*\n"
         "/report — สรุป trade ทั้งหมด\n"
+        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n"
         "/ask [คำถาม] — ถามอะไรก็ได้\n\n"
         "หรือพิมข้อความถามได้เลยครับ 🤖",
         parse_mode="Markdown"
@@ -92,6 +93,43 @@ async def cmd_resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     report = format_report()
     await update.message.reply_text(report, parse_mode="Markdown")
+
+async def cmd_scalein(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /scalein [ob_top] [ob_bottom] [direction] [balance]
+    เช่น: /scalein 4313 4280 bullish 10000
+    """
+    args = ctx.args
+    if not args or len(args) < 3:
+        await update.message.reply_text(
+            "📐 *Scale-in Calculator*\n"
+            "ใช้แบบนี้:\n"
+            "`/scalein [OB_top] [OB_bottom] [bullish/bearish] [balance]`\n\n"
+            "ตัวอย่าง:\n"
+            "`/scalein 4313 4280 bullish 10000`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        ob_top = float(args[0])
+        ob_bottom = float(args[1])
+        direction = args[2].lower()
+        balance = float(args[3]) if len(args) > 3 else 10000.0
+
+        scale = risk_manager.calculate_scale_in(
+            ob_top=ob_top,
+            ob_bottom=ob_bottom,
+            sl_price=None,
+            balance=balance,
+            direction=direction
+        )
+        message = risk_manager.format_scale_in_message(scale)
+        await update.message.reply_text(message, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
 
 async def cmd_bias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🌍 กำลังวิเคราะห์ HTF Bias (H1/H4/Daily)...")
@@ -226,6 +264,7 @@ def run():
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
     app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("scalein", cmd_scalein))
 
     # Callback (ปุ่ม)
     app.add_handler(CallbackQueryHandler(handle_callback))
