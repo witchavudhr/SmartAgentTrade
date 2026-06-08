@@ -7,7 +7,7 @@
 
 ```
 Phase 1 — Foundation         [ 95% ] █████████░
-Phase 2 — Full Voting        [ 0%  ] ░░░░░░░░░░
+Phase 2 — Full Voting        [ 60% ] ██████░░░░
 Phase 3 — Virtual Office     [ 0%  ] ░░░░░░░░░░
 Phase 4 — Self-Improvement   [ 0%  ] ░░░░░░░░░░
 
