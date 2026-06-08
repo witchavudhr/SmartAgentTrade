@@ -6,12 +6,12 @@
 ## Overall Progress
 
 ```
-Phase 1 — Foundation         [ 0%  ] ░░░░░░░░░░
+Phase 1 — Foundation         [ 60% ] ██████░░░░
 Phase 2 — Full Voting        [ 0%  ] ░░░░░░░░░░
 Phase 3 — Virtual Office     [ 0%  ] ░░░░░░░░░░
 Phase 4 — Self-Improvement   [ 0%  ] ░░░░░░░░░░
 
-TOTAL                        [ 0%  ] ░░░░░░░░░░
+TOTAL                        [ 15% ] █░░░░░░░░░
 ```
 
 ---
@@ -53,30 +53,43 @@ Agent vote ผิดบ่อย → weight ต่ำลง
 ## Phase 1 — Foundation
 > เป้าหมาย: bot คุยได้ + วิเคราะห์ได้ + บันทึกได้
 > Estimate: 1-2 สัปดาห์ | Budget: ~$5-10
+> Last updated: 2026-06-08
 
 ### Tasks
-- [ ] ติดตั้ง Python 3.11+
-- [ ] สมัคร Claude API + เติม credit ($5)
-- [ ] สร้าง Telegram Bot (ผ่าน @BotFather)
-- [ ] สร้าง project structure
-- [ ] เขียน Chart Analyst agent
-- [ ] เขียน Telegram Handler (โต้ตอบได้)
+- [x] ติดตั้ง Python 3.11+
+- [x] สมัคร Claude API + เติม credit
+- [x] สร้าง Telegram Bot (ผ่าน @BotFather)
+- [x] สร้าง project structure
+- [x] เขียน Chart Analyst agent (yfinance + Claude Sonnet)
+- [x] เขียน Telegram Handler (โต้ตอบได้)
+- [ ] เพิ่ม indicator จริง (RSI, EMA, pandas-ta)
 - [ ] เขียน Trade Log (บันทึก CSV/SQLite)
-- [ ] ทดสอบ /scan, /status, /ask
+- [ ] ทดสอบ /scan, /status, /ask ครบทุกคำสั่ง
 
-### คำสั่ง Telegram ที่ต้องทำงานได้
+### คำสั่ง Telegram ที่ทำงานได้แล้ว
 ```
-/scan    → สแกนหา setup ตอนนี้
-/status  → ดูสถานะ bot
-/pause   → หยุดชั่วคราว
-/resume  → เริ่มใหม่
-/ask     → ถามอะไรก็ได้
+/start   ✅ เมนูหลัก
+/scan    ✅ สแกน Gold ตอนนี้
+/status  ✅ ดูสถานะ bot
+/pause   ✅ หยุดชั่วคราว
+/resume  ✅ เริ่มใหม่
+/report  ✅ สรุป trade
+/ask     ✅ ถามอะไรก็ได้ + พิมข้อความตรงได้เลย
+```
+
+### Tech ที่ใช้ตอนนี้
+```
+ดึงราคา: yfinance (GC=F Gold Futures)
+วิเคราะห์: Claude Sonnet (pattern จาก OHLCV)
+Notification: python-telegram-bot
+Auto scan: ทุก 15 นาที (job-queue)
 ```
 
 ### Definition of Done
 - [ ] พิมคำสั่งแล้ว bot ตอบได้ใน 5 วินาที
 - [ ] bot ส่ง setup พร้อมปุ่ม Confirm/Skip
 - [ ] กด Confirm แล้วบันทึกลง trade log
+- [ ] เพิ่ม indicator (RSI/EMA) เพื่อความแม่นยำ
 - [ ] รันบน Mac ได้ไม่ crash 1 ชั่วโมง
 
 ---
@@ -189,12 +202,13 @@ Settings    → ปรับ mode, risk level
 ---
 
 ## Next Action
-> ✅ สิ่งที่ต้องทำก่อนเริ่ม Phase 1
+> 🔄 กำลังทำ Phase 1 — ขั้นตอนถัดไป
 
-1. ติดตั้ง Python → https://python.org
-2. สมัคร Claude API → https://console.anthropic.com
-3. สร้าง Telegram Bot → คุยกับ @BotFather ใน Telegram
-4. แจ้ง Claude Code เพื่อเริ่ม code Phase 1
+1. ทดสอบ /start และ /scan ใน Telegram ให้ครบ
+2. เพิ่ม indicator จริง (RSI, EMA) เข้า Chart Analyst
+3. เพิ่ม Trade Log บันทึกลง CSV/SQLite
+4. รัน bot ทิ้งไว้ 1 ชั่วโมง ดูว่า crash มั้ย
+5. เมื่อ Phase 1 ครบ → เริ่ม Phase 2 (Bias + News Agent)
 
 ---
 
@@ -206,3 +220,5 @@ Settings    → ปรับ mode, risk level
 | 2026-06-08 | ใช้ Python เป็น main language |
 | 2026-06-08 | Virtual Office ทำ Phase 3 ไม่ใช่ตอนเริ่ม |
 | 2026-06-08 | Voting ต้องผ่าน 2/3 analyst + Risk ไม่ veto |
+| 2026-06-08 | ใช้ yfinance ดึงราคา + Claude Sonnet วิเคราะห์ |
+| 2026-06-08 | Bot รันครั้งแรกสำเร็จ — Telegram เชื่อมต่อได้แล้ว |
