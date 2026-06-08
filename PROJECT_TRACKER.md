@@ -6,7 +6,7 @@
 ## Overall Progress
 
 ```
-Phase 1 — Foundation         [ 75% ] ███████░░░
+Phase 1 — Foundation         [ 95% ] █████████░
 Phase 2 — Full Voting        [ 0%  ] ░░░░░░░░░░
 Phase 3 — Virtual Office     [ 0%  ] ░░░░░░░░░░
 Phase 4 — Self-Improvement   [ 0%  ] ░░░░░░░░░░
@@ -64,7 +64,7 @@ Agent vote ผิดบ่อย → weight ต่ำลง
 - [x] เขียน SMC Engine (Python port จาก LuxAlgo + Sweep detection)
 - [x] เขียน Telegram Handler (โต้ตอบได้)
 - [ ] เพิ่ม indicator จริง (RSI, EMA, pandas-ta)
-- [ ] เขียน Trade Log (บันทึก CSV/SQLite)
+- [x] เขียน Trade Log (SQLite — confirmed/skipped/win/loss/win rate)
 - [ ] ทดสอบ /scan, /status, /ask ครบทุกคำสั่ง
 
 ### คำสั่ง Telegram ที่ทำงานได้แล้ว
