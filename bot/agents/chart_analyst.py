@@ -1,102 +1,92 @@
 import yfinance as yf
 import anthropic
 import json
+import pandas as pd
 from datetime import datetime
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, TRADING_PAIR
+from agents.smc_engine import SMCEngine, summarize
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+smc = SMCEngine(swing_length=5)
 
-def get_price_data(pair: str = TRADING_PAIR, period: str = "2d", interval: str = "5m") -> dict:
-    """ดึงข้อมูลราคา Gold จาก yfinance"""
-    ticker = yf.Ticker("GC=F")  # Gold Futures
+def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str = "5m") -> tuple[pd.DataFrame, dict]:
+    """ดึงข้อมูลราคา Gold จาก yfinance และรัน SMC Engine"""
+    ticker = yf.Ticker("GC=F")
     df = ticker.history(period=period, interval=interval)
 
     if df.empty:
-        return None
+        return None, None
 
-    # เอา 50 แท่งล่าสุด
-    df = df.tail(50)
+    df.columns = [c.lower() for c in df.columns]
+    df = df[['open', 'high', 'low', 'close', 'volume']].dropna()
 
-    candles = []
-    for idx, row in df.iterrows():
-        candles.append({
-            "time": str(idx),
-            "open": round(row["Open"], 2),
-            "high": round(row["High"], 2),
-            "low": round(row["Low"], 2),
-            "close": round(row["Close"], 2),
-            "volume": int(row["Volume"])
-        })
+    current_price = round(df['close'].iloc[-1], 2)
 
-    current_price = candles[-1]["close"]
-    recent_high = max(c["high"] for c in candles[-20:])
-    recent_low = min(c["low"] for c in candles[-20:])
+    # รัน SMC Engine
+    result = smc.analyze(df)
+    summary = summarize(result, current_price)
+    summary["pair"] = pair
+    summary["timeframe"] = "M5"
+    summary["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    return {
-        "pair": pair,
-        "timeframe": "M5",
-        "current_price": current_price,
-        "recent_high_20": recent_high,
-        "recent_low_20": recent_low,
-        "candles": candles[-20:]  # ส่งแค่ 20 แท่งล่าสุดให้ AI
-    }
+    return df, summary
 
-def analyze(price_data: dict = None) -> dict:
-    """ให้ Chart Analyst วิเคราะห์ตาม SMC concept"""
+def analyze(smc_summary: dict = None) -> dict:
+    """ส่ง SMC summary ให้ Claude วิเคราะห์ context และตัดสินใจ"""
 
-    if price_data is None:
-        price_data = get_price_data()
+    if smc_summary is None:
+        _, smc_summary = get_price_data()
 
-    if price_data is None:
+    if smc_summary is None:
         return {"error": "ดึงข้อมูลราคาไม่ได้"}
 
     prompt = f"""คุณคือ Chart Analyst ผู้เชี่ยวชาญ Smart Money Concepts (SMC)
 
-ข้อมูลราคา {price_data['pair']} Timeframe M5:
-- ราคาปัจจุบัน: {price_data['current_price']}
-- High 20 แท่งล่าสุด: {price_data['recent_high_20']}
-- Low 20 แท่งล่าสุด: {price_data['recent_low_20']}
+ข้อมูล SMC Analysis ของ {smc_summary['pair']} Timeframe {smc_summary['timeframe']}:
+{json.dumps(smc_summary, indent=2, ensure_ascii=False)}
 
-ข้อมูล Candle 20 แท่งล่าสุด:
-{json.dumps(price_data['candles'], indent=2)}
+จากข้อมูล SMC ที่คำนวณมาแล้ว ให้วิเคราะห์:
 
-วิเคราะห์ตามหลัก SMC:
-1. มี Order Block (OB) ที่ชัดเจนมั้ย? ถ้ามีอยู่ที่ระดับไหน?
-2. มี Break of Structure (BOS) หรือ CHoCH มั้ย?
-3. มี Liquidity Sweep มั้ย? (sweep high/low แล้วกลับ)
-4. Setup ที่เห็นคือ BUY, SELL หรือ NO TRADE?
+1. Setup ที่เห็นคือ BUY, SELL หรือ NO TRADE?
+   - ถ้ามี Liquidity Sweep + Active OB + BOS/CHoCH ครบ = high probability
+   - ถ้า bias ขัดแย้งกัน = NO TRADE
 
-ตอบเป็น JSON format นี้เท่านั้น:
+2. Entry Zone ที่เหมาะสมอยู่ที่ไหน?
+   - ควรเข้าที่ OB zone หรือ FVG
+
+3. SL อยู่ที่ไหน? (ใต้ sweep low หรือ เหนือ sweep high)
+
+4. TP อยู่ที่ไหน? (next liquidity, EQH/EQL)
+
+ตอบเป็น JSON เท่านั้น:
 {{
   "signal": "BUY" หรือ "SELL" หรือ "NO_TRADE",
   "confidence": 0-100,
-  "order_block_level": ราคาที่ OB อยู่ หรือ null,
-  "entry_zone": [ราคาต่ำสุด, ราคาสูงสุด] หรือ null,
-  "stop_loss": ราคา SL หรือ null,
-  "take_profit": ราคา TP หรือ null,
-  "rr_ratio": Risk:Reward ratio หรือ null,
-  "bos_detected": true/false,
-  "liquidity_sweep": true/false,
+  "entry_zone": [low, high] หรือ null,
+  "stop_loss": ราคา หรือ null,
+  "take_profit": ราคา หรือ null,
+  "rr_ratio": number หรือ null,
+  "key_factors": ["factor1", "factor2"],
   "reasoning": "อธิบายเหตุผลสั้นๆ ภาษาไทย"
 }}"""
 
     response = client.messages.create(
         model=MODEL_SMART,
-        max_tokens=1000,
+        max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
 
     text = response.content[0].text.strip()
-
-    # parse JSON จาก response
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
 
     result = json.loads(text)
-    result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    result["current_price"] = price_data["current_price"]
+    result["analyzed_at"] = smc_summary.get("analyzed_at")
+    result["current_price"] = smc_summary.get("current_price")
+    result["smc_bias"] = smc_summary.get("bias")
+    result["had_sweep"] = smc_summary.get("last_sweep") is not None
 
     return result
 
