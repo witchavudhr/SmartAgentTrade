@@ -10,8 +10,8 @@ from config.settings import (
     ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     MODEL_SMART, TRADING_PAIR
 )
-from agents import chart_analyst
-from agents import bias_analyst, news_scout
+from agents import chart_analyst, bias_analyst, news_scout
+from agents import supervisor, risk_manager
 from agents.trade_log import log_trade, format_report
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -45,62 +45,26 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 กำลังสแกน XAUUSD M5...")
+    await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
 
-    # เช็ค news ก่อน — ถ้าใกล้ข่าวให้บล็อก
-    blocked, block_reason = news_scout.should_block_trade()
-    if blocked:
-        await update.message.reply_text(
-            f"🚫 *หยุดสแกน*\n{block_reason}\n\nจะสแกนใหม่หลังข่าวผ่านไปครับ",
-            parse_mode="Markdown"
-        )
-        return
-
-    # วิเคราะห์ chart (M5)
-    _, smc_summary = chart_analyst.get_price_data()
-    analysis = chart_analyst.analyze(smc_summary)
+    result = supervisor.run()
     bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    message = supervisor.format_alert(result)
 
-    if analysis.get("signal") not in ["BUY", "SELL"]:
-        await update.message.reply_text(
-            chart_analyst.format_signal_message(analysis),
-            parse_mode="Markdown"
-        )
-        return
+    if result.get("approved"):
+        bot_state["pending_signal"] = result.get("analysis", {})
+        bot_state["pending_signal"]["lot"] = result.get("lot")
+        bot_state["pending_signal"]["risk_pct"] = result.get("risk_pct")
 
-    # เช็ค bias — signal ต้องตรงกับ HTF
-    await update.message.reply_text("🌍 เช็ค HTF Bias...")
-    bias = bias_analyst.analyze()
-    trade_dir = bias.get("trade_direction", "BOTH")
-    signal = analysis.get("signal")
-
-    bias_conflict = (
-        (signal == "BUY" and trade_dir == "SELL_ONLY") or
-        (signal == "SELL" and trade_dir == "BUY_ONLY")
-    )
-
-    if bias_conflict:
-        await update.message.reply_text(
-            f"⚠️ *Bias ขัดแย้ง — ยกเลิก Setup*\n"
-            f"Signal: `{signal}` แต่ HTF บอก `{trade_dir}`\n"
-            f"Reasoning: {bias.get('reasoning', '')}",
-            parse_mode="Markdown"
-        )
-        return
-
-    # ทุกอย่างผ่าน — ส่ง alert
-    analysis["htf_bias"] = bias.get("overall_bias")
-    analysis["bias_aligned"] = not bias_conflict
-    bot_state["pending_signal"] = analysis
-
-    message = chart_analyst.format_signal_message(analysis)
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
-            InlineKeyboardButton("❌ Skip", callback_data="skip")
-        ]
-    ])
-    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
+                InlineKeyboardButton("❌ Skip", callback_data="skip")
+            ]
+        ])
+        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(message, parse_mode="Markdown")
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = "🟢 กำลังทำงาน" if bot_state["is_running"] else "🔴 หยุดอยู่"
@@ -222,13 +186,15 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     if not bot_state["is_running"]:
         return
 
-    analysis = chart_analyst.analyze()
+    result = supervisor.run()
     bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if analysis.get("signal") in ["BUY", "SELL"] and analysis.get("confidence", 0) >= 65:
-        bot_state["pending_signal"] = analysis
-        message = chart_analyst.format_signal_message(analysis)
+    if result.get("approved"):
+        bot_state["pending_signal"] = result.get("analysis", {})
+        bot_state["pending_signal"]["lot"] = result.get("lot")
+        bot_state["pending_signal"]["risk_pct"] = result.get("risk_pct")
 
+        message = supervisor.format_alert(result)
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
