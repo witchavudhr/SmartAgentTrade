@@ -224,6 +224,15 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     if not bot_state["is_running"]:
         return
 
+    session_label = (ctx.job.data or {}).get("session_label", "🔍 Auto Scan")
+
+    # แจ้งว่าเริ่ม scan session ไหน
+    await ctx.bot.send_message(
+        chat_id=TELEGRAM_CHAT_ID,
+        text=f"{session_label} — กำลัง scan...",
+        parse_mode="Markdown"
+    )
+
     result = supervisor.run()
     bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -245,6 +254,14 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
             text=message,
             parse_mode="Markdown",
             reply_markup=keyboard
+        )
+    else:
+        # ถ้าไม่มี setup แจ้งสั้นๆ แค่ reject reason
+        reason = result.get("reject_reason", "ไม่มี setup")
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=f"{session_label} — ❌ {reason}",
+            parse_mode="Markdown"
         )
 
 # ── Main ───────────────────────────────────────────────
@@ -272,12 +289,25 @@ def run():
     # Free text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Auto scan ทุก X นาที
-    app.job_queue.run_repeating(
-        auto_scan,
-        interval=SCAN_INTERVAL_MINUTES * 60,
-        first=10
-    )
+    # Session-Based Scanning — scan เฉพาะช่วงสำคัญ 5 ครั้ง/วัน
+    import pytz
+    from datetime import time as dtime
+    thai_tz = pytz.timezone("Asia/Bangkok")
+
+    session_times = [
+        (dtime(6, 45, tzinfo=thai_tz),  "🌏 Asian Close"),
+        (dtime(13, 45, tzinfo=thai_tz), "🇬🇧 London Open"),
+        (dtime(15, 45, tzinfo=thai_tz), "🇬🇧 London Mid"),
+        (dtime(18, 45, tzinfo=thai_tz), "🇺🇸 NY Pre-market"),
+        (dtime(22, 45, tzinfo=thai_tz), "🇺🇸 NY Peak"),
+    ]
+
+    for scan_time, label in session_times:
+        app.job_queue.run_daily(
+            auto_scan,
+            time=scan_time,
+            data={"session_label": label}
+        )
 
     print("🏢 SmartAgentTrade Bot เริ่มทำงานแล้ว...")
     app.run_polling()
