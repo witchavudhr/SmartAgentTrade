@@ -47,12 +47,17 @@ def has_signal(smc_summary: dict) -> bool:
     if not smc_summary.get("tradeable_session", True):
         return False  # Off-hours — ไม่เทรด
 
-    # ── ชั้น 2: advanced signal type (จาก indicator) ──────────
-    signal_type = smc_summary.get("signal_type")
-    if signal_type:
-        return True  # indicator พบ signal ชัดเจน
+    # ── ชั้น 2: Reversal signal (priority สูงสุด) ──────────────
+    rev = smc_summary.get("reversal", {})
+    if rev.get("reversal_signal") and rev.get("reversal_score", 0) >= 3:
+        return True  # จุดกลับตัวชัดเจน
 
-    # ── ชั้น 3: classic SMC check ─────────────────────────────
+    # ── ชั้น 3: advanced signal type (จาก indicator) ──────────
+    signal_type = smc_summary.get("signal_type")
+    if signal_type and "C_" in str(signal_type):
+        return True  # Type C = CHoCH+Sweep = reversal quality
+
+    # ── ชั้น 4: classic SMC (ถ้าไม่มี reversal) ──────────────
     has_sweep     = smc_summary.get("last_sweep") is not None
     has_ob        = smc_summary.get("active_ob") is not None
     has_structure = (smc_summary.get("last_bos") is not None or
@@ -85,64 +90,76 @@ def analyze(smc_summary: dict = None) -> dict:
             "claude_called": False
         }
 
-    # ดึง advanced signals + session สำหรับใส่ใน prompt
     adv  = smc_summary.get("advanced", {})
     sess = smc_summary.get("session", {})
-    signal_type  = smc_summary.get("signal_type", "ไม่มี")
-    long_stars   = smc_summary.get("long_stars") or "-"
-    short_stars  = smc_summary.get("short_stars") or "-"
+    rev  = smc_summary.get("reversal", {})
+
     momentum_warn = ""
     if adv.get("momentum_bear"): momentum_warn = "⚠️ Momentum ลงแรง (>2.5×ATR) — ระวัง Long"
     if adv.get("momentum_bull"): momentum_warn = "⚠️ Momentum ขึ้นแรง (>2.5×ATR) — ระวัง Short"
 
+    # Reversal block สำหรับ prompt
+    rev_signal = rev.get("reversal_signal")
+    rev_block  = ""
+    if rev_signal:
+        rev_block = f"""
+─── 🔄 REVERSAL SETUP DETECTED ───
+Direction:  {rev_signal}
+Score:      {rev.get('reversal_score')}/10  {rev.get('reversal_stars','')}  [{rev.get('reversal_grade','')}]
+Reasons:    {', '.join(rev.get('reversal_reasons', []))}
+Entry Zone: {rev.get('entry_zone')}
+SL Suggest: {rev.get('stop_loss')} ({rev.get('sl_pips')} pips)
+TP Suggest: {rev.get('take_profit')} ({rev.get('tp_pips')} pips)
+RR Suggest: 1:{rev.get('rr')}
+Weak Low:   {rev.get('weak_low')} | Weak High: {rev.get('weak_high')}
+EQL: {rev.get('eql_levels')} | EQH: {rev.get('eqh_levels')}
+"""
+
     prompt = f"""คุณคือ Chart Analyst ผู้เชี่ยวชาญ Smart Money Concepts (SMC)
+เน้น: หาจุดกลับตัว (Reversal) ที่ราคา sweep liquidity แล้วกลับทิศ
 
 ═══ SMC Analysis: {smc_summary.get('pair')} {smc_summary.get('timeframe')} ═══
 ราคาปัจจุบัน: {smc_summary.get('current_price')}
 Session: {sess.get('emoji','')} {sess.get('session','')} ({sess.get('time_thai','')})
 Bias (M5): {smc_summary.get('bias')}
-
+{rev_block}
 ─── Structure ───
+CHoCH ล่าสุด: {smc_summary.get('last_choch')}  อายุ {adv.get('choch_age_bars','?')} บาร์
 BOS ล่าสุด:   {smc_summary.get('last_bos')}
-CHoCH ล่าสุด: {smc_summary.get('last_choch')} (อายุ {adv.get('choch_age_bars', '?')} บาร์)
 Sweep ล่าสุด: {smc_summary.get('last_sweep')}
 
-─── Order Block ───
-Active OB: {smc_summary.get('active_ob')}
-FVG ใกล้สุด: {smc_summary.get('nearest_fvg')}
+─── Liquidity Levels ───
 EQH: {smc_summary.get('equal_highs')}
 EQL: {smc_summary.get('equal_lows')}
+Active OB: {smc_summary.get('active_ob')}
+FVG: {smc_summary.get('nearest_fvg')}
 
-─── Indicator Signals (SMC By Beam) ───
-Signal Type: {signal_type}
-Long Stars:  {long_stars} (score {adv.get('long_score',0)})
-Short Stars: {short_stars} (score {adv.get('short_score',0)})
-H1 Bias: {'▲ Bull' if adv.get('h1_bull') else '▼ Bear'} (mid {adv.get('h1_mid')})
-H4 Bias: {'▲ Bull' if adv.get('h4_bull') else '▼ Bear'} (mid {adv.get('h4_mid')})
-In OB:   Bull={adv.get('in_bull_ob')} | Bear={adv.get('in_bear_ob')}
-Sweep:   Low={adv.get('recent_sweep_low')} ({adv.get('sweep_l_age_bars')} bars ago) | High={adv.get('recent_sweep_high')} ({adv.get('sweep_h_age_bars')} bars ago)
-Candle:  Bull={adv.get('bull_candle')} | Bear={adv.get('bear_candle')}
-CHoCH Grab: Bull={adv.get('bull_choch_grab')} | Bear={adv.get('bear_choch_grab')}
+─── Confirmation ───
+H1: {'▲ Bull' if adv.get('h1_bull') else '▼ Bear'}  H4: {'▲ Bull' if adv.get('h4_bull') else '▼ Bear'}
+Sweep Low: {adv.get('recent_sweep_low')} ({adv.get('sweep_l_age_bars')}b ago)
+Sweep High: {adv.get('recent_sweep_high')} ({adv.get('sweep_h_age_bars')}b ago)
+CHoCH Grab: Bull={adv.get('bull_choch_grab')} Bear={adv.get('bear_choch_grab')}
+Candle: Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
 {momentum_warn}
-ATR: {adv.get('atr')}
 
-ให้วิเคราะห์และตัดสินใจ:
-1. BUY / SELL / NO_TRADE — โดยใช้ signal_type เป็นหลัก ถ้า C/B2 = high confidence
-2. Entry Zone — เข้าใน OB หรือ FVG
-3. SL — ใต้ sweep low หรือ เหนือ sweep high
-4. TP — next liquidity / EQH / EQL
-5. ถ้า momentum แรงสวนทาง = ลด confidence หรือ NO_TRADE
+ตัดสินใจโดย:
+1. ถ้า REVERSAL SETUP DETECTED → ให้น้ำหนักมากที่สุด score ≥7 = confidence ≥80
+2. Reversal ที่ดี = CHoCH สด + Sweep + Confirm candle ครบ
+3. SL ต้องอยู่ใต้ sweep zone เสมอ — ถ้า SL ไม่ชัด = NO_TRADE
+4. TP = next liquidity (EQH/EQL) หรือ OB ฝั่งตรงข้าม
+5. momentum แรงสวนทาง → ลด confidence 20 หรือ NO_TRADE
 
-ตอบเป็น JSON เท่านั้น:
+ตอบ JSON เท่านั้น:
 {{
-  "signal": "BUY" หรือ "SELL" หรือ "NO_TRADE",
+  "signal": "BUY/SELL/NO_TRADE",
   "confidence": 0-100,
   "entry_zone": [low, high] หรือ null,
   "stop_loss": ราคา หรือ null,
   "take_profit": ราคา หรือ null,
   "rr_ratio": number หรือ null,
+  "setup_type": "REVERSAL/CONTINUATION/NO_TRADE",
   "key_factors": ["factor1", "factor2"],
-  "reasoning": "อธิบายเหตุผลสั้นๆ ภาษาไทย"
+  "reasoning": "สั้นๆ ภาษาไทย — ระบุว่า reversal จาก sweep zone ไหน"
 }}"""
 
     response = client.messages.create(
@@ -158,10 +175,12 @@ ATR: {adv.get('atr')}
         text = text.split("```")[1].split("```")[0].strip()
 
     result = json.loads(text)
-    result["analyzed_at"] = smc_summary.get("analyzed_at")
+    result["analyzed_at"]   = smc_summary.get("analyzed_at")
     result["current_price"] = smc_summary.get("current_price")
-    result["smc_bias"] = smc_summary.get("bias")
-    result["had_sweep"] = smc_summary.get("last_sweep") is not None
+    result["smc_bias"]      = smc_summary.get("bias")
+    result["had_sweep"]     = smc_summary.get("last_sweep") is not None
+    result["reversal_score"] = smc_summary.get("reversal_score", 0)
+    result["reversal_stars"] = smc_summary.get("reversal_stars")
     result["claude_called"] = True
 
     return result

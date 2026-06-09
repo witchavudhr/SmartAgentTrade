@@ -216,12 +216,25 @@ def format_alert(result: dict) -> str:
     entry = result.get("entry_zone")
     entry_str = f"`{entry[0]} - {entry[1]}`" if entry else "N/A"
 
+    analysis   = result.get("analysis", {})
+    setup_type = analysis.get("setup_type", "")
+    rev_stars  = analysis.get("reversal_stars") or ""
+    rev_score  = analysis.get("reversal_score", 0)
+
+    if "REVERSAL" in str(setup_type):
+        setup_line = f"🔄 Setup: *REVERSAL* {rev_stars} (score {rev_score}/10)\n"
+    elif setup_type:
+        setup_line = f"📐 Setup: `{setup_type}`\n"
+    else:
+        setup_line = ""
+
     return (
         f"🔔 *SETUP APPROVED — {signal}*\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"{caution}"
         f"{emoji} Signal: *{signal}*\n"
         f"🗳 Vote: `{vote_bar}` {vote}/3\n"
+        f"{setup_line}"
         f"💰 ราคา: `{result.get('current_price')}`\n"
         f"📍 Entry: {entry_str}\n"
         f"🛑 SL: `{result.get('stop_loss')}`\n"

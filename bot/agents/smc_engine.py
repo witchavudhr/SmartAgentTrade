@@ -594,6 +594,246 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     }
 
 
+# ─── Reversal Detector ───────────────────────────────────────────
+
+def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
+    """
+    หาจุดกลับตัวโดยเฉพาะ — ไม่ใช่แค่ signal ทั่วไป
+
+    Bullish Reversal (ราคากำลังจะกลับขึ้น):
+      1. Sweep below EQL / Weak Low / OB bottom  ← ดูด liquidity ก่อนกลับ
+      2. CHoCH bullish บน M5 (เปลี่ยนจาก bear → bull)
+      3. Confirmation: bull candle wick ใหญ่ + body ≥50%
+      4. ไม่มี momentum ลงแรง (momentum_bear = False)
+
+    Bearish Reversal (ราคากำลังจะกลับลง):
+      1. Sweep above EQH / Strong High / OB top
+      2. CHoCH bearish บน M5
+      3. Confirmation: bear candle wick ใหญ่ + body ≥50%
+      4. ไม่มี momentum ขึ้นแรง
+
+    Reversal Score (0-10):
+      CHoCH fresh (≤5 bars): +3  ← หัวใจของการกลับตัว
+      Sweep occurred:        +2  ← ดูด liquidity แล้ว
+      Confirmation candle:   +2  ← ยืนยันการปฏิเสธ
+      In OB zone:            +1  ← เพิ่มความน่าเชื่อถือ
+      H1 aligned:            +1  ← HTF เริ่มยืนยัน
+      No momentum against:   +1  ← ปลอดภัยจาก news spike
+    """
+    n = len(df)
+    if n < 20:
+        return {"reversal_signal": None, "reversal_score": 0}
+
+    # ดึงข้อมูลจาก advanced_signals
+    adv = advanced_signals(df, result)
+    if "error" in adv:
+        return {"reversal_signal": None, "reversal_score": 0}
+
+    last = df.iloc[-1]
+    current_price = last['close']
+    sig_range = last['high'] - last['low']
+    atr = adv.get("atr", 1.0)
+
+    # ── ระบุ Key Levels ที่อาจโดน Sweep ───────────────────────
+    # Weak Low = swing low ล่าสุดที่ structure เป็น bearish
+    # Weak High = swing high ล่าสุดที่ structure เป็น bullish
+    # EQL = equal lows (ดูด liquidity zone)
+    # EQH = equal highs
+
+    eql_levels = sorted(result.equal_lows)
+    eqh_levels = sorted(result.equal_highs, reverse=True)
+
+    # Weak Low/High จาก swing points
+    weak_low  = min([s.price for s in result.swing_lows[-5:]], default=None) if result.swing_lows else None
+    weak_high = max([s.price for s in result.swing_highs[-5:]], default=None) if result.swing_highs else None
+
+    # ── Bullish Reversal Score ────────────────────────────────
+    bull_score = 0
+    bull_reasons = []
+
+    # 1. CHoCH bullish fresh (สำคัญสุด)
+    if adv.get("recent_choch_bull"):
+        bull_score += 3
+        bull_reasons.append(f"CHoCH Bull ({adv['choch_age_bars']} bars ago)")
+
+    # 2. Sweep low (ดูด liquidity ก่อนกลับ)
+    if adv.get("recent_sweep_low"):
+        bull_score += 2
+        bull_reasons.append(f"Sweep Low ({adv['sweep_l_age_bars']} bars ago)")
+    elif weak_low and abs(current_price - weak_low) < atr * 0.5:
+        bull_score += 1
+        bull_reasons.append(f"Near Weak Low {weak_low:.1f}")
+
+    # EQL swept
+    if eql_levels and any(abs(current_price - lv) < atr * 0.3 for lv in eql_levels[-3:]):
+        bull_score += 1
+        bull_reasons.append("Near EQL")
+
+    # 3. Confirmation candle
+    if adv.get("bull_candle"):
+        bull_score += 2
+        bull_reasons.append("Bull Confirm Candle")
+    elif adv.get("bull_grab"):
+        bull_score += 1
+        bull_reasons.append("Bull Grab")
+
+    # 4. In bull OB
+    if adv.get("in_bull_ob"):
+        bull_score += 1
+        bull_reasons.append("In Bull OB")
+
+    # 5. H1 aligned
+    if adv.get("h1_bull"):
+        bull_score += 1
+        bull_reasons.append("H1 Bull")
+
+    # 6. No bear momentum (ปลอดภัย)
+    if not adv.get("momentum_bear"):
+        bull_score += 1
+        bull_reasons.append("No Momentum Block")
+
+    # ── Bearish Reversal Score ────────────────────────────────
+    bear_score = 0
+    bear_reasons = []
+
+    if adv.get("recent_choch_bear"):
+        bear_score += 3
+        bear_reasons.append(f"CHoCH Bear ({adv['choch_age_bars']} bars ago)")
+
+    if adv.get("recent_sweep_high"):
+        bear_score += 2
+        bear_reasons.append(f"Sweep High ({adv['sweep_h_age_bars']} bars ago)")
+    elif weak_high and abs(current_price - weak_high) < atr * 0.5:
+        bear_score += 1
+        bear_reasons.append(f"Near Weak High {weak_high:.1f}")
+
+    if eqh_levels and any(abs(current_price - lv) < atr * 0.3 for lv in eqh_levels[:3]):
+        bear_score += 1
+        bear_reasons.append("Near EQH")
+
+    if adv.get("bear_candle"):
+        bear_score += 2
+        bear_reasons.append("Bear Confirm Candle")
+    elif adv.get("bear_grab"):
+        bear_score += 1
+        bear_reasons.append("Bear Grab")
+
+    if adv.get("in_bear_ob"):
+        bear_score += 1
+        bear_reasons.append("In Bear OB")
+
+    if not adv.get("h1_bull"):
+        bear_score += 1
+        bear_reasons.append("H1 Bear")
+
+    if not adv.get("momentum_bull"):
+        bear_score += 1
+        bear_reasons.append("No Momentum Block")
+
+    # ── ตัดสิน ────────────────────────────────────────────────
+    def grade(s):
+        if s >= 7: return "★★★", "HIGH"
+        if s >= 5: return "★★",  "MODERATE"
+        if s >= 3: return "★",   "LOW"
+        return None, None
+
+    # เลือก direction ที่ score สูงกว่า (ต้องอย่างน้อย 3)
+    reversal_signal  = None
+    reversal_score   = 0
+    reversal_stars   = None
+    reversal_grade   = None
+    reversal_reasons = []
+
+    if bull_score >= 3 and bull_score >= bear_score:
+        reversal_signal  = "BUY"
+        reversal_score   = bull_score
+        reversal_stars, reversal_grade = grade(bull_score)
+        reversal_reasons = bull_reasons
+
+        # คำนวณ entry zone จาก active OB หรือ current price
+        aob = result.active_ob
+        if aob and aob.kind == "bullish":
+            entry_low  = aob.bottom
+            entry_high = aob.top
+        else:
+            entry_low  = round(current_price - atr * 0.3, 2)
+            entry_high = round(current_price + atr * 0.3, 2)
+
+        # SL: ใต้ sweep low หรือ weak low
+        sl = round(min(
+            current_price - atr * 1.5,
+            (weak_low - atr * 0.2) if weak_low else current_price - atr * 2
+        ), 2)
+
+        # TP: swing high ล่าสุด หรือ EQH
+        tp_candidates = []
+        if result.swing_highs:
+            tp_candidates.append(max(s.price for s in result.swing_highs[-5:]))
+        if eqh_levels:
+            tp_candidates.append(eqh_levels[0])
+        tp = round(max(tp_candidates) if tp_candidates else current_price + atr * 3, 2)
+
+    elif bear_score >= 3 and bear_score > bull_score:
+        reversal_signal  = "SELL"
+        reversal_score   = bear_score
+        reversal_stars, reversal_grade = grade(bear_score)
+        reversal_reasons = bear_reasons
+
+        aob = result.active_ob
+        if aob and aob.kind == "bearish":
+            entry_low  = aob.bottom
+            entry_high = aob.top
+        else:
+            entry_low  = round(current_price - atr * 0.3, 2)
+            entry_high = round(current_price + atr * 0.3, 2)
+
+        sl = round(max(
+            current_price + atr * 1.5,
+            (weak_high + atr * 0.2) if weak_high else current_price + atr * 2
+        ), 2)
+
+        tp_candidates = []
+        if result.swing_lows:
+            tp_candidates.append(min(s.price for s in result.swing_lows[-5:]))
+        if eql_levels:
+            tp_candidates.append(eql_levels[-1])
+        tp = round(min(tp_candidates) if tp_candidates else current_price - atr * 3, 2)
+
+    else:
+        return {
+            "reversal_signal": None,
+            "reversal_score": max(bull_score, bear_score),
+            "bull_score": bull_score,
+            "bear_score": bear_score,
+            "atr": atr,
+        }
+
+    sl_pips = round(abs(current_price - sl) * 10, 1)
+    tp_pips = round(abs(current_price - tp) * 10, 1)
+    rr      = round(tp_pips / sl_pips, 2) if sl_pips > 0 else 0
+
+    return {
+        "reversal_signal":  reversal_signal,
+        "reversal_score":   reversal_score,
+        "reversal_stars":   reversal_stars,
+        "reversal_grade":   reversal_grade,
+        "reversal_reasons": reversal_reasons,
+        "bull_score":       bull_score,
+        "bear_score":       bear_score,
+        "entry_zone":       [entry_low, entry_high],
+        "stop_loss":        sl,
+        "take_profit":      tp,
+        "sl_pips":          sl_pips,
+        "tp_pips":          tp_pips,
+        "rr":               rr,
+        "weak_low":         weak_low,
+        "weak_high":        weak_high,
+        "eql_levels":       eql_levels[-3:],
+        "eqh_levels":       eqh_levels[:3],
+        "atr":              atr,
+    }
+
+
 # ─── Format Summary ───────────────────────────────────────────────
 
 def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) -> dict:
@@ -657,22 +897,31 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         "total_sweeps":      len(result.sweeps),
     }
 
-    # ── Advanced Signals (จาก df) ──────────────────────────────
+    # ── Advanced Signals + Reversal (จาก df) ─────────────────
     if df is not None:
         try:
-            adv = advanced_signals(df, result)
+            adv  = advanced_signals(df, result)
             sess = get_session()
+            rev  = detect_reversal(df, result)
+
             summary["session"]   = sess
             summary["advanced"]  = adv
-            # shortcut ที่ใช้บ่อย
-            summary["signal_type"]  = adv.get("signal_type")
-            summary["long_stars"]   = adv.get("long_stars")
-            summary["short_stars"]  = adv.get("short_stars")
-            summary["h1_bull"]      = adv.get("h1_bull")
-            summary["h4_bull"]      = adv.get("h4_bull")
-            summary["momentum_bear"] = adv.get("momentum_bear")
-            summary["momentum_bull"] = adv.get("momentum_bull")
+            summary["reversal"]  = rev
+
+            # shortcuts ที่ใช้บ่อย
+            summary["signal_type"]       = adv.get("signal_type")
+            summary["long_stars"]        = adv.get("long_stars")
+            summary["short_stars"]       = adv.get("short_stars")
+            summary["h1_bull"]           = adv.get("h1_bull")
+            summary["h4_bull"]           = adv.get("h4_bull")
+            summary["momentum_bear"]     = adv.get("momentum_bear")
+            summary["momentum_bull"]     = adv.get("momentum_bull")
             summary["tradeable_session"] = sess.get("tradeable", True)
+
+            # reversal shortcuts
+            summary["reversal_signal"] = rev.get("reversal_signal")
+            summary["reversal_stars"]  = rev.get("reversal_stars")
+            summary["reversal_score"]  = rev.get("reversal_score", 0)
         except Exception:
             pass
 
