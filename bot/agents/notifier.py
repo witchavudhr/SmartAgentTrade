@@ -13,6 +13,7 @@ from config.settings import (
 from agents import chart_analyst, bias_analyst, news_scout
 from agents import supervisor, risk_manager
 from agents.trade_log import log_trade, format_report
+from agents import paper_trader
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -37,9 +38,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/status — ดูสถานะ bot\n"
         "/pause — หยุดสแกนชั่วคราว\n"
         "/resume — เริ่มสแกนใหม่\n\n"
-        "📊 *Report*\n"
-        "/report — สรุป trade ทั้งหมด\n"
-        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n"
+        "📊 *Report & Tools*\n"
+        "/report — สรุป trade จริง\n"
+        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n\n"
+        "📝 *Paper Trade (ลงกระดาษ)*\n"
+        "/paper buy 4290 sl 4250 tp 4360 — เปิด Long\n"
+        "/paper sell 4350 sl 4380 tp 4290 — เปิด Short\n"
+        "/paper status — ดู open trades\n"
+        "/paper close [id] [price] — ปิด trade\n"
+        "/pnl — สรุป P&L + win rate\n\n"
         "/ask [คำถาม] — ถามอะไรก็ได้\n\n"
         "หรือพิมข้อความถามได้เลยครับ 🤖",
         parse_mode="Markdown"
@@ -129,6 +136,151 @@ async def cmd_scalein(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_paper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /paper buy 4290 sl 4250 tp 4360 [lot 0.01] [stars ★★★] [type C_LONG]
+    /paper sell 4350 sl 4380 tp 4290
+    /paper close [trade_id] [price]
+    /paper status
+    """
+    args = ctx.args
+    if not args:
+        await update.message.reply_text(
+            "📝 *Paper Trade*\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "เปิด trade:\n"
+            "`/paper buy 4290 sl 4250 tp 4360`\n"
+            "`/paper sell 4350 sl 4380 tp 4290`\n\n"
+            "เพิ่ม options:\n"
+            "`/paper buy 4290 sl 4250 tp 4360 lot 0.05 stars ★★★`\n\n"
+            "ปิด trade:\n"
+            "`/paper close 1 4340` — ปิด trade #1 ที่ราคา 4340\n"
+            "`/paper close` — ปิดทุก open trade ที่ราคาปัจจุบัน\n\n"
+            "ดูสถานะ:\n"
+            "`/paper status` — open trades\n"
+            "`/pnl` — สรุป P&L ทั้งหมด",
+            parse_mode="Markdown"
+        )
+        return
+
+    sub = args[0].lower()
+
+    # ── /paper status ──────────────────────────────────────────
+    if sub == "status":
+        trades = paper_trader.get_open_trades()
+        if not trades:
+            await update.message.reply_text("📋 ไม่มี open paper trades ตอนนี้")
+            return
+        lines = ["📋 *Open Paper Trades*\n━━━━━━━━━━━━━━━━━"]
+        for t in trades:
+            lines.append(paper_trader.format_open_trade(t))
+        await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+        return
+
+    # ── /paper close [id] [price] ──────────────────────────────
+    if sub == "close":
+        # ดึงราคาปัจจุบัน
+        price_data, _ = chart_analyst.get_price_data()
+        current = round(price_data['close'].iloc[-1], 2) if price_data is not None else None
+
+        trade_id   = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+        close_price = float(args[2]) if len(args) > 2 else (
+                      float(args[1]) if len(args) > 1 and not args[1].isdigit() else current)
+
+        if close_price is None:
+            await update.message.reply_text("❌ ดึงราคาไม่ได้ — ระบุราคาเองเลยครับ\n`/paper close [id] [price]`", parse_mode="Markdown")
+            return
+
+        if trade_id:
+            result = paper_trader.close_trade(trade_id, close_price)
+            await update.message.reply_text(paper_trader.format_close_result(result), parse_mode="Markdown")
+        else:
+            # ปิดทุก open trade
+            trades = paper_trader.get_open_trades()
+            if not trades:
+                await update.message.reply_text("📋 ไม่มี open trade")
+                return
+            for t in trades:
+                r = paper_trader.close_trade(t["id"], close_price)
+                await update.message.reply_text(paper_trader.format_close_result(r), parse_mode="Markdown")
+        return
+
+    # ── /paper buy / sell ─────────────────────────────────────
+    if sub in ("buy", "sell"):
+        direction = sub.upper()
+        # parse: buy 4290 sl 4250 tp 4360 [lot 0.01] [stars ★★] [type C_LONG]
+        params = {}
+        i = 1
+        try:
+            params["entry"] = float(args[i]); i += 1
+            while i < len(args):
+                key = args[i].lower(); i += 1
+                if key in ("sl", "stop", "stoploss"):
+                    params["sl"] = float(args[i]); i += 1
+                elif key in ("tp", "target"):
+                    params["tp"] = float(args[i]); i += 1
+                elif key == "lot":
+                    params["lot"] = float(args[i]); i += 1
+                elif key == "stars":
+                    params["stars"] = args[i]; i += 1
+                elif key == "type":
+                    params["setup_type"] = args[i]; i += 1
+        except (IndexError, ValueError):
+            pass
+
+        if "entry" not in params or "sl" not in params or "tp" not in params:
+            await update.message.reply_text(
+                "❌ รูปแบบไม่ถูกต้อง\n"
+                "ตัวอย่าง: `/paper buy 4290 sl 4250 tp 4360`",
+                parse_mode="Markdown"
+            )
+            return
+
+        from agents.smc_engine import get_session
+        sess = get_session()
+
+        result = paper_trader.open_trade(
+            direction   = direction,
+            entry_price = params["entry"],
+            sl_price    = params["sl"],
+            tp_price    = params["tp"],
+            lot         = params.get("lot", 0.01),
+            setup_type  = params.get("setup_type"),
+            stars       = params.get("stars"),
+            session     = sess.get("session"),
+        )
+
+        if "error" in result:
+            await update.message.reply_text(f"❌ {result['error']}")
+            return
+
+        d = direction
+        emoji = "🟢" if d == "BUY" else "🔴"
+        await update.message.reply_text(
+            f"{emoji} *Paper Trade #{result['id']} เปิดแล้ว*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"Direction: *{d}*\n"
+            f"Entry: `{result['entry']}`\n"
+            f"SL: `{result['sl']}` ({result['sl_pips']} pips)\n"
+            f"TP: `{result['tp']}` ({result['tp_pips']} pips)\n"
+            f"RR: `1:{result['rr']}`\n"
+            f"Lot: `{result['lot']}`\n"
+            f"Session: {sess.get('emoji','')} {sess.get('session','')}\n\n"
+            f"ปิด trade: `/paper close {result['id']} [ราคา]`",
+            parse_mode="Markdown"
+        )
+        return
+
+    await update.message.reply_text("❓ ไม่เข้าใจคำสั่ง — พิม `/paper` เพื่อดูวิธีใช้", parse_mode="Markdown")
+
+
+async def cmd_pnl(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """สรุป P&L paper trades ทั้งหมด"""
+    summary = paper_trader.get_pnl_summary()
+    msg = paper_trader.format_pnl_summary(summary)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_bias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -282,6 +434,8 @@ def run():
     app.add_handler(CommandHandler("bias", cmd_bias))
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("scalein", cmd_scalein))
+    app.add_handler(CommandHandler("paper", cmd_paper))
+    app.add_handler(CommandHandler("pnl", cmd_pnl))
 
     # Callback (ปุ่ม)
     app.add_handler(CallbackQueryHandler(handle_callback))
