@@ -1,14 +1,20 @@
 """
-Supervisor — LLM as a Judge
-รวบรวม input จากทุก agent แล้วตัดสินใจสุดท้าย
-Voting: Chart (1) + Bias (1) + News (1) → ต้องผ่าน 2/3
-Risk Manager มี VETO power แยกต่างหาก
+Supervisor — Multi-Agent Voting System
+แต่ละ agent โหวต YES/NO พร้อม reasoning แล้ว Supervisor Sonnet ตัดสินใจสุดท้าย
+
+Pipeline:
+  1. SMC scan (rule-based, free)
+  2. Chart Analyst (Sonnet) → VOTE YES/NO + signal + reasoning
+  3. Bias Analyst  (Sonnet) → VOTE YES/NO รู้ signal direction แล้ว
+  4. News Scout    (Sonnet) → VOTE YES/NO รู้ signal direction แล้ว
+  5. Risk Manager  (rule)   → VETO power
+  6. Supervisor   (Sonnet) → อ่าน reasoning ทั้ง 3 agent → APPROVE/REJECT
 """
 
 import anthropic
 import json
 from datetime import datetime
-from config.settings import ANTHROPIC_API_KEY, MODEL_FAST
+from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -49,60 +55,70 @@ def run(balance: float = 10000.0) -> dict:
 
     result["stages"]["smc"] = "SIGNAL_FOUND"
 
-    # ── Stage 2: News Scout ────────────────────────────────────
-    news = news_scout.analyze()
-    blocked = news.get("is_blocked", False)
-    result["stages"]["news"] = "BLOCKED" if blocked else "CLEAR"
-
-    if blocked:
-        result["reject_reason"] = news.get("block_reason", "ใกล้ข่าว High Impact")
-        return result
-
-    # ── Stage 3: Chart Analyst (Sonnet) ───────────────────────
+    # ── Stage 2: Chart Analyst (Sonnet) — votes first ─────────
     analysis = chart_analyst.analyze(smc_summary)
-    signal = analysis.get("signal", "NO_TRADE")
+    signal     = analysis.get("signal", "NO_TRADE")
     confidence = analysis.get("confidence", 0)
+    chart_vote = analysis.get("vote", "NO")
 
     result["stages"]["chart"] = {
-        "signal": signal,
-        "confidence": confidence,
-        "reasoning": analysis.get("reasoning")
+        "signal":        signal,
+        "confidence":    confidence,
+        "vote":          chart_vote,
+        "vote_reasoning": analysis.get("vote_reasoning", ""),
+        "reasoning":     analysis.get("reasoning"),
     }
 
-    if signal == "NO_TRADE":
-        result["reject_reason"] = "Chart Analyst: NO_TRADE"
+    if signal == "NO_TRADE" or chart_vote == "NO":
+        result["reject_reason"] = f"Chart Analyst voted NO — {analysis.get('vote_reasoning', 'NO_TRADE')}"
         return result
 
-    # ── Stage 4: Bias Analyst (Haiku, cached) ────────────────
-    bias = bias_analyst.analyze()
-    trade_dir = bias.get("trade_direction", "BOTH")
-    bias_pass = (
-        trade_dir == "BOTH" or
-        (signal == "BUY" and trade_dir == "BUY_ONLY") or
-        (signal == "SELL" and trade_dir == "SELL_ONLY")
-    )
+    # ── Stage 3: Bias Analyst (Sonnet, cached) — รู้ signal แล้ว ─
+    bias = bias_analyst.analyze(signal_direction=signal)
+    bias_vote = bias.get("vote", "NO")
 
     result["stages"]["bias"] = {
-        "overall": bias.get("overall_bias"),
-        "trade_direction": trade_dir,
-        "aligned": bias.get("aligned"),
-        "pass": bias_pass,
-        "from_cache": bias.get("from_cache", False)
+        "overall":        bias.get("overall_bias"),
+        "trade_direction": bias.get("trade_direction"),
+        "vote":           bias_vote,
+        "vote_reasoning": bias.get("vote_reasoning", ""),
+        "from_cache":     bias.get("from_cache", False),
     }
 
-    # ── Stage 5: Voting ────────────────────────────────────────
+    # ── Stage 4: News Scout (Sonnet, cached) — รู้ signal แล้ว ──
+    news = news_scout.analyze(signal_direction=signal)
+    news_vote = news.get("vote", "NO")
+    blocked   = news.get("is_blocked", False)
+
+    result["stages"]["news"] = {
+        "risk_level":    news.get("risk_level"),
+        "vote":          news_vote,
+        "vote_reasoning": news.get("vote_reasoning", ""),
+        "key_event":     news.get("key_event"),
+    }
+
+    # ── Stage 5: Agent Voting ──────────────────────────────────
     votes = {
-        "chart": signal in ["BUY", "SELL"] and confidence >= 60,
-        "bias": bias_pass,
-        "news": not blocked
+        "chart": chart_vote == "YES",
+        "bias":  bias_vote  == "YES",
+        "news":  news_vote  == "YES",
     }
 
     vote_score = sum(votes.values())
     result["vote_score"] = vote_score
-    result["votes"] = votes
+    result["votes"]      = votes
+    result["vote_details"] = {
+        "chart": analysis.get("vote_reasoning", ""),
+        "bias":  bias.get("vote_reasoning", ""),
+        "news":  news.get("vote_reasoning", ""),
+    }
 
     if vote_score < 2:
-        result["reject_reason"] = f"Vote ไม่ผ่าน {vote_score}/3"
+        losing = [k for k, v in votes.items() if not v]
+        reasons = " | ".join(
+            f"{k}: {result['vote_details'][k]}" for k in losing
+        )
+        result["reject_reason"] = f"Vote {vote_score}/3 — {reasons}"
         return result
 
     # ── Stage 6: Risk Manager (VETO) ──────────────────────────
@@ -113,9 +129,8 @@ def run(balance: float = 10000.0) -> dict:
         result["reject_reason"] = risk.get("veto_reason")
         return result
 
-    # ── Stage 7: Supervisor Final Decision ────────────────────
-    # ถ้า vote 2/3 หรือ 3/3 → ให้ Claude สรุปเป็น final verdict
-    verdict = _supervisor_judge(analysis, bias, news, risk, vote_score)
+    # ── Stage 7: Supervisor Final Decision (Sonnet) ───────────
+    verdict = _supervisor_judge(analysis, bias, news, risk, vote_score, result["vote_details"])
     result["stages"]["supervisor"] = verdict
 
     if verdict.get("approve"):
@@ -136,49 +151,47 @@ def run(balance: float = 10000.0) -> dict:
     return result
 
 
-def _supervisor_judge(analysis, bias, news, risk, vote_score) -> dict:
-    """Supervisor ตัดสินใจสุดท้าย — LLM as a Judge"""
+def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict) -> dict:
+    """
+    Supervisor ตัดสินใจสุดท้าย — Claude Sonnet อ่าน reasoning ทุก agent
+    ไม่ได้แค่นับ vote score แต่เข้าใจ WHY แต่ละ agent โหวต
+    """
+    chart_r = vote_details.get("chart", analysis.get("reasoning", ""))
+    bias_r  = vote_details.get("bias",  bias.get("reasoning", ""))
+    news_r  = vote_details.get("news",  news.get("reasoning", ""))
 
-    prompt = f"""คุณคือ Supervisor Trading Agent ที่ตัดสินใจสุดท้าย
+    prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้ายว่าจะ APPROVE หรือ REJECT trade นี้
 
-ผลการประเมินจากทุก Agent:
+═══ Agent Votes ═══
+🔍 Chart Analyst  [{analysis.get('vote','?')}]: {chart_r}
+   Signal: {analysis.get('signal')} | Confidence: {analysis.get('confidence')}% | RR: 1:{analysis.get('rr_ratio')} | Entry: {analysis.get('entry_zone')} | SL: {analysis.get('stop_loss')} | TP: {analysis.get('take_profit')}
 
-Chart Analyst:
-- Signal: {analysis.get('signal')} (confidence {analysis.get('confidence')}%)
-- Entry: {analysis.get('entry_zone')}
-- SL: {analysis.get('stop_loss')} | TP: {analysis.get('take_profit')}
-- RR: 1:{analysis.get('rr_ratio')}
-- Reasoning: {analysis.get('reasoning')}
+🌍 Bias Analyst   [{bias.get('vote','?')}]: {bias_r}
+   HTF: Daily={bias.get('daily_bias')} H4={bias.get('h4_bias')} H1={bias.get('h1_bias')} | Direction: {bias.get('trade_direction')}
 
-Bias Analyst:
-- Overall: {bias.get('overall_bias')} | Aligned: {bias.get('aligned')}
-- H4: {bias.get('h4_bias')} | H1: {bias.get('h1_bias')}
-- Trade Direction: {bias.get('trade_direction')}
+📰 News Scout     [{news.get('vote','?')}]: {news_r}
+   Risk: {news.get('risk_level')} | Key Event: {news.get('key_event')} | Impact: {news.get('gold_impact')}
 
-News Scout:
-- Risk: {news.get('risk_level')} | Safe: {news.get('safe_to_trade')}
-- Key Event: {news.get('key_event')}
-
-Risk Manager:
-- Lot: {risk.get('lot')} | Risk: {risk.get('risk_pct')}%
-- Caution Mode: {risk.get('caution_mode')}
-- Notes: {risk.get('notes')}
+⚖️ Risk Manager: Lot={risk.get('lot')} Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
 
 Vote Score: {vote_score}/3
 
-ตัดสินใจว่าควร APPROVE หรือ REJECT trade นี้
-พิจารณาว่า risk/reward คุ้มมั้ยในสภาวะตลาดนี้
+═══ คำถาม ═══
+พิจารณา reasoning ของแต่ละ agent อย่างละเอียด:
+- Agent ที่โหวต NO มีเหตุผลน่าเป็นห่วงแค่ไหน?
+- Risk/Reward คุ้มค่าในสภาวะตลาดนี้มั้ย?
+- มีจุดที่ต้องระวังพิเศษมั้ย (counter-trend, ก่อนข่าว, SL กว้าง)?
 
-ตอบ JSON:
+ตอบ JSON เท่านั้น:
 {{
   "approve": true/false,
   "confidence": 0-100,
-  "reasoning": "เหตุผลสั้นๆ ภาษาไทย ไม่เกิน 2 ประโยค"
+  "reasoning": "เหตุผล 2-3 ประโยค ภาษาไทย — ระบุว่าโหวตใครหนักที่สุดและทำไม"
 }}"""
 
     response = client.messages.create(
-        model=MODEL_FAST,
-        max_tokens=200,
+        model=MODEL_SMART,
+        max_tokens=300,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -210,8 +223,17 @@ def format_alert(result: dict) -> str:
     emoji = "🟢" if signal == "BUY" else "🔴"
     caution = "🟡 *CAUTION MODE*\n" if result.get("caution_mode") else ""
 
-    vote = result.get("vote_score", 0)
-    vote_bar = "●" * vote + "○" * (3 - vote)
+    vote        = result.get("vote_score", 0)
+    vote_bar    = "●" * vote + "○" * (3 - vote)
+    vote_detail = result.get("vote_details", {})
+    votes_map   = result.get("votes", {})
+
+    vote_lines = ""
+    for agent, passed in votes_map.items():
+        icon    = "✅" if passed else "❌"
+        reason  = vote_detail.get(agent, "")
+        label   = {"chart": "Chart", "bias": "Bias ", "news": "News "}[agent]
+        vote_lines += f"\n  {icon} {label}: _{reason[:60]}_"
 
     entry = result.get("entry_zone")
     entry_str = f"`{entry[0]} - {entry[1]}`" if entry else "N/A"
@@ -233,7 +255,7 @@ def format_alert(result: dict) -> str:
         f"━━━━━━━━━━━━━━━━━\n"
         f"{caution}"
         f"{emoji} Signal: *{signal}*\n"
-        f"🗳 Vote: `{vote_bar}` {vote}/3\n"
+        f"🗳 Vote: `{vote_bar}` {vote}/3{vote_lines}\n"
         f"{setup_line}"
         f"💰 ราคา: `{result.get('current_price')}`\n"
         f"📍 Entry: {entry_str}\n"

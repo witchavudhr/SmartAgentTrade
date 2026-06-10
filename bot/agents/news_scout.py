@@ -8,7 +8,7 @@ import requests
 import anthropic
 import json
 from datetime import datetime, timedelta
-from config.settings import ANTHROPIC_API_KEY, MODEL_FAST, NEWS_BLOCK_MINUTES
+from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, NEWS_BLOCK_MINUTES
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -136,8 +136,12 @@ def should_block_trade() -> tuple[bool, str]:
     return False, ""
 
 
-def analyze(force: bool = False) -> dict:
-    """วิเคราะห์ข่าววันนี้ — cache 30 นาที"""
+def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
+    """
+    วิเคราะห์ข่าววันนี้ — cache 30 นาที
+    signal_direction: "BUY"/"SELL" จาก Chart Analyst → Sonnet โหวต YES/NO
+    ถ้าไม่มีข่าว → vote YES อัตโนมัติ (rule-based ไม่เรียก Claude)
+    """
     global _cache
 
     if not force and _cache["result"] and _cache["timestamp"]:
@@ -150,31 +154,37 @@ def analyze(force: bool = False) -> dict:
     upcoming = get_upcoming_news(minutes_ahead=240)
     blocked, block_reason = should_block_trade()
 
-    # ให้ Claude วิเคราะห์ผลกระทบ
     if upcoming:
         news_text = json.dumps(upcoming, indent=2, ensure_ascii=False)
-        prompt = f"""คุณคือ News Scout ผู้เชี่ยวชาญข่าวเศรษฐกิจที่กระทบ Gold
+        signal_ctx = f"\nChart Analyst เสนอเข้า: {signal_direction}" if signal_direction else ""
+        prompt = f"""คุณคือ News Scout Agent ผู้เชี่ยวชาญข่าวเศรษฐกิจที่กระทบ Gold
+หน้าที่: วิเคราะห์ข่าวแล้ว VOTE YES/NO ว่าตอนนี้ปลอดภัยพอที่จะเข้า trade หรือไม่
+{signal_ctx}
 
 ข่าวที่จะเกิดใน 4 ชั่วโมงข้างหน้า:
 {news_text}
 
+{"⚠️ มีข่าว High Impact ภายใน " + str(NEWS_BLOCK_MINUTES) + " นาที — block_reason: " + block_reason if blocked else "ไม่มีข่าวที่ block อยู่ในขณะนี้"}
+
 วิเคราะห์:
-1. ข่าวไหนกระทบ Gold มากสุด?
-2. ตลาดน่าจะ react ยังไง (Dollar แข็ง/อ่อน → Gold ลง/ขึ้น)?
-3. ช่วงไหนที่ไม่ควรเทรดเลย?
+1. ข่าวไหนกระทบ Gold มากสุด และเมื่อไหร่?
+2. spread จะกว้าง / ราคาผันผวนมั้ยในช่วงนี้?
+3. ควรรอหลังข่าวผ่านมั้ย?
 
 ตอบเป็น JSON:
 {{
+  "vote": "YES/NO",
+  "vote_reasoning": "เหตุผลที่โหวต 1-2 ประโยค — ระบุว่าข่าวกระทบ timing ยังไง",
   "risk_level": "high/medium/low",
   "safe_to_trade": true/false,
   "block_until": "HH:MM" หรือ null,
   "key_event": "ชื่อข่าวสำคัญสุด" หรือ null,
   "gold_impact": "bullish/bearish/neutral/volatile",
-  "reasoning": "อธิบายสั้นๆ ภาษาไทย"
+  "reasoning": "อธิบาย news context สั้นๆ ภาษาไทย"
 }}"""
 
         response = client.messages.create(
-            model=MODEL_FAST,
+            model=MODEL_SMART,
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -188,8 +198,9 @@ def analyze(force: bool = False) -> dict:
         try:
             result = json.loads(text)
         except json.JSONDecodeError:
-            # Fallback ถ้า Haiku ตอบ JSON ไม่สมบูรณ์
             result = {
+                "vote": "NO" if blocked else "YES",
+                "vote_reasoning": "มีข่าว High Impact — ระวังด้วย" if blocked else "ข่าวยังห่างพอ",
                 "risk_level": "medium",
                 "safe_to_trade": not blocked,
                 "block_until": None,
@@ -198,7 +209,10 @@ def analyze(force: bool = False) -> dict:
                 "reasoning": "มีข่าว High Impact — ระวังด้วย"
             }
     else:
+        # ไม่มีข่าว → vote YES ทันที ไม่ต้องเรียก Claude
         result = {
+            "vote": "YES",
+            "vote_reasoning": "ไม่มีข่าว High Impact ใน 4 ชั่วโมงข้างหน้า — ปลอดภัยเต็มที่",
             "risk_level": "low",
             "safe_to_trade": True,
             "block_until": None,

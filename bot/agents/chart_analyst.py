@@ -185,7 +185,8 @@ Weak Low:   {rev.get('weak_low')} | Weak High: {rev.get('weak_high')}
 EQL: {rev.get('eql_levels')} | EQH: {rev.get('eqh_levels')}
 """
 
-    prompt = f"""คุณคือ Chart Analyst ผู้เชี่ยวชาญ Smart Money Concepts (SMC)
+    prompt = f"""คุณคือ Chart Analyst Agent ผู้เชี่ยวชาญ Smart Money Concepts (SMC)
+หน้าที่: วิเคราะห์ chart แล้ว VOTE YES/NO ว่าควรเข้า trade นี้หรือไม่
 เน้น: หาจุดกลับตัว (Reversal) ที่ราคา sweep liquidity แล้วกลับทิศ
 
 ═══ SMC Analysis: {smc_summary.get('pair')} {smc_summary.get('timeframe')} ═══
@@ -221,6 +222,8 @@ Candle: Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
 
 ตอบ JSON เท่านั้น:
 {{
+  "vote": "YES/NO",
+  "vote_reasoning": "เหตุผลที่โหวต 1-2 ประโยค — ระบุจุดเด่น/ข้อกังวลหลัก",
   "signal": "BUY/SELL/NO_TRADE",
   "confidence": 0-100,
   "entry_zone": [low, high] หรือ null,
