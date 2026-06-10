@@ -3,8 +3,11 @@ import anthropic
 import json
 import pandas as pd
 from datetime import datetime
-from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, TRADING_PAIR
+from pathlib import Path
+from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, MODEL_FAST, TRADING_PAIR
 from agents.smc_engine import SMCEngine, summarize
+
+_CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc = SMCEngine(swing_length=5)
@@ -66,6 +69,73 @@ def has_signal(smc_summary: dict) -> bool:
 
     score = sum([has_sweep, has_ob, has_structure])
     return score >= 2 and bias != "neutral"
+
+
+def confirm_signal(df_slice: pd.DataFrame, signal: dict, h4_bias: str,
+                   bar_time: str, confidence_threshold: int = 60) -> dict:
+    """
+    Claude Haiku lightweight confirmation for backtest.
+    Cache: bot/data/ai_cache.json — deterministic re-runs.
+    Returns: {"confirmed": bool, "confidence": int, "reasoning": str}
+    """
+    cache_key = f"{bar_time}|{signal['signal']}|{signal.get('score', 0)}"
+
+    # ── Load cache ──────────────────────────────────────────────────
+    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cache = {}
+    if _CACHE_PATH.exists():
+        try:
+            cache = json.loads(_CACHE_PATH.read_text())
+        except Exception:
+            cache = {}
+
+    if cache_key in cache:
+        cached = cache[cache_key]
+        confirmed = cached["confidence"] >= confidence_threshold
+        return {"confirmed": confirmed, **cached}
+
+    # ── Build minimal context (last 5 bars) ─────────────────────────
+    last5 = df_slice.tail(5)[["open", "high", "low", "close"]].round(2)
+    bars_str = " | ".join(
+        f"O={r.open} H={r.high} L={r.low} C={r.close}"
+        for _, r in last5.iterrows()
+    )
+
+    reasons_str = ", ".join(signal.get("reasons", [])[:3]) or "-"
+    prompt = f"""You are a Gold (XAUUSD) M5 trade filter. Confirm if this setup is valid.
+
+Setup: {signal['signal']} | Score: {signal.get('score',0)}/10 | RR: {signal.get('rr',0)} | H4: {h4_bias}
+Type: {signal.get('setup_type','?')} | Entry: {signal.get('entry')} | SL: {signal.get('sl')} ({signal.get('sl_pips','?')}p) | TP: {signal.get('tp')}
+Reasons: {reasons_str}
+Last 5 bars: {bars_str}
+
+Reply JSON only: {{"confidence": 0-100, "reasoning": "1-2 sentences max"}}"""
+
+    try:
+        resp = client.messages.create(
+            model=MODEL_FAST,
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = resp.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+        result = json.loads(text)
+        entry = {
+            "confidence": int(result.get("confidence", 0)),
+            "reasoning":  str(result.get("reasoning", ""))[:200],
+        }
+    except Exception as e:
+        entry = {"confidence": 0, "reasoning": f"error: {e}"}
+
+    # ── Save cache ──────────────────────────────────────────────────
+    cache[cache_key] = entry
+    _CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2))
+
+    confirmed = entry["confidence"] >= confidence_threshold
+    return {"confirmed": confirmed, **entry}
 
 
 def analyze(smc_summary: dict = None) -> dict:

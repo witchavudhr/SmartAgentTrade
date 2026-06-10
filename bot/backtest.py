@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from agents.smc_engine import SMCEngine, summarize, detect_reversal, detect_trend_follow, get_session
 from agents.news_calendar import NewsCalendar
 from agents import smc_engine
+from agents.chart_analyst import confirm_signal
 
 smc = SMCEngine(swing_length=5)
 
@@ -336,7 +337,8 @@ def get_h4_bias(df_slice: pd.DataFrame) -> str:
 
 def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
                  session_open_only=True, h4_filter=True, news_filter=True,
-                 max_sl=0, breakeven=False, trail_pips=0):
+                 max_sl=0, breakeven=False, trail_pips=0,
+                 use_ai=False, ai_confidence=60):
     df = download_data(days)
     n  = len(df)
 
@@ -358,6 +360,8 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
 
     trades          = []
     last_signal_bar = -cooldown
+    ai_confirmed    = 0
+    ai_filtered     = 0
 
     mode_str = []
     if session_open_only: mode_str.append("session-open ±30min")
@@ -366,6 +370,7 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
     if max_sl > 0:        mode_str.append(f"max-SL {max_sl}p")
     if trail_pips > 0:   mode_str.append(f"trail@{trail_pips:.0f}p")
     if breakeven:         mode_str.append("breakeven@1R")
+    if use_ai:            mode_str.append(f"🤖 Claude AI ≥{ai_confidence}%")
     print(f"\n🔍 สแกน {n} candles | mode: {', '.join(mode_str) or 'full'}")
     print(f"   min_score={min_score}, min_rr={min_rr}, cooldown={cooldown} bars\n")
 
@@ -440,6 +445,19 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
         if max_sl > 0 and signal.get("sl_pips", 0) > max_sl:
             continue
 
+        # Claude AI confirmation filter
+        if use_ai:
+            ai_result = confirm_signal(
+                df_slice, signal, h4 if h4_filter else "neutral",
+                str(bar_time)[:16], ai_confidence
+            )
+            if not ai_result["confirmed"]:
+                ai_filtered += 1
+                continue
+            ai_confirmed += 1
+            signal["ai_confidence"] = ai_result["confidence"]
+            signal["ai_reasoning"]  = ai_result["reasoning"]
+
         # Simulate trade
         trade = simulate_trade(df, i + 1, signal, max_hold,
                                trail_pips=trail_pips, breakeven=breakeven)
@@ -453,9 +471,10 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
         setup     = signal.get("setup_type", "")
         setup_tag = "🔄REV" if setup == "REVERSAL" else "📈TRD" if setup == "TREND" else "   "
         icon      = "✅" if trade["outcome"] == "win" else "❌" if trade["outcome"] == "loss" else "↔️"
+        ai_tag    = f" 🤖{signal.get('ai_confidence','')}%" if use_ai else ""
         print(
             f"  {icon} [{trade['bar_time']}] {setup_tag} {trade['signal']:4s} H4={trade['h4_bias']:7s} "
-            f"{trade['stars'] or '':<3} score={trade['score']} | "
+            f"{trade['stars'] or '':<3} score={trade['score']}{ai_tag} | "
             f"entry={trade['entry']} → {trade['exit']} | "
             f"{'+' if trade['pnl_pips'] >= 0 else ''}{trade['pnl_pips']}p | "
             f"RR={trade['rr_actual']} | {trade['note'] or ''}"
@@ -464,6 +483,11 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
     if news_filter:
         src = news_cal.source if news_cal else "-"
         print(f"\n📰 News filter blocked {news_blocked} bars (hybrid: {src} + 08:30 ET always)")
+
+    if use_ai:
+        total_ai = ai_confirmed + ai_filtered
+        pct = round(ai_filtered / total_ai * 100) if total_ai > 0 else 0
+        print(f"🤖 Claude AI: {ai_confirmed} confirmed | {ai_filtered} filtered ({pct}% rejection rate)")
 
     return trades
 
@@ -631,6 +655,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-sl",           type=float, default=0,   help="SL สูงสุด (pips) — 0=ไม่กำหนด")
     parser.add_argument("--trail",            type=float, default=0,   help="Trailing stop step (pips) — เลื่อน SL ทุก N pips ที่กำไร (เช่น 1000)")
     parser.add_argument("--breakeven",        action="store_true",     help="เลื่อน SL → entry เมื่อราคาถึง 1:1 RR (legacy)")
+    parser.add_argument("--use-ai",           action="store_true",     help="ใช้ Claude Haiku confirm signal ก่อน simulate")
+    parser.add_argument("--ai-confidence",    type=int,   default=60,  help="Confidence threshold สำหรับ AI filter (default=60)")
     args = parser.parse_args()
 
     session_open_only = not args.no_session_open
@@ -648,6 +674,7 @@ if __name__ == "__main__":
     print(f"  Max SL Cap:          {f'{args.max_sl:.0f} pips' if args.max_sl > 0 else 'OFF (ไม่จำกัด)'}")
     print(f"  Trailing Stop:       {f'ON every {args.trail:.0f}p → BE then lock profit' if args.trail > 0 else 'OFF'}")
     print(f"  Breakeven Stop:      {'ON @ 1:1 RR → SL=entry' if args.breakeven else 'OFF'}")
+    print(f"  Claude AI Filter:    {'ON (Haiku ≥' + str(args.ai_confidence) + '%)' if args.use_ai else 'OFF (rule-only)'}")
     print("=" * 60)
 
     trades = run_backtest(
@@ -662,6 +689,8 @@ if __name__ == "__main__":
         max_sl           = args.max_sl,
         breakeven        = args.breakeven,
         trail_pips       = args.trail,
+        use_ai           = args.use_ai,
+        ai_confidence    = args.ai_confidence,
     )
     print_trade_history(trades)
     print_stats(trades, args.min_score)

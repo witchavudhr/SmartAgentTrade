@@ -12,7 +12,10 @@ from config.settings import (
 )
 from agents import chart_analyst, bias_analyst, news_scout
 from agents import supervisor, risk_manager
-from agents.trade_log import log_trade, format_report
+from agents.trade_log import (
+    log_trade, update_outcome, format_report,
+    get_all_trades, format_trade_list, export_csv, get_trade,
+)
 from agents import paper_trader
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -39,7 +42,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/pause — หยุดสแกนชั่วคราว\n"
         "/resume — เริ่มสแกนใหม่\n\n"
         "📊 *Report & Tools*\n"
-        "/report — สรุป trade จริง\n"
+        "/report — สรุป trade จริง + P&L รายวัน\n"
+        "/trades — ดู trade history ทั้งหมด\n"
+        "/outcome [id] [win/loss/be] [pips] [exit] — บันทึกผลหลังเทรด\n"
+        "/export — ดาวน์โหลด CSV ประวัติ trade\n"
         "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n\n"
         "📝 *Paper Trade (ลงกระดาษ)*\n"
         "/paper buy 4290 sl 4250 tp 4360 — เปิด Long\n"
@@ -283,6 +289,114 @@ async def cmd_pnl(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+async def cmd_trades(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """แสดง trade history ล่าสุด 20 รายการ"""
+    trades = get_all_trades(limit=20)
+    msg    = format_trade_list(trades)
+    # แบ่งข้อความถ้ายาวเกิน 4096 chars (Telegram limit)
+    if len(msg) <= 4096:
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    else:
+        for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
+            await update.message.reply_text(chunk, parse_mode="Markdown")
+
+
+async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /outcome [id] [win/loss/be] [pips] [exit_price] [notes...]
+    ตัวอย่าง:
+      /outcome 5 win 150 3310
+      /outcome 5 loss -80
+      /outcome 5 be 0 3285 SL moved to entry
+    """
+    args = ctx.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "📝 *บันทึกผล Trade*\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "รูปแบบ:\n"
+            "`/outcome [id] [win/loss/be] [pips] [exit_price]`\n\n"
+            "ตัวอย่าง:\n"
+            "`/outcome 5 win 150 3310`\n"
+            "`/outcome 5 loss -80 3270`\n"
+            "`/outcome 5 be 0`\n\n"
+            "ดู trade id ได้จาก /trades หรือ /report",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        trade_id = int(args[0])
+        outcome  = args[1].lower()
+        if outcome not in ("win", "loss", "be"):
+            await update.message.reply_text("❌ outcome ต้องเป็น `win`, `loss`, หรือ `be`", parse_mode="Markdown")
+            return
+
+        pnl_pips    = float(args[2]) if len(args) > 2 else None
+        actual_exit = float(args[3]) if len(args) > 3 else None
+        notes       = " ".join(args[4:]) if len(args) > 4 else None
+
+        # ดึง trade เพื่อคำนวณ duration
+        t = get_trade(trade_id)
+        if not t:
+            await update.message.reply_text(f"❌ ไม่พบ Trade #{trade_id}")
+            return
+
+        duration_min = None
+        if t.get("timestamp"):
+            try:
+                opened = datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S")
+                duration_min = int((datetime.now() - opened).total_seconds() / 60)
+            except Exception:
+                pass
+
+        update_outcome(
+            trade_id     = trade_id,
+            outcome      = outcome,
+            pnl_pips     = pnl_pips,
+            actual_entry = t.get("entry_low"),
+            actual_exit  = actual_exit,
+            duration_min = duration_min,
+            notes        = notes,
+        )
+
+        icon   = "✅" if outcome == "win" else "❌" if outcome == "loss" else "↔️"
+        pips_s = f"{pnl_pips:+.1f}p" if pnl_pips is not None else "-"
+        dur_s  = f"{duration_min} นาที" if duration_min else "-"
+        exit_s = f"`{actual_exit}`" if actual_exit else "-"
+
+        await update.message.reply_text(
+            f"{icon} *Trade #{trade_id} อัพเดทแล้ว*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"Signal: `{t.get('signal')}`  {t.get('stars') or ''}\n"
+            f"Outcome: *{outcome.upper()}*  `{pips_s}`\n"
+            f"Exit Price: {exit_s}\n"
+            f"Duration: {dur_s}\n"
+            + (f"Notes: _{notes}_" if notes else ""),
+            parse_mode="Markdown"
+        )
+
+    except (ValueError, IndexError) as e:
+        await update.message.reply_text(f"❌ รูปแบบไม่ถูกต้อง: {e}\nดูวิธีใช้: `/outcome`", parse_mode="Markdown")
+
+
+async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Export trade history เป็น CSV แล้วส่งไฟล์ใน Telegram"""
+    await update.message.reply_text("📤 กำลัง export CSV...")
+    try:
+        csv_path = export_csv()
+        await update.message.reply_document(
+            document=open(csv_path, "rb"),
+            filename="trades_export.csv",
+            caption=(
+                f"📊 Trade Export — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                f"เปิดด้วย Excel หรือ Google Sheets ได้เลย"
+            )
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Export ไม่ได้: {e}")
+
+
 async def cmd_bias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🌍 กำลังวิเคราะห์ HTF Bias (H1/H4/Daily)...")
     bias = bias_analyst.analyze()
@@ -346,7 +460,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ ไม่มี signal ที่รอ confirm")
         return
 
-    # บันทึกลง SQLite trade log
+    # เพิ่ม session ก่อนบันทึก
+    from agents.smc_engine import get_session
+    sess = get_session()
+    signal["session"] = sess.get("session")
+
     trade_action = "confirmed" if action == "confirm" else "skipped"
     trade_id = log_trade(signal, trade_action)
 
@@ -354,18 +472,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     bot_state["trade_log"].append(log_entry)
     bot_state["pending_signal"] = None
 
+    entry = signal.get("entry_zone") or signal.get("entry")
     if action == "confirm":
         await query.edit_message_text(
-            f"✅ *Confirmed!*\n"
-            f"บันทึก {signal.get('signal')} trade แล้ว\n"
-            f"Entry: `{signal.get('entry_zone')}`\n"
-            f"SL: `{signal.get('stop_loss')}` | TP: `{signal.get('take_profit')}`\n\n"
-            f"โชคดีนะครับ! 🍀",
+            f"✅ *Confirmed — Trade #{trade_id}*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"Signal: *{signal.get('signal')}*  {signal.get('reversal_stars') or ''}\n"
+            f"Entry: `{entry}`\n"
+            f"SL: `{signal.get('stop_loss') or signal.get('sl')}`  "
+            f"TP: `{signal.get('take_profit') or signal.get('tp')}`\n"
+            f"Lot: `{signal.get('lot', '-')}`\n\n"
+            f"🍀 โชคดี! หลังเทรดเสร็จ:\n"
+            f"`/outcome {trade_id} win 150 3310`\n"
+            f"`/outcome {trade_id} loss -80`",
             parse_mode="Markdown"
         )
     else:
         await query.edit_message_text(
-            f"❌ *Skipped*\n"
+            f"⏭ *Skipped — Trade #{trade_id}*\n"
             f"บันทึกว่า Skip {signal.get('signal')} setup แล้ว",
             parse_mode="Markdown"
         )
@@ -430,6 +554,9 @@ def run():
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("trades", cmd_trades))
+    app.add_handler(CommandHandler("outcome", cmd_outcome))
+    app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
     app.add_handler(CommandHandler("news", cmd_news))
