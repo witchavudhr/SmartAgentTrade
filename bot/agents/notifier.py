@@ -17,16 +17,12 @@ from agents.trade_log import (
     get_all_trades, format_trade_list, export_csv, get_trade,
 )
 from agents import paper_trader
+from agents import state_manager
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# State ของ bot
-bot_state = {
-    "is_running": True,
-    "last_scan": None,
-    "pending_signal": None,
-    "trade_log": []
-}
+# โหลด state จาก disk (รองรับ restart / ย้าย session)
+bot_state = state_manager.load()
 
 # ── Commands ──────────────────────────────────────────
 
@@ -62,13 +58,14 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
 
     result = supervisor.run()
-    bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     message = supervisor.format_alert(result)
 
     if result.get("approved"):
-        bot_state["pending_signal"] = result.get("analysis", {})
-        bot_state["pending_signal"]["lot"] = result.get("lot")
-        bot_state["pending_signal"]["risk_pct"] = result.get("risk_pct")
+        pending = result.get("analysis", {})
+        pending["lot"]      = result.get("lot")
+        pending["risk_pct"] = result.get("risk_pct")
+        state_manager.set_field(bot_state, "pending_signal", pending)
 
         keyboard = InlineKeyboardMarkup([
             [
@@ -81,27 +78,23 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message, parse_mode="Markdown")
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    status = "🟢 กำลังทำงาน" if bot_state["is_running"] else "🔴 หยุดอยู่"
-    last = bot_state["last_scan"] or "ยังไม่ได้สแกน"
-    trades = len(bot_state["trade_log"])
-
-    await update.message.reply_text(
-        f"📊 *Status Report*\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"Bot: {status}\n"
-        f"สแกนล่าสุด: `{last}`\n"
-        f"Trade ที่บันทึก: `{trades}` รายการ\n"
-        f"Pair: `{TRADING_PAIR}`",
-        parse_mode="Markdown"
+    from agents.trade_log import get_summary
+    msg    = state_manager.describe(bot_state)
+    s      = get_summary()
+    msg   += (
+        f"\n━━━━━━━━━━━━━━━━━\n"
+        f"📈 Trade Log: W`{s['wins']}` / L`{s['losses']}` / ⏳`{s['pending']}`\n"
+        f"Pair: `{TRADING_PAIR}`"
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_pause(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    bot_state["is_running"] = False
-    await update.message.reply_text("⏸ หยุดสแกนแล้ว พิม /resume เพื่อเริ่มใหม่")
+    state_manager.set_field(bot_state, "is_running", False)
+    await update.message.reply_text("⏸ หยุดสแกนแล้ว — state บันทึกแล้ว\nพิม /resume เพื่อเริ่มใหม่")
 
 async def cmd_resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    bot_state["is_running"] = True
-    await update.message.reply_text("▶️ เริ่มสแกนใหม่แล้ว")
+    state_manager.set_field(bot_state, "is_running", True)
+    await update.message.reply_text("▶️ เริ่มสแกนใหม่แล้ว — state บันทึกแล้ว")
 
 async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     report = format_report()
@@ -468,9 +461,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     trade_action = "confirmed" if action == "confirm" else "skipped"
     trade_id = log_trade(signal, trade_action)
 
-    log_entry = {"trade_id": trade_id, "action": trade_action}
-    bot_state["trade_log"].append(log_entry)
-    bot_state["pending_signal"] = None
+    # clear pending และ save state ทันที
+    state_manager.clear_pending(bot_state)
 
     entry = signal.get("entry_zone") or signal.get("entry")
     if action == "confirm":
@@ -510,12 +502,13 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     result = supervisor.run()
-    bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     if result.get("approved"):
-        bot_state["pending_signal"] = result.get("analysis", {})
-        bot_state["pending_signal"]["lot"] = result.get("lot")
-        bot_state["pending_signal"]["risk_pct"] = result.get("risk_pct")
+        pending = result.get("analysis", {})
+        pending["lot"]      = result.get("lot")
+        pending["risk_pct"] = result.get("risk_pct")
+        state_manager.set_field(bot_state, "pending_signal", pending)
 
         message = supervisor.format_alert(result)
         keyboard = InlineKeyboardMarkup([
