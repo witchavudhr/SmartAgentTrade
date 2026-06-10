@@ -594,6 +594,208 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     }
 
 
+# ─── Trend Follow Detector ───────────────────────────────────────
+
+def detect_trend_follow(df: pd.DataFrame, result: SMCResult, h4_bias: str) -> dict:
+    """
+    หา Trend Continuation setup — เข้าตอนราคา pullback มา OB/FVG แล้ว bounce
+
+    Bullish Trend (h4_bias='bull'):
+      1. ราคา pull back เข้า Bull OB หรือ Bull FVG
+      2. Bull confirmation candle (body ≥ 50%, wick ล่างใหญ่)
+      3. ไม่ใช่ CHoCH Bear (structure ยังเป็น bull)
+      Entry: OB top / FVG midpoint
+      SL: OB bottom / FVG bottom
+      TP: nearest swing high หรือ EQH
+
+    Bearish Trend (h4_bias='bear'):
+      ตรงกันข้าม — pullback เข้า Bear OB / Bear FVG แล้ว reject
+    """
+    if h4_bias not in ("bull", "bear"):
+        return {"trend_signal": None, "trend_score": 0}
+
+    n = len(df)
+    if n < 30:
+        return {"trend_signal": None, "trend_score": 0}
+
+    adv = advanced_signals(df, result)
+    if "error" in adv:
+        return {"trend_signal": None, "trend_score": 0}
+
+    last          = df.iloc[-1]
+    current_price = last["close"]
+    atr           = adv.get("atr", 1.0)
+
+    score   = 0
+    reasons = []
+
+    if h4_bias == "bull":
+        # ── Bullish Trend Follow ────────────────────────────────
+        direction = "BUY"
+
+        # 1. ราคาอยู่ใน Bull OB zone
+        in_ob = False
+        ob_top, ob_bot = None, None
+        if result.active_ob and result.active_ob.kind == "bullish":
+            ob = result.active_ob
+            if ob.bottom <= current_price <= ob.top + atr * 0.3:
+                score  += 3
+                in_ob   = True
+                ob_top  = ob.top
+                ob_bot  = ob.bottom
+                reasons.append(f"In Bull OB ({ob.bottom:.1f}-{ob.top:.1f})")
+
+        # 2. ราคาอยู่ใน Bull FVG
+        in_fvg = False
+        if result.fvgs:
+            bull_fvgs = [f for f in result.fvgs if f.kind == "bullish" and not f.filled]
+            for fvg in bull_fvgs[-2:]:
+                if fvg.bottom <= current_price <= fvg.top + atr * 0.2:
+                    score  += 2 if not in_ob else 1
+                    in_fvg  = True
+                    reasons.append(f"In Bull FVG ({fvg.bottom:.1f}-{fvg.top:.1f})")
+                    break
+
+        # ถ้าไม่มี OB/FVG เลย → ไม่ใช่ trend follow setup
+        if not in_ob and not in_fvg:
+            return {"trend_signal": None, "trend_score": 0}
+
+        # 3. Confirmation candle
+        if adv.get("bull_candle"):
+            score  += 2
+            reasons.append("Bull Confirm Candle")
+        elif adv.get("bull_grab"):
+            score  += 1
+            reasons.append("Bull Grab")
+
+        # 4. Structure ยังเป็น bull (ไม่มี CHoCH bear ใหม่)
+        if not adv.get("recent_choch_bear"):
+            score  += 1
+            reasons.append("Structure Bull")
+
+        # 5. H1 aligned
+        if adv.get("h1_bull"):
+            score  += 1
+            reasons.append("H1 Bull")
+
+        # 6. ไม่มี bear momentum
+        if not adv.get("momentum_bear"):
+            score  += 1
+            reasons.append("No Bear Momentum")
+
+        # ── SL / TP ────────────────────────────────────────────
+        if ob_bot:
+            sl = round(ob_bot - atr * 0.15, 2)
+        else:
+            sl = round(current_price - atr * 1.0, 2)
+
+        sl_distance = current_price - sl
+
+        # TP: nearest swing high หรือ EQH ที่อยู่เหนือ entry
+        eqh = sorted(result.equal_highs, reverse=True)
+        tp_candidates = []
+        if result.swing_highs:
+            above = [s.price for s in result.swing_highs if s.price > current_price + atr * 0.5]
+            if above:
+                tp_candidates.append(min(above))
+        if eqh:
+            above_eq = [lv for lv in eqh if lv > current_price + atr * 0.5]
+            if above_eq:
+                tp_candidates.append(min(above_eq))
+        min_tp = current_price + sl_distance * 2.0
+        tp = round(max(min(tp_candidates), min_tp) if tp_candidates else min_tp, 2)
+
+    else:
+        # ── Bearish Trend Follow ────────────────────────────────
+        direction = "SELL"
+
+        in_ob = False
+        ob_top, ob_bot = None, None
+        if result.active_ob and result.active_ob.kind == "bearish":
+            ob = result.active_ob
+            if ob.bottom - atr * 0.3 <= current_price <= ob.top:
+                score += 3
+                in_ob  = True
+                ob_top = ob.top
+                ob_bot = ob.bottom
+                reasons.append(f"In Bear OB ({ob.bottom:.1f}-{ob.top:.1f})")
+
+        in_fvg = False
+        if result.fvgs:
+            bear_fvgs = [f for f in result.fvgs if f.kind == "bearish" and not f.filled]
+            for fvg in bear_fvgs[-2:]:
+                if fvg.bottom - atr * 0.2 <= current_price <= fvg.top:
+                    score  += 2 if not in_ob else 1
+                    in_fvg  = True
+                    reasons.append(f"In Bear FVG ({fvg.bottom:.1f}-{fvg.top:.1f})")
+                    break
+
+        if not in_ob and not in_fvg:
+            return {"trend_signal": None, "trend_score": 0}
+
+        if adv.get("bear_candle"):
+            score  += 2
+            reasons.append("Bear Confirm Candle")
+        elif adv.get("bear_grab"):
+            score  += 1
+            reasons.append("Bear Grab")
+
+        if not adv.get("recent_choch_bull"):
+            score  += 1
+            reasons.append("Structure Bear")
+
+        if not adv.get("h1_bull"):
+            score  += 1
+            reasons.append("H1 Bear")
+
+        if not adv.get("momentum_bull"):
+            score  += 1
+            reasons.append("No Bull Momentum")
+
+        if ob_top:
+            sl = round(ob_top + atr * 0.15, 2)
+        else:
+            sl = round(current_price + atr * 1.0, 2)
+
+        sl_distance = sl - current_price
+
+        eql = sorted(result.equal_lows)
+        tp_candidates = []
+        if result.swing_lows:
+            below = [s.price for s in result.swing_lows if s.price < current_price - atr * 0.5]
+            if below:
+                tp_candidates.append(max(below))
+        if eql:
+            below_eq = [lv for lv in eql if lv < current_price - atr * 0.5]
+            if below_eq:
+                tp_candidates.append(max(below_eq))
+        min_tp = current_price - sl_distance * 2.0
+        tp = round(min(max(tp_candidates), min_tp) if tp_candidates else min_tp, 2)
+
+    if score < 4:
+        return {"trend_signal": None, "trend_score": score}
+
+    sl_pips = round(abs(current_price - sl) * 10, 1)
+    tp_pips = round(abs(current_price - tp) * 10, 1)
+    rr      = round(tp_pips / sl_pips, 2) if sl_pips > 0 else 0
+
+    stars = "★★★" if score >= 7 else "★★" if score >= 5 else "★"
+
+    return {
+        "trend_signal":  direction,
+        "trend_score":   score,
+        "trend_stars":   stars,
+        "trend_reasons": reasons,
+        "h4_bias":       h4_bias,
+        "stop_loss":     sl,
+        "take_profit":   tp,
+        "sl_pips":       sl_pips,
+        "tp_pips":       tp_pips,
+        "rr":            rr,
+        "setup_type":    "TREND_FOLLOW",
+    }
+
+
 # ─── Reversal Detector ───────────────────────────────────────────
 
 def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
@@ -759,19 +961,35 @@ def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
             entry_low  = round(current_price - atr * 0.3, 2)
             entry_high = round(current_price + atr * 0.3, 2)
 
-        # SL: ใต้ sweep low หรือ weak low
-        sl = round(min(
-            current_price - atr * 1.5,
-            (weak_low - atr * 0.2) if weak_low else current_price - atr * 2
-        ), 2)
+        # SL: ใต้ swing low ล่าสุด (15 bars) + buffer เล็กน้อย
+        recent_lows = [s.price for s in result.swing_lows[-5:]
+                       if (n - 1 - s.index) <= 15] if result.swing_lows else []
+        if recent_lows:
+            nearest_sl = min(recent_lows)
+            sl_dist    = current_price - nearest_sl
+            # ถ้า swing low ไกลเกิน ATR×2.5 ใช้ ATR×1.0 แทน
+            sl = round(current_price - min(sl_dist + atr * 0.1, atr * 2.5), 2)
+        else:
+            sl = round(current_price - atr * 1.0, 2)
 
-        # TP: swing high ล่าสุด หรือ EQH
+        sl_distance = current_price - sl
+
+        # TP: หา swing high ที่ใกล้ที่สุดที่อยู่ เหนือ entry (ไม่ใช่ max ทั้งหมด)
         tp_candidates = []
         if result.swing_highs:
-            tp_candidates.append(max(s.price for s in result.swing_highs[-5:]))
+            above = [s.price for s in result.swing_highs if s.price > current_price + atr * 0.5]
+            if above:
+                tp_candidates.append(min(above))   # nearest swing high above entry
         if eqh_levels:
-            tp_candidates.append(eqh_levels[0])
-        tp = round(max(tp_candidates) if tp_candidates else current_price + atr * 3, 2)
+            above_eq = [lv for lv in eqh_levels if lv > current_price + atr * 0.5]
+            if above_eq:
+                tp_candidates.append(min(above_eq))
+        # TP ต้องให้ RR ≥ 2.0 เสมอ
+        min_tp = current_price + sl_distance * 2.0
+        if tp_candidates:
+            tp = round(max(min(tp_candidates), min_tp), 2)  # ใกล้ที่สุด แต่ไม่ต่ำกว่า 2:1
+        else:
+            tp = round(current_price + sl_distance * 2.0, 2)  # fallback 2:1
 
     elif bear_score >= 3 and bear_score > bull_score:
         reversal_signal  = "SELL"
@@ -787,17 +1005,33 @@ def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
             entry_low  = round(current_price - atr * 0.3, 2)
             entry_high = round(current_price + atr * 0.3, 2)
 
-        sl = round(max(
-            current_price + atr * 1.5,
-            (weak_high + atr * 0.2) if weak_high else current_price + atr * 2
-        ), 2)
+        # SL: เหนือ swing high ล่าสุด (15 bars) + buffer
+        recent_highs = [s.price for s in result.swing_highs[-5:]
+                        if (n - 1 - s.index) <= 15] if result.swing_highs else []
+        if recent_highs:
+            nearest_sl = max(recent_highs)
+            sl_dist    = nearest_sl - current_price
+            sl = round(current_price + min(sl_dist + atr * 0.1, atr * 2.5), 2)
+        else:
+            sl = round(current_price + atr * 1.0, 2)
 
+        sl_distance = sl - current_price
+
+        # TP: หา swing low ที่ใกล้ที่สุดที่อยู่ ใต้ entry
         tp_candidates = []
         if result.swing_lows:
-            tp_candidates.append(min(s.price for s in result.swing_lows[-5:]))
+            below = [s.price for s in result.swing_lows if s.price < current_price - atr * 0.5]
+            if below:
+                tp_candidates.append(max(below))   # nearest swing low below entry
         if eql_levels:
-            tp_candidates.append(eql_levels[-1])
-        tp = round(min(tp_candidates) if tp_candidates else current_price - atr * 3, 2)
+            below_eq = [lv for lv in eql_levels if lv < current_price - atr * 0.5]
+            if below_eq:
+                tp_candidates.append(max(below_eq))
+        min_tp = current_price - sl_distance * 2.0
+        if tp_candidates:
+            tp = round(min(max(tp_candidates), min_tp), 2)
+        else:
+            tp = round(current_price - sl_distance * 2.0, 2)
 
     else:
         return {

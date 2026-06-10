@@ -449,10 +449,14 @@ def run():
     thai_tz = pytz.timezone("Asia/Bangkok")
 
     session_times = [
-        (dtime(6, 45, tzinfo=thai_tz),  "🌏 Asian Close"),
+        (dtime(1,  0,  tzinfo=thai_tz), "🌙 Late NY Afternoon"),   # 18:00 UTC / 14:00 EDT
+        (dtime(3,  0,  tzinfo=thai_tz), "🌙 NY Close Momentum"),   # 20:00 UTC / 16:00 EDT
+        (dtime(7, 15, tzinfo=thai_tz),  "🇯🇵 Tokyo Open"),
+        # Tokyo Mid (10:00-12:00 Thai) ทดสอบแล้วไม่มี edge แม้ score≥7
         (dtime(13, 45, tzinfo=thai_tz), "🇬🇧 London Open"),
         (dtime(15, 45, tzinfo=thai_tz), "🇬🇧 London Mid"),
-        (dtime(18, 45, tzinfo=thai_tz), "🇺🇸 NY Pre-market"),
+        # 20:15 Thai = 09:15 ET — ช่วง NY Pre-Open หลัง spread นิ่ง
+        (dtime(20, 15, tzinfo=thai_tz), "🇺🇸 NY Pre-Open"),
         (dtime(22, 45, tzinfo=thai_tz), "🇺🇸 NY Peak"),
     ]
 

@@ -17,19 +17,22 @@ input ulong  InpMagicNumber = 0;  // Magic Number (0 = all positions)
 //--- Panel layout (X, Y เป็น global เพื่อให้ drag ย้ายได้)
 int    PANEL_X = 15;
 int    PANEL_Y = 32;
-#define PANEL_W      340
-#define PANEL_ROWS   15
-#define ROW_H        26
-#define FEAT_W       108   // feature label column width
-#define INPUT_W      182   // input area width
-#define TOG_W        46    // toggle button width
-#define MINI_E       56    // mini edit box width
-#define FONT_SIZE    9
-#define FONT_SMALL   8
+#define PANEL_W      400   // wider panel for Windows font rendering
+#define PANEL_ROWS   16
+#define ROW_H        28
+#define FEAT_W       132   // wider label column — fits "TRAILING (stairs)" on Windows
+#define INPUT_W      202   // input area width (unchanged)
+#define TOG_W        48    // toggle button width
+#define MINI_E       58    // mini edit box width
+#define FONT_SIZE    10
+#define FONT_SMALL   9
 #define PREFIX       "SPC_"
 #define CORNER       CORNER_LEFT_LOWER
-#define INPUT_AREA_X (PANEL_X+FEAT_W)           // 123 — where input area starts
-#define TOGGLE_X     (PANEL_X+FEAT_W+INPUT_W)   // 305 — where toggle button sits
+#define INPUT_AREA_X (PANEL_X+FEAT_W)           // start of input area
+#define TOGGLE_X     (PANEL_X+FEAT_W+INPUT_W)   // start of toggle button
+// Z-order: panel objects always above chart lines (indicator lines default to 0)
+#define PANEL_Z      100   // backgrounds + labels
+#define PANEL_Z_BTN  200   // interactive: buttons, edits
 
 //--- ── Section 1: Auto TP ─────────────────────────────────────────
 bool   g_AutoSetTP         = false;
@@ -55,8 +58,17 @@ double g_ProfitArmAt       = 200.0;  // เริ่ม protect เมื่อ�
 double g_ProfitFloor       = 0.0;    // ถ้าหล่นมาถึงนี้หลัง arm แล้ว → close all
 double g_PeakProfit        = 0.0;    // high water mark
 
+//--- ── Section 3d: Protect Profit (one-shot total BE lock) ────────
+// เมื่อ total profit รวมทุกไม้ ถึง threshold$ ครั้งแรก
+// → ตั้ง SL ทุกไม้ที่ open price (breakeven) ทันที
+// → ป้องกัน profit ไหลกลับเป็นขาดทุน
+bool   g_EnableProtectProfit    = false;
+double g_ProtectProfitThreshold = 10.0;   // trigger ที่ total profit >= $X
+bool   g_ProtectProfitTriggered = false;  // state: triggered แล้ว (reset เมื่อ toggle OFF)
+
 //--- ── Section 4: Keep Best N Positions ───────────────────────────
 bool   g_EnableKeepBest    = false;
+double g_KeepBestMinProfit = 0.0;  // ปิด worst ก็ต่อเมื่อ best N กำไรรวม >= X$ (0=ไม่เช็ค)
 int    g_KeepBestN         = 2;
 
 //--- ── Section 4c: Pair Close ─────────────────────────────────────
@@ -130,6 +142,9 @@ ulong  g_keepWorstTickets[];   // tickets ของ worst positions ที่ร
 bool   g_keepBestPending    = false;  // true = กำลังรอ worst positions ปิด
 int    g_keepBestTotalCount = 0;      // จำนวน positions ทั้งหมดตอนที่ pending set (ไว้ detect ไม้ใหม่)
 
+//--- Position count tracking (recalc trigger)
+int    g_lastPositionCount  = -1;     // -1 = ยังไม่เคย init
+
 //--- Close All confirm state
 bool     g_closeAllArmed    = false;
 datetime g_closeAllArmedAt  = 0;
@@ -200,12 +215,37 @@ void OnTick()
    //--- DCA ทำงานเป็นอิสระ (ไม่ต้องรอ KeepBest pending)
    if(g_EnableDCA) CheckDCA();
 
+   //--- ตรวจจำนวน positions: ถ้าเปลี่ยน → force recalculate pair/keep features
+   int curPosCount = PositionsTotal();
+   bool posCountChanged = (curPosCount != g_lastPositionCount) && (g_lastPositionCount >= 0);
+   if(posCountChanged)
+   {
+      // KeepBest pending + จำนวนไม้เปลี่ยน → reset ให้ recalculate ใหม่
+      if(g_EnableKeepBest && g_keepBestPending)
+      {
+         Print("KeepBest | Position count changed (", g_lastPositionCount, "→", curPosCount, ") → reset pending, recalculating");
+         g_keepBestPending    = false;
+         g_keepBestTotalCount = 0;
+         g_keepBestBeTP       = 0;
+         g_keepBestNetLots    = 0;
+         ArrayResize(g_keepWorstTickets, 0);
+         ClearTPAll();
+      }
+      // PairClose/PairGuard: clear TPs เดิมออกก่อน → ให้ recalculate ใหม่ทันที tick นี้
+      if(g_EnablePairClose || g_EnablePairGuard)
+      {
+         Print("PairFeature | Position count changed (", g_lastPositionCount, "→", curPosCount, ") → clearing TPs, recalculating");
+         ClearTPAll();
+      }
+   }
+   g_lastPositionCount = curPosCount;
+
    //--- KeepBest ทำงานก่อนเสมอ
    if(g_EnableKeepBest)
    {
       CheckKeepBest();
 
-      //--- Monitor: ถ้าราคาถึง beTP → close worst positions at market
+      //--- Backup monitor: ถ้า TP set fail → close at market เมื่อราคาถึง beTP
       if(g_keepBestPending && g_keepBestBeTP > 0)
       {
          string s   = Symbol();
@@ -215,31 +255,22 @@ void OnTick()
                  || (g_keepBestNetLots < 0 && ask <= g_keepBestBeTP);
          if(hit)
          {
-            Print("KeepBest | beTP=", g_keepBestBeTP, " reached → closing worst at market");
+            Print("KeepBest | beTP reached → closing worst at market (backup)");
             for(int k=ArraySize(g_keepWorstTickets)-1; k>=0; k--)
                if(posInfo.SelectByTicket(g_keepWorstTickets[k]))
                   trade.PositionClose(g_keepWorstTickets[k]);
          }
       }
 
-      //--- ถ้ายังมี worst positions ค้างอยู่ → block feature อื่น แต่ยัง run ProfitTarget สำหรับ best N
+      //--- ถ้า pending + worst ยังค้างอยู่ → block features อื่น
       if(g_keepBestPending && WorstPositionsStillOpen())
       {
          UpdateKeepBestStatus();
-         if(g_EnableProfitTarget) ApplyProfitTargetTP();  // self-filters to best N only
-         if(g_EnableProfitTrail)  CheckProfitTrail();     // ทำงานตลอด ไม่รอ pending
+         if(g_EnableProfitTarget) ApplyProfitTargetTP();
+         if(g_EnableProfitTrail)  CheckProfitTrail();
+         if(g_EnablePosGuard && g_PosGuardTrigger > 0)
+            CheckPerPosGuard();
          return;
-      }
-
-      //--- worst positions ปิดหมดแล้ว → reset flag + BE tracking
-      if(g_keepBestPending)
-      {
-         g_keepBestPending    = false;
-         g_keepBestTotalCount = 0;
-         ArrayResize(g_beSetTickets, 0);   // ให้ combined BE คำนวณใหม่สำหรับ N ที่เหลือ
-         ArrayResize(g_trailTickets, 0);   // reset trailing ด้วย (เริ่มนับใหม่จาก BE)
-         ArrayResize(g_trailHighTicks, 0);
-         Print("KeepBest: all worst positions closed → activating other features");
       }
    }
 
@@ -258,10 +289,11 @@ void OnTick()
    //--- ใช้ ProfitTarget เป็นตัวจัดการ TP เพียงตัวเดียว (ปิด AutoTP)
    if(g_EnableProfitTarget) ApplyProfitTargetTP();
    if(g_EnablePartial)       CheckPartialClose();
-   if(g_EnableTotalSL)       ApplyTotalSL();
-   if(g_EnableProfitTrail)   CheckProfitTrail();
-   if(g_EnableBreakeven)     CheckBreakeven();
-   if(g_EnableTrailing)      CheckTrailingStop();
+   if(g_EnableTotalSL)         ApplyTotalSL();
+   if(g_EnableProfitTrail)     CheckProfitTrail();
+   if(g_EnableProtectProfit)   CheckProtectProfit();
+   if(g_EnableBreakeven)       CheckBreakeven();
+   if(g_EnableTrailing)        CheckTrailingStop();
 }
 
 //+------------------------------------------------------------------+
@@ -474,6 +506,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
                                             if(!g_EnableBreakeven) { ClearSLTickets(g_beSetTickets); ArrayResize(g_beSetTickets,0); } }
       if(sparam == PREFIX+"TOG_TRAIL")    { g_EnableTrailing     = !g_EnableTrailing;     RefreshToggle(sparam, g_EnableTrailing);
                                             if(!g_EnableTrailing) { ClearSLTickets(g_trailTickets); ArrayResize(g_trailTickets,0); ArrayResize(g_trailHighTicks,0); } }
+      if(sparam == PREFIX+"TOG_PROTPFT")
+      {
+         g_EnableProtectProfit = !g_EnableProtectProfit;
+         RefreshToggle(sparam, g_EnableProtectProfit);
+         g_ProtectProfitTriggered = false;  // reset arm state ทุกครั้งที่ toggle
+      }
       if(sparam == PREFIX+"TOG_DCA")
       {
          g_EnableDCA = !g_EnableDCA;
@@ -559,13 +597,28 @@ void CheckPartialClose()
 
    //--- หา refPrice: ราคาปิดครั้งล่าสุด (combined), ถ้ายังไม่เคย → ใช้ bePrice
    //--- ใช้ ticket = 0 เป็น slot global
+   double triggerD = g_PartialTriggerTicks * tickSize;
    double refPrice = bePrice;
    int    globalIdx = -1;
    for(int k=0; k<ArraySize(g_partialTrackTickets); k++)
-      if(g_partialTrackTickets[k]==0){ globalIdx=k; refPrice=g_partialLastPrice[k]; break; }
+   {
+      if(g_partialTrackTickets[k]!=0) continue;
+      globalIdx = k;
+      double stored = g_partialLastPrice[k];
+      //--- sanity: ถ้า stored ไกลจาก cur เกิน 3 trigger → stale (จาก trade เก่า) → reset
+      bool stale = (netLots > 0 && stored > cur + 3.0*triggerD)
+                || (netLots < 0 && stored < cur - 3.0*triggerD);
+      if(stale)
+      {
+         g_partialLastPrice[k] = bePrice;   // reset slot
+         Print("PartialClose: stale refPrice=", stored, " → reset to bePrice=", bePrice);
+      }
+      else
+         refPrice = stored;
+      break;
+   }
 
    //--- trigger: ราคาวิ่งเพิ่มอีก triggerTicks จาก refPrice (ทิศ net)
-   double triggerD = g_PartialTriggerTicks * tickSize;
    bool   hit = (netLots > 0 && cur >= refPrice + triggerD)
              || (netLots < 0 && cur <= refPrice - triggerD);
    if(!hit) return;
@@ -913,37 +966,53 @@ void CheckPairGuard()
       count++;
    }
 
-   int unprotected=count-g_KeepBestN;
-   if(unprotected<=0) return;
+   if(count < 2) return;
+   int keepN = MathMax(0, g_KeepBestN);
+   if(keepN > 0 && count <= keepN) return;  // เหลือ ≤ N แล้ว — หยุด
 
-   int sortIdx[]; SortByProfit(profits,sortIdx,count);
-   // sortIdx[0..unprotected-1]  = unprotected (worst first)
-   // sortIdx[unprotected..count-1] = protected best N (untouched)
+   //--- sort worst→best by open price
+   double netDir=0;
+   for(int j=0;j<count;j++) netDir+=(types[j]==POSITION_TYPE_BUY?lots[j]:-lots[j]);
+   bool isBuyNet = (netDir >= 0);
+   double dirSign = isBuyNet ? -1.0 : 1.0;
+   double sortKey[]; ArrayResize(sortKey,count);
+   for(int j=0;j<count;j++) sortKey[j]=dirSign*opens[j];
+   int sortIdx[]; SortByProfit(sortKey,sortIdx,count);
+   // sortIdx[0]=worst ... sortIdx[count-1]=best
 
    double bid=SymbolInfoDouble(sym,SYMBOL_BID), ask=SymbolInfoDouble(sym,SYMBOL_ASK);
-   int numPairs=unprotected/2;
+
+   // ── excess = ไม้ที่เกิน N (worst สุด) ── protected = keepN ตัวที่ดีที่สุด (ท้าย)
+   // จับคู่เฉพาะใน excess เท่านั้น: worst[p] ↔ best-of-excess[p]
+   // → ทั้งคู่ปิดพร้อมกัน ได้กำไรรวม ≥ tgt$ ทั้งคู่บวกแน่นอน
+   int excess   = count - keepN;          // จำนวนไม้ที่ต้องปิด
+   int numPairs = excess / 2;
 
    for(int p=0;p<numPairs;p++)
    {
-      int iA=sortIdx[p],              // p-th worst of unprotected
-          iB=sortIdx[unprotected-1-p]; // p-th best of unprotected
+      int iA = sortIdx[p];              // p-th worst ใน excess
+      int iB = sortIdx[excess-1-p];     // p-th best ใน excess (mirror)
       double tp; bool ok=PairTP(iA,iB,tickets,lots,opens,types,profits,g_PairGuardTarget,vpp,digits,bid,ask,tp);
 
       if(!ok)
-      {  if(tp==-1){ trade.PositionClose(tickets[iA]); trade.PositionClose(tickets[iB]);
-                     Print("PairGuard | Pair[",p,"] market close"); }
+      {  if(tp==-1){
+            trade.PositionClose(tickets[iA]);
+            trade.PositionClose(tickets[iB]);
+            Print("PairGuard | Pair[",p,"] past target → market close both");
+         }
          continue;
       }
-      int pair[2]={iA,iB};
-      for(int k=0;k<2;k++)
-      {
-         if(!posInfo.SelectByTicket(tickets[pair[k]])) continue;
-         if(MathAbs(posInfo.TakeProfit()-tp)>point*2)
-            if(trade.PositionModify(tickets[pair[k]],sls[pair[k]],tp))
-               Print("PairGuard | Pair[",p,"] Ticket:",tickets[pair[k]]," TP:",tp," tgt:$",g_PairGuardTarget);
-      }
+
+      //--- ตั้ง TP ทั้งสองตัวให้ปิดพร้อมกัน → combined = tgt$ (เหมือน PairClose)
+      //--- P_worst อาจปิดขาดทุนส่วนตัวได้ถ้า lot ไม่เท่ากัน แต่ combined = tgt$ เสมอ
+      if(posInfo.SelectByTicket(tickets[iA]) && MathAbs(posInfo.TakeProfit()-tp)>point*2)
+         if(trade.PositionModify(tickets[iA],sls[iA],tp))
+            Print("PairGuard | Pair[",p,"] A:",tickets[iA]," TP:",NormalizeDouble(tp,digits));
+      if(posInfo.SelectByTicket(tickets[iB]) && MathAbs(posInfo.TakeProfit()-tp)>point*2)
+         if(trade.PositionModify(tickets[iB],sls[iB],tp))
+            Print("PairGuard | Pair[",p,"] B:",tickets[iB]," TP:",NormalizeDouble(tp,digits));
    }
-   //--- ไม้ odd: ไม่ set TP ที่นี่ → ให้ ApplyProfitTargetTP จัดการแบบ shared TP แทน
+   //--- odd excess (excess คี่): sortIdx[numPairs] — ไม้กลาง รอคู่ถัดไป ไม่ set TP
 }
 
 //+------------------------------------------------------------------+
@@ -1097,7 +1166,7 @@ void ApplyPosTargetTP()
    datetime barTime = iTime(sym, PERIOD_CURRENT, 0);
    int      period  = PeriodSeconds(PERIOD_CURRENT);
    datetime lineEnd = (datetime)((long)barTime + (long)period * 8);
-   DrawFTLine(PREFIX+"FT_PTGT", barTime, lineEnd, targetTP, C'255,200,60', STYLE_DASHDOT,
+   DrawFTLine(PREFIX+"FT_PTGT", barTime, lineEnd, targetTP, clrWhite, STYLE_SOLID,
               StringFormat(" PosTarget %d pos @ $%.0f → TP %s",
                            n, g_PosTargetDollar, DoubleToString(targetTP, digits)));
 
@@ -1120,49 +1189,73 @@ void ApplyPosTargetTP()
 //+------------------------------------------------------------------+
 void CheckKeepBest()
 {
-   string sym       = Symbol();
-   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   int    digits    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
-   if(tickSize==0 || tickValue==0) return;
-   double vpp = tickValue / tickSize;
+   string sym = Symbol();
+   if(SymbolInfoDouble(sym,SYMBOL_TRADE_TICK_SIZE)==0) return;
 
-   //--- KeepBest OFF = keep all → ปล่อยทำงานปกติ (handled in OnTick)
-
-   //--- ถ้า pending อยู่แล้ว → ตรวจว่ามีไม้ใหม่เปิดมาไหม
+   //--- ถ้า pending อยู่ → ตรวจว่า worst positions ปิดหมดยัง
    if(g_keepBestPending)
    {
-      //--- นับ positions ปัจจุบัน
-      int curCount = 0;
-      for(int i=PositionsTotal()-1; i>=0; i--)
+      // ไม้เปลี่ยน (เพิ่มหรือออกแบบไม่คาดคิด) → reset และ recalculate
+      int nowCount = PositionsTotal();
+      if(nowCount != g_keepBestTotalCount)
       {
-         if(!posInfo.SelectByIndex(i)) continue;
-         if(posInfo.Symbol()!=sym) continue;
-         if(InpMagicNumber!=0 && posInfo.Magic()!=InpMagicNumber) continue;
-         curCount++;
+         Print("KeepBest | Count mismatch (expected:", g_keepBestTotalCount, " got:", nowCount, ") → reset pending");
+         g_keepBestPending = false; g_keepBestTotalCount = 0;
+         g_keepBestBeTP = 0; g_keepBestNetLots = 0;
+         ArrayResize(g_keepWorstTickets, 0);
+         // fall through → recalculate
       }
-      //--- ถ้า count ไม่เปลี่ยน → รอต่อ
-      if(curCount == g_keepBestTotalCount) return;
-      //--- count เปลี่ยน (เพิ่มหรือลด) → reset แล้ว recalculate
-      Print("KeepBest: position count changed (", g_keepBestTotalCount, " → ", curCount, ") → recalculating");
-      g_keepBestPending = false;
+      else if(WorstPositionsStillOpen())
+      {
+         if(g_keepBestBeTP > 0)
+         {
+            //--- beTP mode: retry TP set สำหรับไม้ที่ยังไม่มี TP (เผื่อ broker reject)
+            string s2  = Symbol();
+            double pt2 = SymbolInfoDouble(s2, SYMBOL_POINT);
+            double bid2= SymbolInfoDouble(s2, SYMBOL_BID);
+            double ask2= SymbolInfoDouble(s2, SYMBOL_ASK);
+            long   lvl = SymbolInfoInteger(s2, SYMBOL_TRADE_STOPS_LEVEL);
+            double minD= lvl * pt2;
+            for(int k=0; k<ArraySize(g_keepWorstTickets); k++)
+            {
+               if(!posInfo.SelectByTicket(g_keepWorstTickets[k])) continue;
+               if(MathAbs(posInfo.TakeProfit()-g_keepBestBeTP) <= pt2*2) continue;
+               bool isBuy = (posInfo.PositionType()==POSITION_TYPE_BUY);
+               bool valid = isBuy ? (g_keepBestBeTP>ask2+minD) : (g_keepBestBeTP<bid2-minD);
+               if(valid)
+                  trade.PositionModify(g_keepWorstTickets[k], posInfo.StopLoss(), g_keepBestBeTP);
+            }
+         }
+         else
+         {
+            //--- min$ market mode: retry close ถ้ายังค้างอยู่
+            for(int k=0; k<ArraySize(g_keepWorstTickets); k++)
+               if(posInfo.SelectByTicket(g_keepWorstTickets[k]))
+                  trade.PositionClose(g_keepWorstTickets[k]);
+         }
+         return;
+      }
+      //--- worst ปิดหมดแล้ว → reset + recalculate
+      Print("KeepBest: worst positions closed → rechecking");
+      g_keepBestPending    = false;
+      g_keepBestBeTP       = 0;
+      g_keepBestNetLots    = 0;
       g_keepBestTotalCount = 0;
       ArrayResize(g_keepWorstTickets, 0);
       ArrayResize(g_beSetTickets, 0);
-      //--- fall through → recalculate below
+      ArrayResize(g_trailTickets, 0);
+      ArrayResize(g_trailHighTicks, 0);
+      // fall through → recalculate
    }
 
-   //--- เก็บข้อมูลทุก position
-   ulong  tickets[]; double lots[]; double opens[]; int types[];
-   double sls[];     double profits[];
+   //--- เก็บ positions
+   ulong tickets[]; double lots[],opens[],sls[],profits[]; int types[];
    int count = 0;
-
-   for(int i = PositionsTotal()-1; i >= 0; i--)
+   for(int i=PositionsTotal()-1; i>=0; i--)
    {
       if(!posInfo.SelectByIndex(i)) continue;
-      if(posInfo.Symbol() != sym) continue;
-      if(InpMagicNumber != 0 && posInfo.Magic() != InpMagicNumber) continue;
+      if(posInfo.Symbol()!=sym) continue;
+      if(InpMagicNumber!=0 && posInfo.Magic()!=InpMagicNumber) continue;
       ArrayResize(tickets,count+1); ArrayResize(lots,count+1);
       ArrayResize(opens,count+1);   ArrayResize(types,count+1);
       ArrayResize(sls,count+1);     ArrayResize(profits,count+1);
@@ -1171,131 +1264,103 @@ void CheckKeepBest()
       sls[count]=posInfo.StopLoss(); profits[count]=posInfo.Profit()+posInfo.Swap();
       count++;
    }
-   if(count == 0) return;
+   if(count==0) return;
 
    int keepN  = MathMin(g_KeepBestN, count);
    int closeN = count - keepN;
-   if(closeN == 0) return;
+   if(closeN==0) return;
 
-   //--- Sort ascending: sortIdx[0]=worst, sortIdx[last]=best
-   int sortIdx[];
-   ArrayResize(sortIdx, count);
+   //--- Sort ascending: sortIdx[0]=worst (ต่ำสุด), sortIdx[last]=best
+   int sortIdx[]; ArrayResize(sortIdx, count);
    for(int i=0;i<count;i++) sortIdx[i]=i;
    for(int a=0;a<count-1;a++)
       for(int b=a+1;b<count;b++)
          if(profits[sortIdx[a]] > profits[sortIdx[b]])
          { int tmp=sortIdx[a]; sortIdx[a]=sortIdx[b]; sortIdx[b]=tmp; }
 
-   //--- ======================================================
-   //--- คำนวณ TP breakeven ให้ closeN ไม้แย่สุด
-   //--- หา price P ที่ทำให้ P&L รวมของ closeN ไม้ = $0
-   //--- profit(P) = vpp * [ P*(buyLots-sellLots) + (sellW-buyW) ] = 0
-   //--- => P = (sellW - buyW) / (buyLots - sellLots)
-   //--- ======================================================
+   //--- min$=0 → TP ที่ beTP (กำไร=0), min$>0 → TP ที่กำไร=min$ (เหมือน tgt$ ของ PairClose)
+   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   int    digits    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(tickSize==0 || tickValue==0) return;
+
    double wBuyLots=0, wSellLots=0, wBuyW=0, wSellW=0;
    for(int k=0; k<closeN; k++)
    {
-      int idx = sortIdx[k]; // worst positions
-      if(types[idx]==POSITION_TYPE_BUY) { wBuyLots+=lots[idx]; wBuyW+=opens[idx]*lots[idx]; }
-      else                              { wSellLots+=lots[idx]; wSellW+=opens[idx]*lots[idx]; }
+      int idx=sortIdx[k];
+      if(types[idx]==POSITION_TYPE_BUY){ wBuyLots+=lots[idx]; wBuyW+=opens[idx]*lots[idx]; }
+      else                             { wSellLots+=lots[idx]; wSellW+=opens[idx]*lots[idx]; }
    }
    double wNetLots = wBuyLots - wSellLots;
    if(MathAbs(wNetLots) < 0.0001)
-   {
-      Print("KeepBest: worst positions fully hedged → cannot find single breakeven TP");
-      return;
-   }
+   { Print("KeepBest: worst positions hedged → skip"); return; }
 
-   //--- TP breakeven = price ที่กำไรรวมของ worst = 0
-   //--- สูตร: profit=0 → beTP = (buyWeighted - sellWeighted) / (buyLots - sellLots)
-   double beTP = NormalizeDouble((wBuyW - wSellW) / wNetLots, digits);
+   double beTP  = NormalizeDouble((wBuyW - wSellW) / wNetLots, digits);
+   double vpp   = tickValue / tickSize;
+   int    sign  = (wNetLots > 0) ? 1 : -1;
 
-   //--- ถ้า worst positions ผ่าน beTP ไปแล้ว (กำไรอยู่แล้ว) → ปิดทันทีที่ market
-   double bid = SymbolInfoDouble(sym,SYMBOL_BID);
-   double ask = SymbolInfoDouble(sym,SYMBOL_ASK);
-   bool alreadyPast = (wNetLots > 0 && beTP <= ask) || (wNetLots < 0 && beTP >= bid);
+   //--- targetTP: beTP + profit offset จาก min$ (min$=0 → ปิดที่ BE, min$>0 → ปิดที่กำไร min$)
+   double tgtOffset = (g_KeepBestMinProfit > 0 && vpp > 0 && MathAbs(wNetLots) > 0)
+                      ? (g_KeepBestMinProfit / (vpp * MathAbs(wNetLots)))
+                      : 0.0;
+   double targetTP  = NormalizeDouble(beTP + sign * tgtOffset, digits);
+
+   double bid   = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask   = SymbolInfoDouble(sym, SYMBOL_ASK);
+
+   //--- ถ้า worst ผ่าน targetTP ไปแล้ว → ปิดทันที
+   bool alreadyPast = (wNetLots>0 && targetTP<=ask) || (wNetLots<0 && targetTP>=bid);
    if(alreadyPast)
    {
-      Print("KeepBest: worst positions already past BE (beTP=", beTP,
-            ") → closing ", closeN, " worst at market");
+      PrintFormat("KeepBest: worst past target (TP=%.5f) → closing %d at market", targetTP, closeN);
       ArrayResize(g_keepWorstTickets, 0);
       for(int k=0; k<closeN; k++)
       {
-         int idx = sortIdx[k];
+         int idx=sortIdx[k];
          Append(g_keepWorstTickets, tickets[idx]);
          if(trade.PositionClose(tickets[idx]))
-            Print("KeepBest | Closed at market | Ticket:", tickets[idx],
-                  " | PnL: $", DoubleToString(profits[idx],2));
+            PrintFormat("KeepBest | Closed | Ticket:%d PnL:$%.2f", (int)tickets[idx], profits[idx]);
       }
-      g_keepBestPending    = true;
+      g_keepBestBeTP    = targetTP;
+      g_keepBestNetLots = wNetLots;
+      g_keepBestPending = true;
       g_keepBestTotalCount = count;
       return;
    }
 
-   Print("KeepBest: beTP=", beTP, " | netLots=", wNetLots,
-         " | buyW=", wBuyW, " | sellW=", wSellW);
-
-   //--- Set beTP บน worst positions
-   //--- + เก็บ beTP/netLots ไว้สำหรับ monitor (backup: close at market ถ้า TP fail)
-   double bidNow = SymbolInfoDouble(sym, SYMBOL_BID);
-   double askNow = SymbolInfoDouble(sym, SYMBOL_ASK);
-   long   stopLvl = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
-   double minStopDist = stopLvl * SymbolInfoDouble(sym, SYMBOL_POINT);
-
+   //--- ตั้ง TP ที่ targetTP บน worst positions → รอราคามาถึงแล้วปิด
+   long   stopLvl     = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+   double minStopDist = stopLvl * point;
    ArrayResize(g_keepWorstTickets, 0);
-   int setOK = 0, setFail = 0;
+   int setOK=0, setFail=0;
    for(int k=0; k<closeN; k++)
    {
-      int idx = sortIdx[k];
+      int idx=sortIdx[k];
       Append(g_keepWorstTickets, tickets[idx]);
       if(!posInfo.SelectByTicket(tickets[idx])) continue;
-      if(MathAbs(posInfo.TakeProfit() - beTP) <= point*2) { setOK++; continue; }
+      if(MathAbs(posInfo.TakeProfit()-targetTP) <= point*2){ setOK++; continue; }
 
-      //--- ตรวจ broker stop level — TP ต้องห่างราคาปัจจุบันอย่างน้อย stopLvl ticks
-      bool valid = (types[idx]==POSITION_TYPE_BUY)
-                   ? (beTP > askNow + minStopDist)
-                   : (beTP < bidNow - minStopDist);
-      if(!valid)
-      {
-         Print("KeepBest | TP rejected (too close to market) | Ticket:", tickets[idx],
-               " | beTP=", beTP, " | bid=", bidNow, " | minStop=", minStopDist);
-         setFail++;
-         continue;
-      }
+      bool valid = (types[idx]==POSITION_TYPE_BUY) ? (targetTP>ask+minStopDist) : (targetTP<bid-minStopDist);
+      if(!valid){ setFail++; continue; }
 
-      if(trade.PositionModify(tickets[idx], sls[idx], beTP))
-      {
-         Print("KeepBest | Set TP OK | Ticket:", tickets[idx], " | beTP=", beTP);
-         setOK++;
-      }
+      if(trade.PositionModify(tickets[idx], sls[idx], targetTP))
+      { PrintFormat("KeepBest | TP set | Ticket:%d targetTP:%.5f (beTP:%.5f + $%.2f)",
+                    (int)tickets[idx], targetTP, beTP, g_KeepBestMinProfit); setOK++; }
       else
-      {
-         Print("KeepBest | FAILED PositionModify | Ticket:", tickets[idx],
-               " | beTP=", beTP, " | open=", opens[idx], " | ask=", askNow,
-               " | retcode=", trade.ResultRetcode(), " | ", trade.ResultRetcodeDescription(),
-               " | _LastError=", _LastError);
-         setFail++;
-      }
+      { PrintFormat("KeepBest | TP FAILED | Ticket:%d retcode:%d", (int)tickets[idx], trade.ResultRetcode()); setFail++; }
    }
-   g_keepBestBeTP    = beTP;
-   g_keepBestNetLots = wNetLots;
-   if(setFail > 0)
-      Print("KeepBest | ", setFail, " TP set failed → monitor will close at market when bePrice reached");
 
-   //--- Mark pending: รอ worst positions ปิดก่อน feature อื่นจะทำงาน
+   g_keepBestBeTP       = targetTP;   // ใช้ targetTP เป็น monitor threshold
+   g_keepBestNetLots    = wNetLots;
    g_keepBestPending    = true;
-   g_keepBestTotalCount = count;  // บันทึกจำนวนไม้ตอนนี้ → ตรวจจับไม้ใหม่ใน tick ถัดไป
+   g_keepBestTotalCount = count;
 
-   double worstPnL = 0;
-   for(int k=0;k<closeN;k++) worstPnL += profits[sortIdx[k]];
-   double bestPnL  = 0;
-   for(int k=closeN;k<count;k++) bestPnL += profits[sortIdx[k]];
-
-   Print("KeepBest activated | Keep best:", keepN, " | Close worst:", closeN,
-         " | BreakevenTP:", beTP,
-         " | WorstPnL: $", worstPnL,
-         " | BestPnL: $", bestPnL,
-         " | Estimated net at TP: $", worstPnL + (worstPnL*-1));
+   double worstPnL=0, bestPnL=0;
+   for(int k=0;k<closeN;k++) worstPnL+=profits[sortIdx[k]];
+   for(int k=closeN;k<count;k++) bestPnL+=profits[sortIdx[k]];
+   PrintFormat("KeepBest | targetTP:%.5f (BE:%.5f tgt:$%.2f) | worst:%d $%.2f | best:%d $%.2f",
+               targetTP, beTP, g_KeepBestMinProfit, closeN, worstPnL, keepN, bestPnL);
 }
 
 //--- ตรวจว่า worst positions ยังเปิดอยู่มั้ย
@@ -1701,6 +1766,78 @@ void ApplyTotalSL()
 }
 
 //+------------------------------------------------------------------+
+//| PROTECT PROFIT — combined breakeven SL                          |
+//| เมื่อ total profit รวมถึง at$ → คำนวณ combined BE price          |
+//| → set SL ราคาเดียวกันทุกไม้ (เหมือน TotalSL แต่ target=$0)      |
+//| → one-shot: set ครั้งเดียว ไม่ recalculate ซ้ำ                  |
+//+------------------------------------------------------------------+
+void CheckProtectProfit()
+{
+   if(!g_EnableProtectProfit) return;
+   if(g_ProtectProfitTriggered)  return;  // set แล้ว ไม่ต้องทำซ้ำ
+
+   string sym      = Symbol();
+   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   int    digits    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(tickSize == 0 || tickValue == 0) return;
+
+   // Collect positions + total profit
+   ulong  tickets[]; double lots[], opens[], tps[]; int types[];
+   int    count = 0;
+   double totalProfit = 0;
+
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(!posInfo.SelectByIndex(i)) continue;
+      if(posInfo.Symbol() != sym) continue;
+      if(InpMagicNumber != 0 && posInfo.Magic() != InpMagicNumber) continue;
+      ArrayResize(tickets,count+1); ArrayResize(lots,count+1);
+      ArrayResize(opens,count+1);   ArrayResize(types,count+1); ArrayResize(tps,count+1);
+      tickets[count]=posInfo.Ticket(); lots[count]=posInfo.Volume();
+      opens[count]=posInfo.PriceOpen(); types[count]=(int)posInfo.PositionType();
+      tps[count]=posInfo.TakeProfit();
+      totalProfit += posInfo.Profit() + posInfo.Swap();
+      count++;
+   }
+   if(count == 0) return;
+   if(totalProfit < g_ProtectProfitThreshold) return;
+
+   // คำนวณ combined BE SL (profit รวม = $0)
+   // สูตรเดียวกับ TotalSL แต่ target=0: beSL = (buyW - sellW) / netLots
+   double buyLots=0, sellLots=0, buyW=0, sellW=0;
+   for(int j=0; j<count; j++)
+   {
+      if(types[j]==POSITION_TYPE_BUY){ buyLots+=lots[j]; buyW+=opens[j]*lots[j]; }
+      else                           { sellLots+=lots[j]; sellW+=opens[j]*lots[j]; }
+   }
+   double netLots = buyLots - sellLots;
+   if(MathAbs(netLots) < 0.0001) return;
+
+   double beSL = NormalizeDouble((buyW - sellW) / netLots, digits);
+
+   // Validate: SL ต้องอยู่ฝั่งขาดทุน (ราคายังไม่ผ่านไปแล้ว)
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   if(netLots > 0 && beSL >= bid) { Print("ProtectProfit: beSL>=bid, skip"); return; }
+   if(netLots < 0 && beSL <= ask) { Print("ProtectProfit: beSL<=ask, skip"); return; }
+
+   // Set SL ราคาเดียวกันทุกไม้
+   g_ProtectProfitTriggered = true;
+   int setCount = 0;
+   for(int j=0; j<count; j++)
+      if(posInfo.SelectByTicket(tickets[j]))
+         if(MathAbs(posInfo.StopLoss()-beSL) > point*2)
+            if(trade.PositionModify(tickets[j], beSL, tps[j]))
+               setCount++;
+
+   Print("ProtectProfit | ARMED at total P&L=$", DoubleToString(totalProfit,2),
+         " | combined BE SL=", NormalizeDouble(beSL,digits),
+         " | set on ", setCount, "/", count, " positions");
+}
+
+//+------------------------------------------------------------------+
 //| Live status: แสดง progress ของ worst positions ว่าใกล้ BE แค่ไหน|
 //+------------------------------------------------------------------+
 void UpdateKeepBestStatus()
@@ -1736,8 +1873,8 @@ void UpdateKeepBestStatus()
          types[total]=(int)posInfo.PositionType();
          totalPnL+=profits[total]; total++;
       }
-      int closeCount=total-g_KeepBestN, numPairs=closeCount/2, oddCnt=closeCount%2;
-      int remainN=MathMax(0,total-closeCount);
+      int closeCount=MathMax(0,total-g_KeepBestN), numPairs=closeCount/2, oddCnt=closeCount%2;
+      int remainN=total-closeCount;
       // sort by open price
       double netDir=0;
       for(int j=0;j<total;j++) netDir+=(types[j]==POSITION_TYPE_BUY?lots[j]:-lots[j]);
@@ -1750,8 +1887,11 @@ void UpdateKeepBestStatus()
          { pairPnL+=profits[si[p]]+profits[si[total-1-p]]; }
       if(oddCnt&&numPairs<closeCount) pairPnL+=profits[si[numPairs]];
       remainPnL=totalPnL-pairPnL;
-      string l1=StringFormat("PairClose: %d pos | %d pairs%s | remain %d | tgt $%.0f",
-                             total,numPairs,(oddCnt?" +odd":""),remainN,g_PairCloseTarget);
+      string pairStr=(numPairs>0)?StringFormat("%d pairs",numPairs)
+                                 :(closeCount==1?"1 solo":"waiting");
+      if(oddCnt&&numPairs>0) pairStr+=" +odd";
+      string l1=StringFormat("PairClose: %d pos | %s | remain %d | tgt $%.0f",
+                             total,pairStr,remainN,g_PairCloseTarget);
       string l2=StringFormat("Pairs PnL: $%.2f  |  Remain PnL: $%.2f  |  Net: $%.2f",
                              pairPnL,remainPnL,totalPnL);
       SetStatus1(l1,clrNONE,C'120,220,255');
@@ -1776,15 +1916,27 @@ void UpdateKeepBestStatus()
          types[total]=(int)posInfo.PositionType();
          totalPnL+=profits[total]; total++;
       }
-      int unprot=total-g_KeepBestN, numPairs=unprot/2, oddCnt=unprot%2;
-      int si[]; SortByProfit(profits,si,total);
-      for(int k=0;k<unprot&&k<total;k++) unpairPnL+=profits[si[k]];
-      protPnL=totalPnL-unpairPnL;
-      string l1=StringFormat("PairGuard: %d pos | prot %d | unprot %d (%d pairs%s) | tgt $%.0f",
-                             total,MathMin(g_KeepBestN,total),unprot,numPairs,
-                             (oddCnt?" +odd":""),g_PairGuardTarget);
-      string l2=StringFormat("Unprot PnL: $%.2f  |  Prot PnL: $%.2f  |  Net: $%.2f",
-                             unpairPnL,protPnL,totalPnL);
+      // excess = ไม้ที่จะถูกปิด, protected = N ที่ดีที่สุด
+      int keepN2   = MathMax(0, g_KeepBestN);
+      int excess2  = MathMax(0, total - keepN2);
+      int numPairs = excess2 / 2;
+      int oddCnt   = excess2 % 2;
+      // sort worst→best
+      double sk2[]; ArrayResize(sk2,total);
+      double nd2=0;
+      for(int k=0;k<total;k++){nd2+=(types[k]==POSITION_TYPE_BUY?lots[k]:-lots[k]);}
+      double ds2=(nd2>=0)?-1.0:1.0;
+      for(int k=0;k<total;k++) sk2[k]=ds2*opens[k];
+      int si[]; SortByProfit(sk2,si,total);
+      // excess PnL (pairs + odd)
+      for(int k=0;k<excess2;k++) unpairPnL+=profits[si[k]];
+      // protected PnL
+      for(int k=excess2;k<total;k++) protPnL+=profits[si[k]];
+      string oddStr = (oddCnt>0)?" +odd":"";
+      string l1=StringFormat("PairGuard: %d pos | %d pairs%s | keep %d | tgt $%.0f",
+                             total,numPairs,oddStr,keepN2,g_PairGuardTarget);
+      string l2=StringFormat("Excess PnL: $%.2f  |  Protected: $%.2f",
+                             unpairPnL,protPnL);
       SetStatus1(l1,clrNONE,C'180,255,120');
       SetStatus2(l2,clrNONE,C'200,255,160');
       return;
@@ -1807,22 +1959,16 @@ void UpdateKeepBestStatus()
       return;
    }
 
-   //--- Pending: worst positions กำลังรอ beTP
+   //--- Pending: รอ worst positions ปิดที่ beTP
    if(g_keepBestPending)
    {
-      double worstPnL = 0, bestPnL = 0;
-      double beTP     = 0;
-      int    worstCnt = 0, bestCnt = 0;
-      double wOpen=0, wLots=0;
+      double worstPnL=0, bestPnL=0;
+      int    worstCnt=0, bestCnt=0;
 
-      //--- worst positions
       for(int k=0; k<ArraySize(g_keepWorstTickets); k++)
       {
          if(!posInfo.SelectByTicket(g_keepWorstTickets[k])) continue;
          worstPnL += posInfo.Profit() + posInfo.Swap();
-         beTP      = posInfo.TakeProfit();
-         wOpen    += posInfo.PriceOpen() * posInfo.Volume();
-         wLots    += posInfo.Volume();
          worstCnt++;
       }
       if(worstCnt == 0)
@@ -1831,19 +1977,6 @@ void UpdateKeepBestStatus()
          SetStatus2("Running best N positions...", C'10,55,10', C'120,220,120');
          return;
       }
-
-      //--- best positions (ทุก position ที่ไม่ใช่ worst)
-      for(int i=PositionsTotal()-1; i>=0; i--)
-      {
-         if(!posInfo.SelectByIndex(i)) continue;
-         if(posInfo.Symbol()!=sym) continue;
-         if(InpMagicNumber!=0 && posInfo.Magic()!=InpMagicNumber) continue;
-         if(!IsInArray(g_keepWorstTickets, posInfo.Ticket())) continue;
-         bestPnL += posInfo.Profit() + posInfo.Swap();
-         bestCnt++;
-      }
-      // fix: best = ไม่อยู่ใน worst list
-      bestPnL = 0; bestCnt = 0;
       for(int i=PositionsTotal()-1; i>=0; i--)
       {
          if(!posInfo.SelectByIndex(i)) continue;
@@ -1854,29 +1987,16 @@ void UpdateKeepBestStatus()
          bestCnt++;
       }
 
-      //--- คำนวณ $ ที่ยังขาดอยู่เพื่อ breakeven
-      double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-      double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-      double bid       = SymbolInfoDouble(sym, SYMBOL_BID);
-      double remaining = 0;
-      if(beTP != 0 && tickSize > 0 && tickValue > 0 && wLots > 0)
+      string line1, line2;
       {
-         double vpp     = tickValue / tickSize;
-         double avgOpen = wOpen / wLots;
-         // กำไรที่จะได้ถ้าปิดที่ราคาปัจจุบัน
-         double curPnLAtClose = vpp * (bid - avgOpen) * wLots;
-         remaining = -worstPnL - curPnLAtClose; // $ ที่ยังขาดอยู่
-         if(remaining < 0) remaining = 0;
+         string tpLabel = (g_KeepBestMinProfit > 0)
+                          ? StringFormat("tgt $%.0f @ %.5f", g_KeepBestMinProfit, g_keepBestBeTP)
+                          : StringFormat("BE @ %.5f", g_keepBestBeTP);
+         line1 = StringFormat("Waiting %s | Close %d  PnL: $%.2f", tpLabel, worstCnt, worstPnL);
+         line2 = StringFormat("Keep %d best  PnL: $%.2f  |  Net: $%.2f", bestCnt, bestPnL, worstPnL+bestPnL);
+         SetStatus1(line1, C'35,35,55', C'220,220,255');
+         SetStatus2(line2, C'28,28,45', C'180,180,220');
       }
-
-      string line1 = StringFormat("Close %d  PnL: $%.2f  Need: $%.2f  BE@%s",
-                                   worstCnt, worstPnL,
-                                   (-worstPnL),       // ต้องกำไรอีกเท่าไรจึงจะ BE
-                                   DoubleToString(beTP, 5));
-      string line2 = StringFormat("Keep  %d  PnL: $%.2f  |  Net now: $%.2f",
-                                   bestCnt, bestPnL, worstPnL + bestPnL);
-      SetStatus1(line1, C'35,35,55', C'220,220,255');
-      SetStatus2(line2, C'28,28,45', C'180,180,220');
       return;
    }
 
@@ -1930,6 +2050,7 @@ void SetStatus1(string txt, color bg, color clr)
       ObjectSetInteger(0,nm,OBJPROP_FONTSIZE,   9);
       ObjectSetInteger(0,nm,OBJPROP_BACK,       false);
       ObjectSetInteger(0,nm,OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0,nm,OBJPROP_ZORDER,     PANEL_Z);
    }
    ObjectSetString (0,nm,OBJPROP_TEXT,  txt);
    ObjectSetInteger(0,nm,OBJPROP_COLOR, clr);
@@ -1948,6 +2069,7 @@ void SetStatus2(string txt, color bg, color clr)
       ObjectSetInteger(0,nm,OBJPROP_FONTSIZE,   8);
       ObjectSetInteger(0,nm,OBJPROP_BACK,       false);
       ObjectSetInteger(0,nm,OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0,nm,OBJPROP_ZORDER,     PANEL_Z);
    }
    ObjectSetString (0,nm,OBJPROP_TEXT,  txt);
    ObjectSetInteger(0,nm,OBJPROP_COLOR, clr);
@@ -1956,7 +2078,7 @@ void SetStatus2(string txt, color bg, color clr)
 //+------------------------------------------------------------------+
 void CreatePanel()
 {
-   // 16 rows: Title | Session | ATP | PC | PT | TSL | PROFTRAIL | KB | PAIRCLOSE | PAIRGUARD | Status1 | Status2 | DCA | DCATIER | BE | TR
+   // 16 rows: Title | Session | PC | PT | TSL | PROFTRAIL | KB | PAIRCLOSE | PAIRGUARD | POSGUARD | POSTARGET | DCA | DCATIER | BE | TRAIL | PROTECTPROFIT
    int totalRows = PANEL_ROWS;
    //--- BG ขนาด 50px (พอดี ไม่ขยาย ไม่ค้างใต้ panel)
    int bgH = 50;
@@ -1985,6 +2107,8 @@ void CreatePanel()
       ObjectSetInteger(0,PREFIX+"BTN_CLOSEALL",OBJPROP_CORNER, CORNER);
       ObjectSetInteger(0,PREFIX+"BTN_CLOSEALL",OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0,PREFIX+"BTN_CLOSEALL",OBJPROP_STATE, false);
+      ObjectSetInteger(0,PREFIX+"BTN_CLOSEALL",OBJPROP_BACK, false);
+      ObjectSetInteger(0,PREFIX+"BTN_CLOSEALL",OBJPROP_ZORDER, PANEL_Z_BTN);
       row--;
    }
 
@@ -2002,6 +2126,7 @@ void CreatePanel()
       ObjectSetInteger(0,PREFIX+"INFO_BG",OBJPROP_CORNER,     CORNER);
       ObjectSetInteger(0,PREFIX+"INFO_BG",OBJPROP_BACK,       false);
       ObjectSetInteger(0,PREFIX+"INFO_BG",OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0,PREFIX+"INFO_BG",OBJPROP_ZORDER,     PANEL_Z);
       // Session label — ซ้าย
       ObjectCreate(0,PREFIX+"SES_TXT",OBJ_LABEL,0,0,0);
       ObjectSetInteger(0,PREFIX+"SES_TXT",OBJPROP_XDISTANCE,  PANEL_X+4);
@@ -2013,6 +2138,7 @@ void CreatePanel()
       ObjectSetInteger(0,PREFIX+"SES_TXT",OBJPROP_CORNER,     CORNER);
       ObjectSetInteger(0,PREFIX+"SES_TXT",OBJPROP_BACK,       false);
       ObjectSetInteger(0,PREFIX+"SES_TXT",OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0,PREFIX+"SES_TXT",OBJPROP_ZORDER,     PANEL_Z);
       row--;
    }
 
@@ -2021,9 +2147,9 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PC", y, "PARTIAL CLOSE", C'0,80,120', "TOG_PARTIAL", g_EnablePartial);
       InlLabel(PREFIX+"IL_PC1", INPUT_AREA_X+2,   y, "%:");
-      CreateMiniEdit(PREFIX+"EDT_PC",  INPUT_AREA_X+18,  y, 52,  DoubleToString(g_PartialClosePct,1));
-      InlLabel(PREFIX+"IL_PC2", INPUT_AREA_X+74,  y, "trig:");
-      CreateMiniEdit(PREFIX+"EDT_TR",  INPUT_AREA_X+104, y, 72,  DoubleToString(g_PartialTriggerTicks,0));
+      CreateMiniEdit(PREFIX+"EDT_PC",  INPUT_AREA_X+18,  y, 60,  DoubleToString(g_PartialClosePct,1));
+      InlLabel(PREFIX+"IL_PC2", INPUT_AREA_X+82,  y, "trig:");
+      CreateMiniEdit(PREFIX+"EDT_TR",  INPUT_AREA_X+112, y, 90,  DoubleToString(g_PartialTriggerTicks,0));
       row--;
    }
 
@@ -2032,7 +2158,7 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PT", y, "PROFIT TARGET", C'0,90,50', "TOG_PROFTGT", g_EnableProfitTarget);
       InlLabel(PREFIX+"IL_PT1", INPUT_AREA_X+4,  y, "$:");
-      CreateMiniEdit(PREFIX+"EDT_PT",  INPUT_AREA_X+22, y, 130, DoubleToString(g_TotalProfitTarget,2));
+      CreateMiniEdit(PREFIX+"EDT_PT",  INPUT_AREA_X+22, y, 180, DoubleToString(g_TotalProfitTarget,2));
       row--;
    }
 
@@ -2041,7 +2167,7 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_TSL", y, "TOTAL SL ($)", C'130,40,0', "TOG_TOTALSL", g_EnableTotalSL);
       InlLabel(PREFIX+"IL_TSL1", INPUT_AREA_X+4,  y, "$:");
-      CreateMiniEdit(PREFIX+"EDT_TSL", INPUT_AREA_X+22, y, 130, DoubleToString(g_TotalSLAmount,2));
+      CreateMiniEdit(PREFIX+"EDT_TSL", INPUT_AREA_X+22, y, 180, DoubleToString(g_TotalSLAmount,2));
       row--;
    }
 
@@ -2050,9 +2176,9 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PTD", y, "PROFIT TRAIL", C'120,60,140', "TOG_PROFTRAIL", g_EnableProfitTrail);
       InlLabel(PREFIX+"IL_PTD1", INPUT_AREA_X+2,  y, "arm$:");
-      CreateMiniEdit(PREFIX+"EDT_PTARM", INPUT_AREA_X+38, y, 62, DoubleToString(g_ProfitArmAt,2));
-      InlLabel(PREFIX+"IL_PTD2", INPUT_AREA_X+104, y, "fl$:");
-      CreateMiniEdit(PREFIX+"EDT_PTD",  INPUT_AREA_X+126, y, 52, DoubleToString(g_ProfitFloor,2));
+      CreateMiniEdit(PREFIX+"EDT_PTARM", INPUT_AREA_X+38, y, 74, DoubleToString(g_ProfitArmAt,2));
+      InlLabel(PREFIX+"IL_PTD2", INPUT_AREA_X+116, y, "fl$:");
+      CreateMiniEdit(PREFIX+"EDT_PTD",  INPUT_AREA_X+136, y, 66, DoubleToString(g_ProfitFloor,2));
       row--;
    }
 
@@ -2060,8 +2186,10 @@ void CreatePanel()
    {
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_KB", y, "KEEP BEST N", C'0,100,60', "TOG_KEEPBEST", g_EnableKeepBest);
-      InlLabel(PREFIX+"IL_KB1", INPUT_AREA_X+4,  y, "N:");
-      CreateMiniEdit(PREFIX+"EDT_KN",  INPUT_AREA_X+22, y, 60, IntegerToString(g_KeepBestN));
+      InlLabel(PREFIX+"IL_KB1", INPUT_AREA_X+4,   y, "N:");
+      CreateMiniEdit(PREFIX+"EDT_KN",   INPUT_AREA_X+22,  y, 46, IntegerToString(g_KeepBestN));
+      InlLabel(PREFIX+"IL_KB2", INPUT_AREA_X+72,  y, "min$:");
+      CreateMiniEdit(PREFIX+"EDT_KBMP", INPUT_AREA_X+104, y, 98, DoubleToString(g_KeepBestMinProfit,0));
       row--;
    }
 
@@ -2070,7 +2198,7 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PC2", y, "PAIR CLOSE", C'20,100,90', "TOG_PAIRCLOSE", g_EnablePairClose);
       InlLabel(PREFIX+"IL_PCT1", INPUT_AREA_X+4,  y, "tgt$:");
-      CreateMiniEdit(PREFIX+"EDT_PCT", INPUT_AREA_X+40, y, 110, DoubleToString(g_PairCloseTarget,2));
+      CreateMiniEdit(PREFIX+"EDT_PCT", INPUT_AREA_X+40, y, 162, DoubleToString(g_PairCloseTarget,2));
       row--;
    }
 
@@ -2079,7 +2207,7 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PG", y, "PAIR GUARD", C'80,100,20', "TOG_PAIRGUARD", g_EnablePairGuard);
       InlLabel(PREFIX+"IL_PGT1", INPUT_AREA_X+4,  y, "tgt$:");
-      CreateMiniEdit(PREFIX+"EDT_PGT", INPUT_AREA_X+40, y, 110, DoubleToString(g_PairGuardTarget,2));
+      CreateMiniEdit(PREFIX+"EDT_PGT", INPUT_AREA_X+40, y, 162, DoubleToString(g_PairGuardTarget,2));
       row--;
    }
 
@@ -2088,11 +2216,11 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PBE", y, "POS GUARD", C'60,80,120', "TOG_POSGUARD", g_EnablePosGuard);
       InlLabel(PREFIX+"IL_PBE1", INPUT_AREA_X+2,   y, "$:");
-      CreateMiniEdit(PREFIX+"EDT_PBETRIG", INPUT_AREA_X+16,  y, 44, DoubleToString(g_PosGuardTrigger,0));
-      InlLabel(PREFIX+"IL_PBE2", INPUT_AREA_X+63,  y, "lk:");
-      CreateMiniEdit(PREFIX+"EDT_PBELK",   INPUT_AREA_X+81,  y, 38, DoubleToString(g_PosGuardLockTicks,0));
-      InlLabel(PREFIX+"IL_PBE3", INPUT_AREA_X+122, y, "stp:");
-      CreateMiniEdit(PREFIX+"EDT_PBESTP",  INPUT_AREA_X+144, y, 38, DoubleToString(g_PosGuardStepTicks,0));
+      CreateMiniEdit(PREFIX+"EDT_PBETRIG", INPUT_AREA_X+16,  y, 48, DoubleToString(g_PosGuardTrigger,0));
+      InlLabel(PREFIX+"IL_PBE2", INPUT_AREA_X+68,  y, "lk:");
+      CreateMiniEdit(PREFIX+"EDT_PBELK",   INPUT_AREA_X+87,  y, 42, DoubleToString(g_PosGuardLockTicks,0));
+      InlLabel(PREFIX+"IL_PBE3", INPUT_AREA_X+134, y, "stp:");
+      CreateMiniEdit(PREFIX+"EDT_PBESTP",  INPUT_AREA_X+156, y, 46, DoubleToString(g_PosGuardStepTicks,0));
       row--;
    }
 
@@ -2101,9 +2229,9 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_PTGT", y, "POS TARGET", C'60,60,130', "TOG_POSTGT", g_EnablePosTarget);
       InlLabel(PREFIX+"IL_PTG1", INPUT_AREA_X+2,  y, "pos:");
-      CreateMiniEdit(PREFIX+"EDT_PTGTN", INPUT_AREA_X+33, y, 38, IntegerToString(g_PosTargetN));
-      InlLabel(PREFIX+"IL_PTG2", INPUT_AREA_X+78, y, "tar$:");
-      CreateMiniEdit(PREFIX+"EDT_PTGTD", INPUT_AREA_X+108, y, 72, DoubleToString(g_PosTargetDollar,0));
+      CreateMiniEdit(PREFIX+"EDT_PTGTN", INPUT_AREA_X+33, y, 44, IntegerToString(g_PosTargetN));
+      InlLabel(PREFIX+"IL_PTG2", INPUT_AREA_X+82, y, "tar$:");
+      CreateMiniEdit(PREFIX+"EDT_PTGTD", INPUT_AREA_X+112, y, 90, DoubleToString(g_PosTargetDollar,0));
       row--;
    }
 
@@ -2112,9 +2240,9 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_DCA", y, "DCA (avg)", C'60,40,100', "TOG_DCA", g_EnableDCA);
       InlLabel(PREFIX+"IL_DCA2", INPUT_AREA_X+2,   y, "stp:");
-      CreateMiniEdit(PREFIX+"EDT_DCASTEP", INPUT_AREA_X+30, y, 80, DoubleToString(g_DCAStepTicks,0));
-      InlLabel(PREFIX+"IL_DCA3", INPUT_AREA_X+118, y, "mx:");
-      CreateMiniEdit(PREFIX+"EDT_DCAMAX",  INPUT_AREA_X+138, y, 44, IntegerToString(g_DCAMaxPositions));
+      CreateMiniEdit(PREFIX+"EDT_DCASTEP", INPUT_AREA_X+30, y, 88, DoubleToString(g_DCAStepTicks,0));
+      InlLabel(PREFIX+"IL_DCA3", INPUT_AREA_X+122, y, "mx:");
+      CreateMiniEdit(PREFIX+"EDT_DCAMAX",  INPUT_AREA_X+142, y, 60, IntegerToString(g_DCAMaxPositions));
       // EDT_DCALOT ซ่อนไว้ (ใช้เป็น fallback ถ้าไม่มี position) — สร้าง offscreen
       ObjectCreate(0, PREFIX+"EDT_DCALOT", OBJ_EDIT, 0, 0, 0);
       ObjectSetString (0, PREFIX+"EDT_DCALOT", OBJPROP_TEXT, DoubleToString(g_DCALotSize,2));
@@ -2129,9 +2257,9 @@ void CreatePanel()
       // ซ่อน toggle (ใช้ DCA ตัวเดียวพอ) → set ออกนอก visible area
       ObjectSetInteger(0, PREFIX+"TOG_DCATIER_DUMMY", OBJPROP_XDISTANCE, -999);
       InlLabel(PREFIX+"IL_DCAT1", INPUT_AREA_X+2,   y, "each:");
-      CreateMiniEdit(PREFIX+"EDT_DCATIER", INPUT_AREA_X+34, y, 50, IntegerToString(g_DCATierSize));
-      InlLabel(PREFIX+"IL_DCAT2", INPUT_AREA_X+90,  y, "+lot:");
-      CreateMiniEdit(PREFIX+"EDT_DCALSTEP", INPUT_AREA_X+122, y, 60, DoubleToString(g_DCALotStep,2));
+      CreateMiniEdit(PREFIX+"EDT_DCATIER", INPUT_AREA_X+34, y, 54, IntegerToString(g_DCATierSize));
+      InlLabel(PREFIX+"IL_DCAT2", INPUT_AREA_X+92,  y, "+lot:");
+      CreateMiniEdit(PREFIX+"EDT_DCALSTEP", INPUT_AREA_X+124, y, 78, DoubleToString(g_DCALotStep,2));
       row--;
    }
 
@@ -2140,9 +2268,9 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_BE", y, "BREAKEVEN SL", C'100,80,0', "TOG_BE", g_EnableBreakeven);
       InlLabel(PREFIX+"IL_BE1", INPUT_AREA_X+2,   y, "trig:");
-      CreateMiniEdit(PREFIX+"EDT_BET",  INPUT_AREA_X+30,  y, 66, DoubleToString(g_BETriggerTicks,0));
-      InlLabel(PREFIX+"IL_BE2", INPUT_AREA_X+100, y, "lock:");
-      CreateMiniEdit(PREFIX+"EDT_BEL",  INPUT_AREA_X+128, y, 50, DoubleToString(g_BELockTicks,0));
+      CreateMiniEdit(PREFIX+"EDT_BET",  INPUT_AREA_X+30,  y, 68, DoubleToString(g_BETriggerTicks,0));
+      InlLabel(PREFIX+"IL_BE2", INPUT_AREA_X+102, y, "lock:");
+      CreateMiniEdit(PREFIX+"EDT_BEL",  INPUT_AREA_X+130, y, 72, DoubleToString(g_BELockTicks,0));
       row--;
    }
 
@@ -2151,7 +2279,16 @@ void CreatePanel()
       int y = PANEL_Y + row * ROW_H;
       CreateCompactRow(PREFIX+"R_TR2", y, "TRAILING (stairs)", C'100,50,0', "TOG_TRAIL", g_EnableTrailing);
       InlLabel(PREFIX+"IL_TR1", INPUT_AREA_X+4,  y, "step:");
-      CreateMiniEdit(PREFIX+"EDT_TS",  INPUT_AREA_X+36, y, 118, DoubleToString(g_TrailStepTicks,0));
+      CreateMiniEdit(PREFIX+"EDT_TS",  INPUT_AREA_X+36, y, 166, DoubleToString(g_TrailStepTicks,0));
+      row--;
+   }
+
+   //--- ══ PROTECT PROFIT ══
+   {
+      int y = PANEL_Y + row * ROW_H;
+      CreateCompactRow(PREFIX+"R_PPR", y, "PROTECT PROFIT", C'140,95,0', "TOG_PROTPFT", g_EnableProtectProfit);
+      InlLabel(PREFIX+"IL_PPR1", INPUT_AREA_X+2,  y, "at$:");
+      CreateMiniEdit(PREFIX+"EDT_PPRT", INPUT_AREA_X+34, y, 168, DoubleToString(g_ProtectProfitThreshold,0));
       // row-- not needed (last row)
    }
 
@@ -2171,6 +2308,8 @@ void CreateCompactRow(string n, int y, string featureLabel, color featBg, string
    ObjectSetInteger(0,n+"_BG",OBJPROP_BORDER_COLOR,C'28,28,42');
    ObjectSetInteger(0,n+"_BG",OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n+"_BG",OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n+"_BG",OBJPROP_BACK,false);
+   ObjectSetInteger(0,n+"_BG",OBJPROP_ZORDER,PANEL_Z);
    //--- Colored feature label section (left FEAT_W columns)
    ObjectCreate(0,n+"_FLBG",OBJ_RECTANGLE_LABEL,0,0,0);
    ObjectSetInteger(0,n+"_FLBG",OBJPROP_XDISTANCE,PANEL_X-5);
@@ -2181,6 +2320,8 @@ void CreateCompactRow(string n, int y, string featureLabel, color featBg, string
    ObjectSetInteger(0,n+"_FLBG",OBJPROP_BORDER_COLOR,featBg);
    ObjectSetInteger(0,n+"_FLBG",OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n+"_FLBG",OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n+"_FLBG",OBJPROP_BACK,false);
+   ObjectSetInteger(0,n+"_FLBG",OBJPROP_ZORDER,PANEL_Z);
    //--- Feature label text
    //    MT5 CORNER_LEFT_LOWER + ANCHOR_LEFT_LOWER: YDISTANCE = BOTTOM of text, renders upward.
    //    FLBG: y+1..y+26 (center y+13.5). For 12px text: bottom=y+7 → top=y+19, center=y+13 ✓
@@ -2193,6 +2334,8 @@ void CreateCompactRow(string n, int y, string featureLabel, color featBg, string
    ObjectSetInteger(0,n+"_FLT",OBJPROP_COLOR,clrWhite);
    ObjectSetInteger(0,n+"_FLT",OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n+"_FLT",OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n+"_FLT",OBJPROP_BACK,false);
+   ObjectSetInteger(0,n+"_FLT",OBJPROP_ZORDER,PANEL_Z);
    //--- Toggle button at right edge
    CreateToggle(PREFIX+togName, TOGGLE_X, y+1, state);
 }
@@ -2209,6 +2352,8 @@ void InlLabel(string n, int x, int y, string txt)
    ObjectSetInteger(0,n,OBJPROP_COLOR,C'170,180,200');
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z);
 }
 
 //--- Status row (read-only, อัปเดตแบบ live)
@@ -2223,6 +2368,8 @@ void CreateStatusRow(string n, int x, int y, string initTxt, color bg)
    ObjectSetInteger(0,n+"_BG",OBJPROP_BORDER_COLOR,C'28,28,42');
    ObjectSetInteger(0,n+"_BG",OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n+"_BG",OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n+"_BG",OBJPROP_BACK,false);
+   ObjectSetInteger(0,n+"_BG",OBJPROP_ZORDER,PANEL_Z);
 
    ObjectCreate(0,n,OBJ_LABEL,0,0,0);
    ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x+6);
@@ -2233,6 +2380,8 @@ void CreateStatusRow(string n, int x, int y, string initTxt, color bg)
    ObjectSetInteger(0,n,OBJPROP_COLOR,clrWhite);
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z);
 }
 
 void ReadPanelValues()
@@ -2242,6 +2391,7 @@ void ReadPanelValues()
    g_PartialTriggerTicks  = MathMax(1,    StringToDouble(ObjTxt(PREFIX+"EDT_TR")));
    g_TotalProfitTarget    = MathMax(0.01, StringToDouble(ObjTxt(PREFIX+"EDT_PT")));
    g_KeepBestN         = (int)MathMax(0, StringToDouble(ObjTxt(PREFIX+"EDT_KN")));  // 0 = close all at breakeven
+   g_KeepBestMinProfit = MathMax(0, StringToDouble(ObjTxt(PREFIX+"EDT_KBMP")));
    g_PairCloseTarget   = MathMax(0,    StringToDouble(ObjTxt(PREFIX+"EDT_PCT")));
    g_PairGuardTarget   = MathMax(0,    StringToDouble(ObjTxt(PREFIX+"EDT_PGT")));
    g_TotalSLAmount     = MathMax(0.01, StringToDouble(ObjTxt(PREFIX+"EDT_TSL")));
@@ -2260,6 +2410,7 @@ void ReadPanelValues()
    g_PosGuardTrigger   = MathMax(0, StringToDouble(ObjTxt(PREFIX+"EDT_PBETRIG")));
    g_PosGuardLockTicks = MathMax(0, StringToDouble(ObjTxt(PREFIX+"EDT_PBELK")));
    g_PosGuardStepTicks = MathMax(0, StringToDouble(ObjTxt(PREFIX+"EDT_PBESTP")));
+   g_ProtectProfitThreshold = MathMax(0.01, StringToDouble(ObjTxt(PREFIX+"EDT_PPRT")));
 }
 
 string ObjTxt(string n) { return ObjectGetString(0, n, OBJPROP_TEXT); }
@@ -2299,6 +2450,8 @@ void CreateBG(string n, int x, int y, int w, int h)
    ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,C'160,160,200');   // สว่างขึ้น → เห็นขอบชัด
    ObjectSetInteger(0,n,OBJPROP_WIDTH,2);                        // เส้นขอบหนาขึ้น
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER); ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);   // ลอยหน้า chart
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z);
 }
 
 void CreateBG2(string n, int x, int y, int w, int h, color bg)
@@ -2308,6 +2461,8 @@ void CreateBG2(string n, int x, int y, int w, int h, color bg)
    ObjectSetInteger(0,n,OBJPROP_XSIZE,w);     ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
    ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);  ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,bg);
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER); ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z);
 }
 
 void CreateLbl(string n, int x, int y, string txt, color clr, int fs, bool bold=false)
@@ -2318,6 +2473,8 @@ void CreateLbl(string n, int x, int y, string txt, color clr, int fs, bool bold=
    ObjectSetString (0,n,OBJPROP_FONT,bold?"Arial Bold":"Arial");
    ObjectSetInteger(0,n,OBJPROP_FONTSIZE,fs);
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER); ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z);
 }
 
 void CreateToggle(string n, int x, int y, bool state)
@@ -2332,6 +2489,8 @@ void CreateToggle(string n, int x, int y, bool state)
    ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,C'60,60,60');
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER); ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,n,OBJPROP_STATE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z_BTN);
 }
 
 //--- Mini edit box with explicit width (replaces old fixed-width CreateEdit)
@@ -2351,7 +2510,8 @@ void CreateMiniEdit(string n, int x, int y, int w, string val)
    ObjectSetInteger(0,n,OBJPROP_ALIGN,ALIGN_RIGHT);
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER);
    ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,n,OBJPROP_BACK,false);   // always on top — clickable
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z_BTN);
 }
 
 void CreateBtn(string n, int x, int y, int w, int h, string txt, color clr, color bg)
@@ -2365,6 +2525,8 @@ void CreateBtn(string n, int x, int y, int w, int h, string txt, color clr, colo
    ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,C'20,160,20');
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER); ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,n,OBJPROP_STATE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,PANEL_Z_BTN);
 }
 
 //+------------------------------------------------------------------+
@@ -2670,6 +2832,7 @@ void SaveSettings()
    GlobalVariableSet(SAVE_PFX+"ProfFloor",   g_ProfitFloor);
    GlobalVariableSet(SAVE_PFX+"KeepBest",    g_EnableKeepBest);
    GlobalVariableSet(SAVE_PFX+"KeepN",       g_KeepBestN);
+   GlobalVariableSet(SAVE_PFX+"KeepBestMP",  g_KeepBestMinProfit);
    GlobalVariableSet(SAVE_PFX+"PairClose",   g_EnablePairClose);
    GlobalVariableSet(SAVE_PFX+"PairCloseT",  g_PairCloseTarget);
    GlobalVariableSet(SAVE_PFX+"PairGuard",   g_EnablePairGuard);
@@ -2692,6 +2855,8 @@ void SaveSettings()
    GlobalVariableSet(SAVE_PFX+"PosTarget",   g_EnablePosTarget);
    GlobalVariableSet(SAVE_PFX+"PosTargetN",  g_PosTargetN);
    GlobalVariableSet(SAVE_PFX+"PosTargetD",  g_PosTargetDollar);
+   GlobalVariableSet(SAVE_PFX+"ProtPft",     g_EnableProtectProfit);
+   GlobalVariableSet(SAVE_PFX+"ProtPftThr",  g_ProtectProfitThreshold);
    GlobalVariableSet(SAVE_PFX+"PanelX",      PANEL_X);
    GlobalVariableSet(SAVE_PFX+"PanelY",      PANEL_Y);
 }
@@ -2715,6 +2880,7 @@ void LoadSettings()
    g_ProfitFloor          = GVGet (SAVE_PFX+"ProfFloor",  g_ProfitFloor);
    g_EnableKeepBest       = GVBool(SAVE_PFX+"KeepBest",   g_EnableKeepBest);
    g_KeepBestN       = (int)GVGet (SAVE_PFX+"KeepN",      g_KeepBestN);
+   g_KeepBestMinProfit    = GVGet (SAVE_PFX+"KeepBestMP", g_KeepBestMinProfit);
    g_EnablePairClose      = GVBool(SAVE_PFX+"PairClose",  g_EnablePairClose);
    g_PairCloseTarget      = GVGet (SAVE_PFX+"PairCloseT", g_PairCloseTarget);
    g_EnablePairGuard      = GVBool(SAVE_PFX+"PairGuard",  g_EnablePairGuard);
@@ -2737,6 +2903,8 @@ void LoadSettings()
    g_EnablePosTarget      = GVBool(SAVE_PFX+"PosTarget",   g_EnablePosTarget);
    g_PosTargetN      = (int)GVGet (SAVE_PFX+"PosTargetN",  g_PosTargetN);
    g_PosTargetDollar      = GVGet (SAVE_PFX+"PosTargetD",  g_PosTargetDollar);
+   g_EnableProtectProfit  = GVBool(SAVE_PFX+"ProtPft",     g_EnableProtectProfit);
+   g_ProtectProfitThreshold = GVGet(SAVE_PFX+"ProtPftThr", g_ProtectProfitThreshold);
    PANEL_X           = (int)GVGet (SAVE_PFX+"PanelX",      PANEL_X);
    PANEL_Y           = (int)GVGet (SAVE_PFX+"PanelY",     PANEL_Y);
 }
@@ -2951,9 +3119,18 @@ void UpdateFeatureLines()
    if(g_EnablePartial && hasCombined)
    {
       //--- refPrice = global last partial price (slot ticket=0) หรือ bePrice
-      double refPrice = bePrice;
+      //--- sanity check: ถ้า stored ไกลจาก cur เกิน 3 trigger → stale → แสดงจาก bePrice
+      double triggerD2 = g_PartialTriggerTicks * tickSize;
+      double refPrice  = bePrice;
       for(int k=0; k<ArraySize(g_partialTrackTickets); k++)
-         if(g_partialTrackTickets[k]==0){ refPrice = g_partialLastPrice[k]; break; }
+      {
+         if(g_partialTrackTickets[k]!=0) continue;
+         double stored = g_partialLastPrice[k];
+         bool stale = (netLots > 0 && stored > cur + 3.0*triggerD2)
+                   || (netLots < 0 && stored < cur - 3.0*triggerD2);
+         if(!stale) refPrice = stored;
+         break;
+      }
       double trigPrice = NormalizeDouble(refPrice + sign * g_PartialTriggerTicks * tickSize, digits);
       DrawFTLine(PREFIX+"FT_PC", barTime, lineEnd, trigPrice, C'200,120,200', STYLE_DASH,
                  StringFormat(" Partial %.0f%% @ %s", g_PartialClosePct, DoubleToString(trigPrice,digits)));

@@ -707,31 +707,38 @@ short_cd = (bar_index - last_short_s) >= i_cooldown
 struct_sweep_short = recent_sweep_h and bear_grab_s
 struct_sweep_long  = recent_sweep_l and bull_grab_s
 
+// ── Extreme Level (50-bar structural) ─────────────────────────────
+// sweep ที่ low/high สุดใน 50 บาร์ = major structural level
+extreme_low  = ta.lowest(low[1],  50)
+extreme_high = ta.highest(high[1], 50)
+at_extreme_low  = low  < extreme_low   // spike ทะลุ 50-bar low
+at_extreme_high = high > extreme_high  // spike ทะลุ 50-bar high
+
 // ── Momentum Filter (News/High Volatility Protection) ─────────────
-// ถ้าราคาตก/ขึ้นแรงใน 5 บาร์ที่ผ่านมา > 3×ATR = momentum แรง
-// ห้าม sweep counter-trend ในทิศทางสวน (แต่ยังยิง with-trend ได้)
-drop_5  = ta.highest(high, 6)[1] - close   // ตกมาเท่าไหร่ใน 5 บาร์
-rally_5 = close - ta.lowest(low,  6)[1]    // ขึ้นมาเท่าไหร่ใน 5 บาร์
-momentum_bear = drop_5  > sig_atr * 2.5    // momentum ลงแรง = ห้าม Long sweep
-momentum_bull = rally_5 > sig_atr * 2.5    // momentum ขึ้นแรง = ห้าม Short sweep
+drop_5  = ta.highest(high, 6)[1] - close
+rally_5 = close - ta.lowest(low,  6)[1]
+momentum_bear = drop_5  > sig_atr * 2.5
+momentum_bull = rally_5 > sig_atr * 2.5
 
 // ── Signal conditions ─────────────────────────────────────────────
 // Long A: with-trend — bias bull + H1 + confirm
 long_wt_s  = i_show_sig and bias_bull_s and htf_ok_long and bull_ok_s and long_cd
-// Long B: sweep + structural — บล็อกเมื่อ momentum ลงแรง (news day)
+// Long B: sweep normal — บล็อกเมื่อ momentum ลงแรง
 long_sw_s  = i_show_sig and bull_grab_s   and (h4_ok_long or struct_sweep_long) and not momentum_bear and long_cd
-long_sw2_s = i_show_sig and bull_grab_strong and not momentum_bear and long_cd
-// Long C: CHoCH + sweep — ไม่บังคับ H1/H4 แต่ยัง block momentum
-long_cs_s  = i_show_sig and bull_choch_grab and not momentum_bear and long_cd
+// Long B2: strong grab (>65% wick) — ข้าม momentum ได้เฉพาะที่ 50-bar extreme low
+long_sw2_s = i_show_sig and bull_grab_strong and (not momentum_bear or at_extreme_low) and long_cd
+// Long C: CHoCH + sweep — ข้าม momentum ได้เฉพาะที่ 50-bar extreme low
+long_cs_s  = i_show_sig and bull_choch_grab and (not momentum_bear or at_extreme_low) and long_cd
 long_sig_s = long_wt_s or long_sw_s or long_sw2_s or long_cs_s
 
 // Short A: with-trend — bias bear + H1 + confirm
 short_wt_s  = i_show_sig and bias_bear_s and htf_ok_short and bear_ok_s and short_cd
-// Short B: sweep + structural — บล็อกเมื่อ momentum ขึ้นแรง
+// Short B: sweep normal — บล็อกเมื่อ momentum ขึ้นแรง
 short_sw_s  = i_show_sig and bear_grab_s  and (h4_ok_short or struct_sweep_short) and not momentum_bull and short_cd
-short_sw2_s = i_show_sig and bear_grab_strong and not momentum_bull and short_cd
-// Short C: CHoCH + sweep
-short_cs_s  = i_show_sig and bear_choch_grab and not momentum_bull and short_cd
+// Short B2: strong grab (>65% wick) — ข้าม momentum ได้เฉพาะที่ 50-bar extreme high
+short_sw2_s = i_show_sig and bear_grab_strong and (not momentum_bull or at_extreme_high) and short_cd
+// Short C: CHoCH + sweep — ข้าม momentum ได้เฉพาะที่ 50-bar extreme high
+short_cs_s  = i_show_sig and bear_choch_grab and (not momentum_bull or at_extreme_high) and short_cd
 short_sig_s = short_wt_s or short_sw_s or short_sw2_s or short_cs_s
 
 // ── Confluence Score ★ ─────────────────────────────────────────────
