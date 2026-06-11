@@ -7,17 +7,17 @@ Rules:
   - Daily loss > 3% → VETO หยุดทั้งวัน
   - Drawdown > 10% → VETO หยุดทั้งสัปดาห์
 
-Scale-in OB Strategy:
-  - Entry 1 (OB top):    30% lot — เริ่มเล็ก ยังไม่แน่ใจ
-  - Entry 2 (OB middle): 30% lot — เพิ่มเมื่อราคายืนยัน
-  - Entry 3 (Sweep zone): 40% lot — ใหญ่สุด high probability
+Scale-in OB Strategy (Pyramid In):
+  - Entry 1 (OB top):    20% lot — เริ่มเล็กสุด test ก่อน
+  - Entry 2 (OB middle): 40% lot — ราคาลึกลงมา เพิ่ม
+  - Entry 3 (Sweep zone): 40% lot — ลึกสุด avg entry ดีสุด
   SL อยู่ใต้ Sweep zone เสมอ
 """
 
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from config.settings import MAX_RISK_PERCENT
+from config.settings import MAX_RISK_PERCENT, FIXED_LOT, BALANCE, MAX_LOT
 
 DB_PATH = Path(__file__).parent.parent / "data" / "trade_log.db"
 
@@ -85,18 +85,19 @@ def calculate_scale_in(
     direction: str = "bullish"
 ) -> dict:
     """
-    คำนวณ Scale-in entries ใน OB zone
+    คำนวณ Scale-in entries แบบ Pyramid In ใน OB zone
+    20% → 40% → 40% (เริ่มเล็ก เพิ่มเมื่อราคาลึกขึ้น)
 
     Bullish OB (Buy):
-      Entry 1: ob_top           → 30% lot (เริ่มเล็ก)
-      Entry 2: ob_middle        → 30% lot
-      Entry 3: ob_bottom - buf  → 40% lot (sweep zone, ใหญ่สุด)
+      Entry 1: ob_top           → 20% lot (test)
+      Entry 2: ob_middle        → 40% lot (เพิ่ม)
+      Entry 3: ob_bottom - buf  → 40% lot (avg entry ดีสุด)
       SL: ob_bottom - buf - 5 pips
 
     Bearish OB (Sell):
-      Entry 1: ob_bottom        → 30% lot
-      Entry 2: ob_middle        → 30% lot
-      Entry 3: ob_top + buf     → 40% lot
+      Entry 1: ob_bottom        → 20% lot (test)
+      Entry 2: ob_middle        → 40% lot (เพิ่ม)
+      Entry 3: ob_top + buf     → 40% lot (avg entry ดีสุด)
       SL: ob_top + buf + 5 pips
     """
     if risk_pct is None:
@@ -117,44 +118,44 @@ def calculate_scale_in(
         e3 = round(ob_top + sweep_buf, 2)
         sl = round(ob_top + sweep_buf + 0.5, 2)
 
-    # SL distance จาก average entry
-    avg_entry = (e1 * 0.3 + e2 * 0.3 + e3 * 0.4)
+    # SL distance จาก average entry (weighted 20/40/40)
+    avg_entry = (e1 * 0.20 + e2 * 0.40 + e3 * 0.40)
     sl_pips = abs(avg_entry - sl) * 10
 
     # Total lot สำหรับ risk ที่กำหนด
     total_lot = calculate_lot(balance, sl_pips, risk_pct)
 
-    # แบ่งตาม ratio 30/30/40
-    lot1 = max(0.01, round(total_lot * 0.30, 2))
-    lot2 = max(0.01, round(total_lot * 0.30, 2))
-    lot3 = max(0.01, round(total_lot * 0.40, 2))
+    # Pyramid In: 20% → 40% → 40% (cap แต่ละไม้ที่ MAX_LOT)
+    lot1 = min(max(0.01, round(total_lot * 0.20, 2)), MAX_LOT)
+    lot2 = min(max(0.01, round(total_lot * 0.40, 2)), MAX_LOT)
+    lot3 = min(max(0.01, round(total_lot * 0.40, 2)), MAX_LOT)
 
     return {
-        "strategy": "scale_in",
+        "strategy": "pyramid_in",
         "direction": direction,
         "ob_range_pips": round(ob_range * 10, 1),
         "sweep_buffer_pips": sweep_buffer_pips,
         "entries": [
             {
-                "label": "Entry 1 — OB Top (เริ่มเล็ก)",
+                "label": "Entry 1 — OB Top (test เล็กๆ)",
                 "price": e1,
                 "lot": lot1,
-                "weight": "30%",
-                "note": "เพิ่งเข้า OB ยังไม่แน่ใจ"
+                "weight": "20%",
+                "note": "เข้าเล็กก่อน ยืนยัน OB ก่อน"
             },
             {
-                "label": "Entry 2 — OB Middle",
+                "label": "Entry 2 — OB Middle (เพิ่ม)",
                 "price": e2,
                 "lot": lot2,
-                "weight": "30%",
-                "note": "ราคาลงมาในโซน เพิ่มความมั่นใจ"
+                "weight": "40%",
+                "note": "ราคาลึกลงมา avg entry ดีขึ้น"
             },
             {
-                "label": "Entry 3 — Sweep Zone (ใหญ่สุด)",
+                "label": "Entry 3 — Sweep Zone (เต็มที่)",
                 "price": e3,
                 "lot": lot3,
                 "weight": "40%",
-                "note": f"ใต้ OB {sweep_buffer_pips} pips — high probability"
+                "note": f"ลึกสุด {sweep_buffer_pips} pips ใต้ OB — high prob"
             }
         ],
         "stop_loss": sl,
@@ -178,16 +179,18 @@ def calculate_lot(balance: float, sl_pips: float, risk_pct: float = None) -> flo
         return 0.01
 
     lot = risk_amount / (sl_pips * GOLD_PIP_VALUE_PER_LOT * 100)
-    # Round to 2 decimal places, min 0.01
     lot = max(0.01, round(lot, 2))
+    lot = min(lot, MAX_LOT)
     return lot
 
 
 def evaluate(
     analysis: dict,
     bias: dict,
-    balance: float = 10000.0
+    balance: float = None,
 ) -> dict:
+    if balance is None:
+        balance = BALANCE
     """
     Risk Manager ประเมินและตัดสินใจ
     Returns: {approved, lot, risk_pct, veto, veto_reason, notes}
@@ -279,6 +282,11 @@ def evaluate(
         notes.append(f"⚠️ H4 ขัด bias → ลด lot เหลือ {risk_pct}% risk")
     if streak > 0:
         notes.append(f"⚠️ มี loss streak {streak} ครั้ง — ระวังด้วย")
+
+    # FIXED_LOT override — demo / manual config
+    if FIXED_LOT > 0:
+        lot = FIXED_LOT
+        notes.append(f"📌 Fixed lot: {FIXED_LOT}")
 
     return {
         "approved": True,

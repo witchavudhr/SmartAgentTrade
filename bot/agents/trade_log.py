@@ -22,6 +22,30 @@ CSV_PATH = Path(__file__).parent.parent / "data" / "trades_export.csv"
 def init_db():
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+
+    # ── scan_log: บันทึกทุก scan รวม rejected ─────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp     TEXT NOT NULL,
+            session       TEXT,
+            signal        TEXT,
+            confidence    INTEGER,
+            vote_score    INTEGER,
+            chart_vote    INTEGER,
+            bias_vote     INTEGER,
+            news_vote     INTEGER,
+            approved      INTEGER,
+            reject_reason TEXT,
+            entry         REAL,
+            sl            REAL,
+            tp            REAL,
+            rr            REAL,
+            h4_bias       TEXT,
+            setup_type    TEXT
+        )
+    """)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +103,139 @@ def init_db():
 
 
 # ── Write ─────────────────────────────────────────────────────────
+
+def log_scan(result: dict):
+    """
+    บันทึกทุก scan result รวม rejected
+    เรียกหลัง supervisor.run() ทุกครั้ง ก่อนเช็ค approved/rejected
+    """
+    init_db()
+    analysis  = result.get("analysis") or {}
+    votes     = result.get("votes", {})
+    entry_raw = analysis.get("entry_zone") or analysis.get("entry")
+    entry_val = (
+        (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
+        else float(entry_raw) if entry_raw else None
+    )
+    from agents.smc_engine import get_session
+    sess = get_session()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO scan_log (
+            timestamp, session, signal, confidence, vote_score,
+            chart_vote, bias_vote, news_vote,
+            approved, reject_reason,
+            entry, sl, tp, rr, h4_bias, setup_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        sess.get("session"),
+        analysis.get("signal") or result.get("final_signal"),
+        analysis.get("confidence"),
+        result.get("vote_score", 0),
+        1 if votes.get("chart") else 0,
+        1 if votes.get("bias")  else 0,
+        1 if votes.get("news")  else 0,
+        1 if result.get("approved") else 0,
+        result.get("reject_reason"),
+        entry_val,
+        analysis.get("stop_loss") or analysis.get("sl"),
+        analysis.get("take_profit") or analysis.get("tp"),
+        analysis.get("rr_ratio") or analysis.get("rr"),
+        analysis.get("h4_bias") or analysis.get("smc_bias"),
+        analysis.get("setup_type"),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_performance_summary(days: int = 30) -> str:
+    """
+    Compressed performance summary สำหรับ inject ใน Supervisor prompt
+    ~100-150 tokens — บอทเรียนรู้ pattern ที่ผ่านมา
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    since = f"-{days} days"
+
+    # ── scan stats ─────────────────────────────────────────────────
+    total_scans = conn.execute(
+        "SELECT COUNT(*) FROM scan_log WHERE timestamp >= DATE('now', ?)", (since,)
+    ).fetchone()[0]
+
+    approved_scans = conn.execute(
+        "SELECT COUNT(*) FROM scan_log WHERE approved=1 AND timestamp >= DATE('now', ?)", (since,)
+    ).fetchone()[0]
+
+    # ── trade stats ────────────────────────────────────────────────
+    trade_rows = conn.execute("""
+        SELECT outcome, pnl_pips, session, confidence, signal
+        FROM trades
+        WHERE action='confirmed' AND timestamp >= DATE('now', ?)
+    """, (since,)).fetchall()
+
+    wins = sum(1 for r in trade_rows if r[0] == "win")
+    losses = sum(1 for r in trade_rows if r[0] == "loss")
+    total_pips = sum((r[1] or 0) for r in trade_rows if r[0] in ("win", "loss"))
+    gross_win  = sum((r[1] or 0) for r in trade_rows if r[0] == "win")
+    gross_loss = abs(sum((r[1] or 0) for r in trade_rows if r[0] == "loss"))
+    wr = round(wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+    pf = round(gross_win / gross_loss, 1) if gross_loss > 0 else None
+
+    # ── best session ───────────────────────────────────────────────
+    session_stats = {}
+    for outcome, _, session, _, _ in trade_rows:
+        if not session: continue
+        s = session_stats.setdefault(session, {"w": 0, "l": 0})
+        if outcome == "win":   s["w"] += 1
+        if outcome == "loss":  s["l"] += 1
+    best_session = max(
+        ((k, v["w"] / (v["w"] + v["l"])) for k, v in session_stats.items() if v["w"] + v["l"] > 0),
+        key=lambda x: x[1], default=("—", 0)
+    )
+
+    # ── confidence split ───────────────────────────────────────────
+    hi_w = sum(1 for r in trade_rows if r[0] == "win"  and (r[3] or 0) >= 70)
+    hi_l = sum(1 for r in trade_rows if r[0] == "loss" and (r[3] or 0) >= 70)
+    lo_w = sum(1 for r in trade_rows if r[0] == "win"  and (r[3] or 0) < 70)
+    lo_l = sum(1 for r in trade_rows if r[0] == "loss" and (r[3] or 0) < 70)
+    hi_wr = round(hi_w / (hi_w + hi_l) * 100) if (hi_w + hi_l) > 0 else None
+    lo_wr = round(lo_w / (lo_w + lo_l) * 100) if (lo_w + lo_l) > 0 else None
+
+    # ── best/worst setup ───────────────────────────────────────────
+    best_row = conn.execute("""
+        SELECT signal, session, setup_type, COUNT(*) c
+        FROM trades WHERE outcome='win' AND timestamp >= DATE('now', ?)
+        GROUP BY signal, session, setup_type ORDER BY c DESC LIMIT 1
+    """, (since,)).fetchone()
+
+    worst_row = conn.execute("""
+        SELECT signal, session, setup_type, COUNT(*) c
+        FROM trades WHERE outcome='loss' AND timestamp >= DATE('now', ?)
+        GROUP BY signal, session, setup_type ORDER BY c DESC LIMIT 1
+    """, (since,)).fetchone()
+
+    conn.close()
+
+    if total_scans == 0:
+        return f"[Performance {days}d: ยังไม่มีข้อมูล]"
+
+    lines = [
+        f"[Performance {days}d: {total_scans} scans → {approved_scans} approved → {wins+losses} trades]",
+        f"[W{wins}/L{losses} WR{wr}% PF{pf or 'N/A'} P&L{total_pips:+.0f}p]",
+    ]
+    if hi_wr is not None or lo_wr is not None:
+        lines.append(f"[Conf≥70%→WR{hi_wr}% | Conf<70%→WR{lo_wr}%]")
+    if best_session[1] > 0:
+        lines.append(f"[BestSession:{best_session[0]} WR{round(best_session[1]*100)}%]")
+    if best_row:
+        lines.append(f"[BestSetup:{best_row[1]} {best_row[0]} {best_row[2] or ''}]")
+    if worst_row:
+        lines.append(f"[WorstSetup:{worst_row[1]} {worst_row[0]} {worst_row[2] or ''}]")
+
+    return " ".join(lines)
+
 
 def log_trade(analysis: dict, action: str) -> int:
     """
@@ -279,6 +436,70 @@ def get_daily_breakdown(days: int = 7) -> list[dict]:
     conn.close()
     return [{"day": r[0], "trades": r[1], "wins": r[2], "losses": r[3], "pips": round(r[4], 1)}
             for r in rows]
+
+
+def get_today_summary() -> dict:
+    """สรุปผลเทรดวันนี้ — ใช้ใน daily close alert"""
+    init_db()
+    today = date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT outcome, pnl_pips, signal, stars, score, timestamp
+        FROM trades
+        WHERE action='confirmed' AND DATE(timestamp) = ?
+        ORDER BY id
+    """, (today,)).fetchall()
+    conn.close()
+
+    trades, wins, losses, total_pips = [], 0, 0, 0.0
+    for outcome, pnl, signal, stars, score, ts in rows:
+        trades.append({"outcome": outcome, "pnl_pips": pnl, "signal": signal,
+                       "stars": stars, "score": score, "time": ts[11:16]})
+        if outcome == "win":
+            wins += 1
+            total_pips += pnl or 0
+        elif outcome == "loss":
+            losses += 1
+            total_pips += pnl or 0
+
+    wr = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+    return {
+        "date":        today,
+        "trades":      trades,
+        "total":       len(trades),
+        "wins":        wins,
+        "losses":      losses,
+        "pending":     sum(1 for t in trades if t["outcome"] == "pending"),
+        "total_pips":  round(total_pips, 1),
+        "win_rate":    wr,
+    }
+
+
+def format_today_summary() -> str:
+    """แปลง today summary เป็นข้อความ Telegram"""
+    s = get_today_summary()
+    if s["total"] == 0:
+        return f"📅 *สรุปวันนี้ {s['date']}*\n━━━━━━━━━━━━━━━━━\nไม่มี trade วันนี้"
+
+    bar = "🟢" if s["total_pips"] >= 0 else "🔴"
+    wr_str = f"{s['win_rate']}%" if (s['wins'] + s['losses']) > 0 else "-"
+
+    lines = [
+        f"📅 *สรุปวันนี้ {s['date']}*",
+        "━━━━━━━━━━━━━━━━━",
+        f"{bar} W`{s['wins']}` / L`{s['losses']}` | WR: `{wr_str}` | P&L: `{s['total_pips']:+.1f}p`",
+        "",
+        "*รายการเทรดวันนี้:*",
+    ]
+    for t in s["trades"]:
+        icon = "✅" if t["outcome"] == "win" else "❌" if t["outcome"] == "loss" else "⏳"
+        pips = f"{t['pnl_pips']:+.1f}p" if t["pnl_pips"] is not None else "pending"
+        lines.append(f"  {icon} `{t['time']}` {t['signal']} {t['stars'] or ''} `{pips}`")
+
+    if s["pending"] > 0:
+        lines.append(f"\n⏳ {s['pending']} trade ยังไม่บันทึกผล — ใช้ `/outcome`")
+
+    return "\n".join(lines)
 
 
 # ── Export ────────────────────────────────────────────────────────

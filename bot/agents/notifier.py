@@ -15,9 +15,13 @@ from agents import supervisor, risk_manager
 from agents.trade_log import (
     log_trade, update_outcome, format_report,
     get_all_trades, format_trade_list, export_csv, get_trade,
+    format_today_summary, get_summary,
+    log_scan,
 )
 from agents import paper_trader
 from agents import state_manager
+from agents import mt5_executor
+from agents import pos_guard
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -30,11 +34,14 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏢 *SmartAgentTrade* พร้อมแล้ว!\n\n"
         "📡 *Analysis*\n"
-        "/scan — สแกนหา setup (เช็ค bias + news อัตโนมัติ)\n"
+        "/scan — สแกนหา setup (auto-execute ถ้าผ่าน) · 7 windows/day\n"
+        "/testscan — ดู vote ทุก agent โดยไม่เปิด trade\n"
         "/bias — ดู HTF direction H1/H4/Daily\n"
         "/news — เช็คข่าว Economic Calendar\n\n"
         "⚙️ *Control*\n"
         "/status — ดูสถานะ bot\n"
+        "/mt5 — ดู MT5 account + open positions\n"
+        "/posguard — ดู POS Guard config + force check\n"
         "/pause — หยุดสแกนชั่วคราว\n"
         "/resume — เริ่มสแกนใหม่\n\n"
         "📊 *Report & Tools*\n"
@@ -42,7 +49,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/trades — ดู trade history ทั้งหมด\n"
         "/outcome [id] [win/loss/be] [pips] [exit] — บันทึกผลหลังเทรด\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
-        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n\n"
+        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n"
+        "/closetrade [exit_price] — ปิด trailing monitor\n\n"
         "📝 *Paper Trade (ลงกระดาษ)*\n"
         "/paper buy 4290 sl 4250 tp 4360 — เปิด Long\n"
         "/paper sell 4350 sl 4380 tp 4290 — เปิด Short\n"
@@ -56,26 +64,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
-
     result = supervisor.run()
+    log_scan(result)
     state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    message = supervisor.format_alert(result)
-
-    if result.get("approved"):
-        pending = result.get("analysis", {})
-        pending["lot"]      = result.get("lot")
-        pending["risk_pct"] = result.get("risk_pct")
-        state_manager.set_field(bot_state, "pending_signal", pending)
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
-                InlineKeyboardButton("❌ Skip", callback_data="skip")
-            ]
-        ])
-        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
-    else:
-        await update.message.reply_text(message, parse_mode="Markdown")
+    await _handle_scan_result(result, update.message.reply_text)
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     from agents.trade_log import get_summary
@@ -358,14 +350,23 @@ async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         dur_s  = f"{duration_min} นาที" if duration_min else "-"
         exit_s = f"`{actual_exit}`" if actual_exit else "-"
 
+        # running P&L วันนี้
+        from agents.trade_log import get_today_summary
+        today = get_today_summary()
+        today_str = (
+            f"วันนี้: W`{today['wins']}` L`{today['losses']}` "
+            f"| `{today['total_pips']:+.1f}p`"
+        )
+
         await update.message.reply_text(
-            f"{icon} *Trade #{trade_id} อัพเดทแล้ว*\n"
+            f"{icon} *Trade #{trade_id} — {outcome.upper()}*\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"Signal: `{t.get('signal')}`  {t.get('stars') or ''}\n"
-            f"Outcome: *{outcome.upper()}*  `{pips_s}`\n"
-            f"Exit Price: {exit_s}\n"
+            f"P&L: `{pips_s}`  |  Exit: {exit_s}\n"
             f"Duration: {dur_s}\n"
-            + (f"Notes: _{notes}_" if notes else ""),
+            + (f"Notes: _{notes}_\n" if notes else "")
+            + f"━━━━━━━━━━━━━━━━━\n"
+            f"📊 {today_str}",
             parse_mode="Markdown"
         )
 
@@ -440,6 +441,166 @@ async def handle_question(update: Update, question: str):
 
     await update.message.reply_text(response.content[0].text)
 
+# ── Auto-execute helper ────────────────────────────────
+
+async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
+    """
+    Advisory mode — มี open trade ค้างอยู่
+    แสดง signal ใหม่ + confidence score + ปุ่มให้กดเองถ้าอยากเปิดเพิ่ม
+    """
+    signal    = result.get("analysis", {})
+    direction = signal.get("signal", "?")
+    entry_raw = signal.get("entry_zone") or signal.get("entry")
+    sl        = signal.get("stop_loss") or signal.get("sl")
+    tp        = signal.get("take_profit") or signal.get("tp")
+    rr        = signal.get("rr_ratio", "?")
+
+    # Confidence score — ใช้จาก supervisor ถ้ามี, fallback vote_score
+    sup_conf  = result.get("supervisor_confidence") or (
+        result.get("analysis", {}).get("confidence") or
+        round((result.get("vote_score", 0) / 3) * 100)
+    )
+    if isinstance(sup_conf, str) and sup_conf.endswith("%"):
+        sup_conf = int(sup_conf.rstrip("%"))
+    conf_pct  = int(sup_conf) if sup_conf else 0
+    conf_bar  = _confidence_bar(conf_pct)
+
+    # ไม้ที่ค้างอยู่
+    ex_dir    = existing_trade.get("direction", "?")
+    ex_entry  = existing_trade.get("entry", "?")
+    ex_tid    = existing_trade.get("trade_id", "?")
+
+    # สี direction
+    dir_icon  = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
+    same_dir  = direction == ex_dir
+    dir_note  = "↗ ทิศเดียวกัน (scale-in?)" if same_dir else "↔ ทิศตรงข้าม (hedge?)"
+
+    # เก็บ signal ไว้สำหรับ callback กด "เปิดเพิ่ม"
+    bot_state["pending_signal"] = signal
+    state_manager.save(bot_state)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ เปิดเพิ่ม", callback_data="confirm"),
+        InlineKeyboardButton("⏭ ข้าม",       callback_data="skip"),
+    ]])
+
+    await send_fn(
+        f"📡 *Setup ใหม่พบ — Advisory*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ มีไม้ค้าง: `{ex_dir}` #{ex_tid} @ `{ex_entry}`\n"
+        f"_({dir_note})_\n\n"
+        f"*Signal:* {dir_icon}\n"
+        f"Entry: `{entry_raw}`\n"
+        f"SL: `{sl}` | TP: `{tp}` | RR: `{rr}`\n\n"
+        f"🎯 *Confidence: {conf_bar}*\n\n"
+        f"กดเปิดเพิ่มเอง หรือข้ามได้เลย",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+
+
+def _confidence_bar(pct: int) -> str:
+    """แสดง confidence เป็น bar เช่น ████░░ 67%"""
+    filled = round(pct / 10)
+    return "█" * filled + "░" * (10 - filled) + f" {pct}%"
+
+
+async def _handle_scan_result(result: dict, send_fn):
+    """
+    ถ้ามี open trade ค้างอยู่ → Advisory mode (แจ้ง + confidence + ปุ่มให้กดเอง)
+    ถ้าไม่มี open trade → Auto-execute ปกติ
+    Rejected → แจ้งสั้นๆ
+    """
+    from agents.smc_engine import get_session
+
+    if result.get("approved"):
+        # ── เช็คว่ามี open trade ค้างอยู่หรือไม่ ─────────────────
+        existing_trade = bot_state.get("open_trade")
+        if existing_trade:
+            # BLOCK mode: ไม่เปิดเพิ่ม ประหยัด token
+            # เปลี่ยนเป็น advisory ได้โดยแทนบรรทัดนี้ด้วย:
+            # await _send_advisory_alert(result, existing_trade, send_fn)
+            ex_dir = existing_trade.get("direction", "?")
+            ex_tid = existing_trade.get("trade_id", "?")
+            await send_fn(
+                f"🔒 *มีไม้ค้างอยู่ — ข้าม setup นี้*\n"
+                f"Trade #{ex_tid} ({ex_dir}) ยังเปิดอยู่\n"
+                f"_ปิดก่อนด้วย `/closetrade` แล้วค่อย scan ใหม่_",
+                parse_mode="Markdown"
+            )
+            return
+        signal = result.get("analysis", {})
+        signal["lot"]      = result.get("lot")
+        signal["risk_pct"] = result.get("risk_pct")
+        sess = get_session()
+        signal["session"] = sess.get("session")
+
+        trade_id = log_trade(signal, "confirmed")
+        state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        # ตั้ง open_trade สำหรับ trailing monitor
+        entry_raw = signal.get("entry_zone") or signal.get("entry")
+        entry_price = (
+            (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
+            else float(entry_raw) if entry_raw else None
+        )
+        sl_price = signal.get("stop_loss") or signal.get("sl")
+        tp_price = signal.get("take_profit") or signal.get("tp")
+        direction = signal.get("signal")
+
+        if entry_price and sl_price and direction in ("BUY", "SELL"):
+            open_trade = {
+                "entry":            entry_price,
+                "original_sl":      float(sl_price),
+                "current_sl":       float(sl_price),
+                "tp":               float(tp_price) if tp_price else None,
+                "direction":        direction,
+                "lot":              signal.get("lot"),
+                "trade_id":         trade_id,
+                "peak_price":       entry_price,
+                "opened_at":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "reentry_analyzed": False,
+            }
+            state_manager.set_field(bot_state, "open_trade", open_trade)
+
+        message = supervisor.format_alert(result)
+
+        # ── MT5 Auto-Execute ────────────────────────────────
+        mt5_tag = ""
+        if mt5_executor.is_available() and entry_price and sl_price and direction in ("BUY","SELL"):
+            lot_val = signal.get("lot") or 0.01
+            tp_val  = float(tp_price) if tp_price else 0.0
+            ex = mt5_executor.open_trade(
+                direction = direction,
+                lot       = float(lot_val),
+                sl        = float(sl_price),
+                tp        = tp_val,
+                comment   = f"SAT-{trade_id}",
+            )
+            if "ticket" in ex:
+                mt5_tag = (
+                    f"\n\n✅ *MT5 Executed!*\n"
+                    f"Ticket: `{ex['ticket']}` | Price: `{ex['price']}` | Lot: `{ex['volume']}`"
+                )
+                # เก็บ ticket ใน open_trade สำหรับ auto-close ในอนาคต
+                if bot_state.get("open_trade"):
+                    ot_upd = bot_state["open_trade"]
+                    ot_upd["mt5_ticket"] = ex["ticket"]
+                    state_manager.set_field(bot_state, "open_trade", ot_upd)
+            else:
+                mt5_tag = f"\n\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
+        elif not mt5_executor.is_available():
+            mt5_tag = "\n\n📋 _MT5_ENABLED=false — กรุณาเปิด trade เองใน MT5_"
+
+        message += mt5_tag
+        message += f"\n🤖 *Trade #{trade_id}* | `/closetrade` เมื่อปิด position"
+        await send_fn(message, parse_mode="Markdown")
+    else:
+        reason = result.get("reject_reason", "ไม่มี setup")
+        stage  = result.get("vote_score", 0)
+        await send_fn(f"❌ {reason} (vote {stage}/3)", parse_mode="Markdown")
+
+
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -464,19 +625,43 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # clear pending และ save state ทันที
     state_manager.clear_pending(bot_state)
 
-    entry = signal.get("entry_zone") or signal.get("entry")
+    entry_raw = signal.get("entry_zone") or signal.get("entry")
     if action == "confirm":
+        # ตั้ง open_trade เพื่อ monitor trailing + reentry
+        entry_price = (
+            (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
+            else float(entry_raw) if entry_raw else None
+        )
+        sl_price = signal.get("stop_loss") or signal.get("sl")
+        tp_price = signal.get("take_profit") or signal.get("tp")
+        direction = signal.get("signal")
+        if entry_price and sl_price and direction in ("BUY", "SELL"):
+            open_trade = {
+                "entry":           entry_price,
+                "original_sl":     float(sl_price),
+                "current_sl":      float(sl_price),
+                "tp":              float(tp_price) if tp_price else None,
+                "direction":       direction,
+                "lot":             signal.get("lot"),
+                "trade_id":        trade_id,
+                "peak_price":      entry_price,
+                "opened_at":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "reentry_analyzed": False,
+            }
+            state_manager.set_field(bot_state, "open_trade", open_trade)
+
         await query.edit_message_text(
             f"✅ *Confirmed — Trade #{trade_id}*\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"Signal: *{signal.get('signal')}*  {signal.get('reversal_stars') or ''}\n"
-            f"Entry: `{entry}`\n"
+            f"Entry: `{entry_raw}`\n"
             f"SL: `{signal.get('stop_loss') or signal.get('sl')}`  "
             f"TP: `{signal.get('take_profit') or signal.get('tp')}`\n"
             f"Lot: `{signal.get('lot', '-')}`\n\n"
+            f"📡 Trailing monitor เริ่มทำงานแล้ว (trail 1000p)\n"
             f"🍀 โชคดี! หลังเทรดเสร็จ:\n"
             f"`/outcome {trade_id} win 150 3310`\n"
-            f"`/outcome {trade_id} loss -80`",
+            f"`/closetrade {entry_price}` — ปิด monitor",
             parse_mode="Markdown"
         )
     else:
@@ -486,6 +671,439 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+async def cmd_mt5(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /mt5 — ดูสถานะ MT5 connection + account info + open positions
+    """
+    if not mt5_executor.is_available():
+        await update.message.reply_text(
+            "⚠️ *MT5 ยังไม่ได้เปิดใช้งาน*\n"
+            "ตั้งค่าใน `.env`:\n"
+            "`MT5_ENABLED=true`\n"
+            "`MT5_LOGIN=...`\n"
+            "`MT5_PASSWORD=...`\n"
+            "`MT5_SERVER=...`",
+            parse_mode="Markdown"
+        )
+        return
+
+    await update.message.reply_text("🔌 กำลังเชื่อม MT5...")
+
+    # Account info
+    info = mt5_executor.get_account_info()
+    if "error" in info:
+        await update.message.reply_text(f"❌ เชื่อม MT5 ไม่ได้: `{info['error']}`", parse_mode="Markdown")
+        return
+
+    # Open positions
+    positions = mt5_executor.get_open_positions()
+    pos_lines = ""
+    if positions:
+        pos_lines = "\n\n*Open Positions:*\n"
+        for p in positions:
+            icon = "🟢" if p["direction"] == "BUY" else "🔴"
+            pnl_icon = "+" if p["profit"] >= 0 else ""
+            pos_lines += (
+                f"{icon} #{p['ticket']} {p['direction']} {p['lot']}L\n"
+                f"   Entry: `{p['entry']}` SL: `{p['sl']}` TP: `{p['tp']}`\n"
+                f"   P&L: `{pnl_icon}{p['profit']:.2f}` USD\n"
+            )
+    else:
+        pos_lines = "\n\n_ไม่มี open positions_"
+
+    await update.message.reply_text(
+        f"🔌 *MT5 Connected*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"Account: `{info['login']}` | {info['server']}\n"
+        f"Balance: `{info['balance']:.2f}` {info['currency']}\n"
+        f"Equity:  `{info['equity']:.2f}` {info['currency']}\n"
+        f"Free Margin: `{info['free_margin']:.2f}`\n"
+        f"Leverage: 1:{info['leverage']}"
+        + pos_lines,
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_posguard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /posguard — ดูสถานะ POS Guard config + รัน 1 รอบทันที
+    /posguard check — force check ทันที
+    """
+    args = ctx.args or []
+    cfg_msg = pos_guard.describe()
+
+    if not pos_guard.POSGUARD_ENABLED:
+        await update.message.reply_text(
+            f"{cfg_msg}\n\n"
+            f"เปิดใช้ใน `.env`:\n"
+            f"`POSGUARD_ENABLED=true`\n"
+            f"`POSGUARD_TRIGGER_USD=5.0`   # profit $ ก่อน lock\n"
+            f"`POSGUARD_LOCK_TICKS=10.0`   # ticks เหนือ open\n"
+            f"`POSGUARD_STEP_TICKS=50.0`   # trail step (0 = lock only)`,",
+            parse_mode="Markdown"
+        )
+        return
+
+    if args and args[0] == "check":
+        await update.message.reply_text("🛡 กำลังเช็ค POS Guard...")
+        actions = await pos_guard.check_once()
+        if not actions:
+            await update.message.reply_text(
+                f"{cfg_msg}\n\n✅ ไม่มีไม้ที่ต้องเลื่อน SL ตอนนี้",
+                parse_mode="Markdown"
+            )
+        else:
+            lines = [f"{cfg_msg}\n\n*ผลการเช็ค {len(actions)} ไม้:*"]
+            for a in actions:
+                icon = "✅" if a.get("ok") else "❌"
+                lines.append(
+                    f"{icon} #{a['ticket']} | SL: `{a['old_sl']}` → `{a['new_sl']}` "
+                    f"| P&L: `${a['profit']:.2f}`"
+                )
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(
+            f"{cfg_msg}\n\n"
+            f"ใช้ `/posguard check` เพื่อ force-check ทันที\n"
+            f"Guard รันอัตโนมัติทุก `{pos_guard.POSGUARD_CHECK_INTERVAL}s`",
+            parse_mode="Markdown"
+        )
+
+
+async def _pos_guard_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """PTB repeating job — เรียก POS Guard ทุก POSGUARD_CHECK_INTERVAL วินาที"""
+    await pos_guard.check_once()
+
+
+async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /testscan — รัน pipeline ครบทุก agent แต่ไม่เปิด trade
+    แสดงผล vote ของแต่ละ agent + reasoning เพื่อ debug
+    """
+    await update.message.reply_text("🔬 *Test Scan* — รัน pipeline (ไม่เปิด trade จริง)...", parse_mode="Markdown")
+
+    result = supervisor.run()
+
+    stages  = result.get("stages", {})
+    votes   = result.get("votes", {})
+    details = result.get("vote_details", {})
+
+    # ── Stage results ────────────────────────────────────────
+    smc_stage = stages.get("smc", "?")
+    chart_s   = stages.get("chart", {})
+    bias_s    = stages.get("bias",  {})
+    news_s    = stages.get("news",  {})
+    sup_s     = stages.get("supervisor", {})
+    risk_s    = stages.get("risk", {})
+
+    chart_vote = votes.get("chart")
+    bias_vote  = votes.get("bias")
+    news_vote  = votes.get("news")
+    vote_score = result.get("vote_score", 0)
+
+    def vi(v):  # vote icon
+        if v is True:  return "✅ YES"
+        if v is False: return "❌ NO"
+        return "⬜ —"
+
+    # ── Format ───────────────────────────────────────────────
+    price = result.get("current_price", "?")
+
+    if smc_stage == "NO_SIGNAL":
+        msg = (
+            f"🔬 *Test Scan Result*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"💰 ราคา: `{price}`\n"
+            f"⬜ SMC Engine: ไม่มี setup\n"
+            f"→ ไม่เรียก Claude เลย (ประหยัด cost)\n"
+        )
+    else:
+        # Chart
+        chart_conf = chart_s.get("confidence", "?")
+        chart_sig  = chart_s.get("signal", "?")
+        chart_r    = details.get("chart", chart_s.get("reasoning", ""))[:120]
+
+        # Bias
+        bias_td    = bias_s.get("trade_direction", "?")
+        bias_r     = details.get("bias", "")[:100]
+        bias_cache = "📦 cached" if bias_s.get("from_cache") else ""
+
+        # News
+        news_risk  = news_s.get("risk_level", "?")
+        news_key   = news_s.get("key_event") or "ไม่มีข่าว"
+        news_r     = details.get("news", "")[:100]
+
+        # Supervisor
+        sup_conf   = sup_s.get("confidence", "?") if sup_s else "—"
+        sup_r      = sup_s.get("reasoning", "—")[:150] if sup_s else "—"
+
+        # Reject reason
+        reject     = result.get("reject_reason", "")
+
+        # Final
+        final_icon = "🟢 APPROVED" if result.get("approved") else "🔴 REJECTED"
+        final_sig  = result.get("final_signal", "NO_TRADE")
+
+        msg = (
+            f"🔬 *Test Scan — {final_icon}*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"💰 ราคา: `{price}`\n\n"
+            f"*[1] SMC Engine:* ✅ พบ setup\n"
+            f"*[2] Chart Analyst:* {vi(chart_vote)}\n"
+            f"   Signal: `{chart_sig}` Conf: `{chart_conf}%`\n"
+            f"   _{chart_r}_\n\n"
+            f"*[3] Bias Analyst:* {vi(bias_vote)} {bias_cache}\n"
+            f"   Direction: `{bias_td}`\n"
+            f"   _{bias_r}_\n\n"
+            f"*[4] News Scout:* {vi(news_vote)}\n"
+            f"   Risk: `{news_risk}` | Key: `{news_key}`\n"
+            f"   _{news_r}_\n\n"
+            f"*[5] Vote:* `{vote_score}/3`\n"
+        )
+
+        if risk_s:
+            veto = "⛔ VETO" if risk_s.get("veto") else "✅ OK"
+            msg += f"*[6] Risk Manager:* {veto} | Lot: `{risk_s.get('lot')}` ({risk_s.get('risk_pct')}%)\n"
+
+        if sup_s:
+            msg += (
+                f"*[7] Supervisor:* Conf: `{sup_conf}%`\n"
+                f"   _{sup_r}_\n\n"
+            )
+
+        if reject:
+            msg += f"⛔ Reject: _{reject[:150]}_\n"
+        elif result.get("approved"):
+            msg += (
+                f"\n✅ *ผ่านทุก stage — จะเปิด {final_sig}*\n"
+                f"SL: `{result.get('stop_loss')}` | TP: `{result.get('take_profit')}`\n"
+                f"_(testscan ไม่เปิด trade จริง)_"
+            )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+# ── Trade monitor constants ────────────────────────────
+TRAIL_PIPS   = 1000   # trailing distance (pips)
+REENTRY_MIN_PROFIT = 200   # ต้องเคย profit อย่างน้อย 200p ถึงจะ check reentry
+REENTRY_NEAR_ENTRY = 50    # ราคาอยู่ห่างจาก entry ≤ 50p ถือว่า "กลับมาแล้ว"
+
+
+async def cmd_closetrade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /closetrade [exit_price] — ปิด open trade monitor
+    ตัวอย่าง: /closetrade 4350
+    """
+    ot = bot_state.get("open_trade")
+    if not ot:
+        await update.message.reply_text("ℹ️ ไม่มี trade ที่กำลัง monitor อยู่")
+        return
+
+    exit_price = None
+    if ctx.args:
+        try:
+            exit_price = float(ctx.args[0])
+        except ValueError:
+            pass
+
+    direction  = ot.get("direction")
+    entry      = ot.get("entry", 0)
+    peak       = ot.get("peak_price", entry)
+    trade_id   = ot.get("trade_id")
+    pnl_str    = ""
+    if exit_price:
+        pnl = (exit_price - entry) if direction == "BUY" else (entry - exit_price)
+        pnl_str = f"\nP&L ประมาณ: `{pnl:+.1f}p`"
+
+    state_manager.set_field(bot_state, "open_trade", None)
+
+    await update.message.reply_text(
+        f"🔴 *Trade Monitor ปิดแล้ว*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"Trade #{trade_id} | {direction} | Entry: `{entry}`\n"
+        f"Peak ที่เคยถึง: `{peak}`"
+        + pnl_str
+        + (f"\n\nบันทึกผล: `/outcome {trade_id} win/loss/be [pips]`" if trade_id else ""),
+        parse_mode="Markdown"
+    )
+
+
+async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    ทำงานทุก 5 นาที — เช็ค trailing stop และ re-entry opportunity
+    """
+    ot = bot_state.get("open_trade")
+    if not ot:
+        return
+
+    direction = ot.get("direction")
+    entry     = ot.get("entry", 0)
+    current_sl = ot.get("current_sl", 0)
+    peak      = ot.get("peak_price", entry)
+    trade_id  = ot.get("trade_id")
+
+    # ดึงราคาปัจจุบัน
+    try:
+        _, smc_summary = chart_analyst.get_price_data()
+        if not smc_summary:
+            return
+        current = smc_summary.get("current_price", 0)
+        if not current:
+            return
+    except Exception:
+        return
+
+    is_buy  = direction == "BUY"
+
+    # ── อัพเดต peak ─────────────────────────────────────
+    new_peak = max(peak, current) if is_buy else min(peak, current)
+    if new_peak != peak:
+        ot["peak_price"] = new_peak
+        state_manager.set_field(bot_state, "open_trade", ot)
+        peak = new_peak
+
+    # ── Trailing Stop Alert ──────────────────────────────
+    # suggested SL = peak ± TRAIL_PIPS
+    if is_buy:
+        suggested_sl = round(peak - TRAIL_PIPS, 2)
+        should_trail = suggested_sl > current_sl + 50
+    else:
+        suggested_sl = round(peak + TRAIL_PIPS, 2)
+        should_trail = suggested_sl < current_sl - 50
+
+    if should_trail:
+        profit_locked = abs(suggested_sl - ot.get("original_sl", current_sl))
+        ot["current_sl"] = suggested_sl
+        state_manager.set_field(bot_state, "open_trade", ot)
+
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=(
+                f"📈 *Trail SL Alert — Trade #{trade_id}*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{direction} | ราคาปัจจุบัน: `{current}`\n"
+                f"Peak: `{peak}`\n"
+                f"🛑 เลื่อน SL ไปที่: `{suggested_sl}` (+{profit_locked:.0f}p locked)\n"
+                f"_(trail distance {TRAIL_PIPS}p จาก peak)_"
+            ),
+            parse_mode="Markdown"
+        )
+
+    # ── Re-entry Analysis ────────────────────────────────
+    # trigger: เคย profit ≥200p แล้วราคากลับมาใกล้ entry
+    profit_had = abs(peak - entry)
+    near_entry = abs(current - entry) <= REENTRY_NEAR_ENTRY
+    already_analyzed = ot.get("reentry_analyzed", False)
+
+    if profit_had >= REENTRY_MIN_PROFIT and near_entry and not already_analyzed:
+        # mark ก่อนเพื่อกัน double-fire
+        ot["reentry_analyzed"] = True
+        state_manager.set_field(bot_state, "open_trade", ot)
+
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=f"🔄 ราคากลับมาที่ entry `{entry}` (เคย peak `{peak}`) — กำลังให้ Sonnet วิเคราะห์...",
+            parse_mode="Markdown"
+        )
+
+        try:
+            verdict = supervisor.analyze_reentry(ot, current, smc_summary)
+            reenter  = verdict.get("reenter", False)
+            conf     = verdict.get("confidence", 0)
+            reason   = verdict.get("reasoning", "")
+            new_sl   = verdict.get("new_sl")
+            caution  = verdict.get("caution", "")
+            icon     = "✅" if reenter else "❌"
+
+            msg = (
+                f"🔄 *Re-entry Analysis — Trade #{trade_id}*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{icon} Re-enter: *{'YES' if reenter else 'NO'}* ({conf}%)\n"
+                f"📝 {reason}\n"
+            )
+            if new_sl:
+                msg += f"🛑 SL ใหม่แนะนำ: `{new_sl}`\n"
+            if caution:
+                msg += f"⚠️ {caution}\n"
+            msg += f"\nราคาปัจจุบัน: `{current}` | Entry เดิม: `{entry}`"
+
+            await ctx.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=msg,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await ctx.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"⚠️ Re-entry analysis error: {e}"
+            )
+
+
+# ── Scan window builder (DST-aware) ───────────────────
+
+def _build_scan_windows() -> list[tuple]:
+    """
+    สร้าง scan windows ทุก 15 นาที ตามช่วงเวลาที่กำหนด
+    ปรับ DST อัตโนมัติ:
+      London windows  → shift +1h เมื่อ GMT (winter), 0 เมื่อ BST (summer)
+      NY windows      → shift +1h เมื่อ EST (winter), 0 เมื่อ EDT (summer)
+    """
+    import pytz
+    from datetime import datetime, time as dtime
+
+    thai_tz   = pytz.timezone("Asia/Bangkok")
+    london_tz = pytz.timezone("Europe/London")
+    ny_tz     = pytz.timezone("America/New_York")
+    now = datetime.now()
+
+    london_h = int(london_tz.localize(now).utcoffset().total_seconds() / 3600)
+    ny_h     = int(ny_tz.localize(now).utcoffset().total_seconds() / 3600)
+
+    # Base windows ตาม BST(+1) + EDT(-4) = summer hours
+    # GMT(+0) → shift +1h | EST(-5) → shift +1h
+    ld = max(0, 1 - london_h)   # 0=BST, 1=GMT
+    nd = max(0, -4 - ny_h)      # 0=EDT, 1=EST
+
+    def _range(sh, sm, eh, em, shift, label):
+        """สร้าง list ของ (time, label) ทุก 15 นาที"""
+        result = []
+        h, m = sh + shift, sm
+        end_mins = (eh + shift) * 60 + em
+        while h * 60 + m <= end_mins:
+            result.append((dtime(h % 24, m, tzinfo=thai_tz), label))
+            m += 15
+            if m >= 60:
+                m = 0
+                h += 1
+        return result
+
+    windows = []
+    windows += _range(6,  30, 8,  30, 0,  "🌅 Pre-Event")        # Asia/pre-8AM
+    windows += _range(10, 30, 12,  0, 0,  "🌏 Late Asia")         # late Tokyo
+    windows += _range(13, 45, 14, 30, ld, "🇬🇧 London Open")      # London open
+    windows += _range(15, 45, 16, 15, 0,  "🇯🇵 Japan Close")      # Tokyo close 09:00 UTC = 16:00 Thai
+    windows += _range(16, 30, 17, 30, ld, "🇬🇧 London Mid")       # London mid
+    windows += _range(19,  0, 21,  0, nd, "🇺🇸 NY Session")       # NY open/mid
+    windows += _range(22,  0, 23,  0, nd, "🇺🇸 NY Peak")          # NY peak
+    windows += _range(1,   0,  2,  0, nd, "🌙 Late NY")           # late NY
+
+    dst_info = f"London DST+{ld}h / NY DST+{nd}h"
+    print(f"📅 Scan windows built: {len(windows)} slots/day ({dst_info})")
+    return windows
+
+
+# ── Daily close summary ────────────────────────────────
+
+async def daily_close_summary(ctx: ContextTypes.DEFAULT_TYPE):
+    """ส่งสรุปผลเทรดประจำวัน ตอนตลาดปิด (23:30 Thai)"""
+    msg = format_today_summary()
+    await ctx.bot.send_message(
+        chat_id=TELEGRAM_CHAT_ID,
+        text=msg,
+        parse_mode="Markdown"
+    )
+
+
 # ── Auto scan job ──────────────────────────────────────
 
 async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
@@ -493,6 +1111,12 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     session_label = (ctx.job.data or {}).get("session_label", "🔍 Auto Scan")
+
+    # ── ข้ามถ้ามีข่าว High Impact ──────────────────────
+    blocked, block_reason = news_scout.should_block_trade()
+    if blocked:
+        # ไม่ส่ง message เพื่อลด noise — แค่ skip เงียบๆ
+        return
 
     # แจ้งว่าเริ่ม scan session ไหน
     await ctx.bot.send_message(
@@ -502,36 +1126,12 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     result = supervisor.run()
-    state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    log_scan(result)
 
-    if result.get("approved"):
-        pending = result.get("analysis", {})
-        pending["lot"]      = result.get("lot")
-        pending["risk_pct"] = result.get("risk_pct")
-        state_manager.set_field(bot_state, "pending_signal", pending)
+    async def send(text, **kw):
+        await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
 
-        message = supervisor.format_alert(result)
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
-                InlineKeyboardButton("❌ Skip", callback_data="skip")
-            ]
-        ])
-
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=message,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-    else:
-        # ถ้าไม่มี setup แจ้งสั้นๆ แค่ reject reason
-        reason = result.get("reject_reason", "ไม่มี setup")
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=f"{session_label} — ❌ {reason}",
-            parse_mode="Markdown"
-        )
+    await _handle_scan_result(result, send)
 
 # ── Main ───────────────────────────────────────────────
 
@@ -556,6 +1156,10 @@ def run():
     app.add_handler(CommandHandler("scalein", cmd_scalein))
     app.add_handler(CommandHandler("paper", cmd_paper))
     app.add_handler(CommandHandler("pnl", cmd_pnl))
+    app.add_handler(CommandHandler("closetrade", cmd_closetrade))
+    app.add_handler(CommandHandler("testscan", cmd_testscan))
+    app.add_handler(CommandHandler("mt5", cmd_mt5))
+    app.add_handler(CommandHandler("posguard", cmd_posguard))
 
     # Callback (ปุ่ม)
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -563,29 +1167,33 @@ def run():
     # Free text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Session-Based Scanning — scan เฉพาะช่วงสำคัญ 5 ครั้ง/วัน
-    import pytz
-    from datetime import time as dtime
-    thai_tz = pytz.timezone("Asia/Bangkok")
-
-    session_times = [
-        (dtime(1,  0,  tzinfo=thai_tz), "🌙 Late NY Afternoon"),   # 18:00 UTC / 14:00 EDT
-        (dtime(3,  0,  tzinfo=thai_tz), "🌙 NY Close Momentum"),   # 20:00 UTC / 16:00 EDT
-        (dtime(7, 15, tzinfo=thai_tz),  "🇯🇵 Tokyo Open"),
-        # Tokyo Mid (10:00-12:00 Thai) ทดสอบแล้วไม่มี edge แม้ score≥7
-        (dtime(13, 45, tzinfo=thai_tz), "🇬🇧 London Open"),
-        (dtime(15, 45, tzinfo=thai_tz), "🇬🇧 London Mid"),
-        # 20:15 Thai = 09:15 ET — ช่วง NY Pre-Open หลัง spread นิ่ง
-        (dtime(20, 15, tzinfo=thai_tz), "🇺🇸 NY Pre-Open"),
-        (dtime(22, 45, tzinfo=thai_tz), "🇺🇸 NY Peak"),
-    ]
-
-    for scan_time, label in session_times:
+    # Session-Based Scanning — 15 นาที ตามช่วง session จริง (DST-aware)
+    for scan_time, label in _build_scan_windows():
         app.job_queue.run_daily(
             auto_scan,
             time=scan_time,
             data={"session_label": label}
         )
+
+    # Trade monitor — ทุก 5 นาที ตรวจ trailing + reentry
+    app.job_queue.run_repeating(trade_monitor, interval=300, first=60)
+
+    # POS Guard — เช็ค SL ของทุก open position ทุก N วินาที
+    if pos_guard.POSGUARD_ENABLED:
+        app.job_queue.run_repeating(
+            _pos_guard_job,
+            interval=pos_guard.POSGUARD_CHECK_INTERVAL,
+            first=30,
+        )
+
+    # Daily close summary — 23:30 Thai (NY ปิด)
+    import pytz
+    from datetime import time as dtime
+    thai_tz = pytz.timezone("Asia/Bangkok")
+    app.job_queue.run_daily(
+        daily_close_summary,
+        time=dtime(23, 30, tzinfo=thai_tz),
+    )
 
     print("🏢 SmartAgentTrade Bot เริ่มทำงานแล้ว...")
     app.run_polling()

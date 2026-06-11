@@ -1,0 +1,532 @@
+// This Pine Script™ code is subject to the Mozilla Public License 2.0
+// © Beam — ported from SMC bot smc_engine.py (detect_reversal + detect_trend_follow)
+//@version=5
+indicator("SMC Strategy By Beam", shorttitle="SMC-S Beam", overlay=true, max_lines_count=200, max_labels_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════
+g_sw   = "Swing / Structure"
+i_swing_len  = input.int(5,  "Swing Length",   group=g_sw, minval=2, maxval=20)
+
+g_sig  = "Signals"
+i_show_rev  = input.bool(true,  "Show Reversal (R)",     group=g_sig)
+i_show_tf   = input.bool(true,  "Show Trend Follow (TF)", group=g_sig)
+i_min_score = input.int(5,  "Min Score (0-10)",          group=g_sig, minval=0, maxval=10)
+i_cooldown  = input.int(20, "Cooldown Bars",             group=g_sig, minval=5, maxval=100)
+
+g_sl   = "SL / TP"
+i_show_sltp = input.bool(true,  "Show SL/TP Lines", group=g_sl)
+i_rr_min    = input.float(2.0,  "Min RR",          group=g_sl, minval=1.0, step=0.5)
+i_sl_atr    = input.float(1.0,  "SL ATR buffer",   group=g_sl, minval=0.5, step=0.1)
+
+g_fvg  = "Fair Value Gap"
+i_show_fvg  = input.bool(true, "Show FVG",        group=g_fvg)
+i_fvg_fill  = input.color(color.new(#FFD700, 80), "FVG Color", group=g_fvg)
+
+g_htf  = "HTF Bias"
+i_use_h1    = input.bool(true, "H1 Bias Filter",  group=g_htf)
+i_use_h4    = input.bool(true, "H4 Bias Filter",  group=g_htf)
+
+// ═══════════════════════════════════════════════════════════════════
+// ATR
+// ═══════════════════════════════════════════════════════════════════
+atr = ta.atr(14)
+
+// ═══════════════════════════════════════════════════════════════════
+// HTF BIAS (price vs 20-bar midpoint — same as bot)
+// ═══════════════════════════════════════════════════════════════════
+h1_h = request.security(syminfo.tickerid, "60",  ta.highest(high, 20))
+h1_l = request.security(syminfo.tickerid, "60",  ta.lowest(low,  20))
+h1_c = request.security(syminfo.tickerid, "60",  close)
+h4_h = request.security(syminfo.tickerid, "240", ta.highest(high, 20))
+h4_l = request.security(syminfo.tickerid, "240", ta.lowest(low,  20))
+h4_c = request.security(syminfo.tickerid, "240", close)
+
+h1_mid  = (h1_h + h1_l) / 2.0
+h4_mid  = (h4_h + h4_l) / 2.0
+h1_bull = h1_c > h1_mid
+h4_bull = h4_c > h4_mid
+
+// ═══════════════════════════════════════════════════════════════════
+// SWING POINTS  (ta.pivothigh / pivotlow)
+// ═══════════════════════════════════════════════════════════════════
+ph = ta.pivothigh(high, i_swing_len, i_swing_len)
+pl = ta.pivotlow (low,  i_swing_len, i_swing_len)
+
+// track last 5 swing highs/lows (price level)
+var float[] sh_prices = array.new_float(0)
+var int[]   sh_bars   = array.new_int(0)
+var float[] sl_prices = array.new_float(0)
+var int[]   sl_bars   = array.new_int(0)
+
+if not na(ph)
+    array.push(sh_prices, ph)
+    array.push(sh_bars,   bar_index - i_swing_len)
+    if array.size(sh_prices) > 10
+        array.shift(sh_prices)
+        array.shift(sh_bars)
+
+if not na(pl)
+    array.push(sl_prices, pl)
+    array.push(sl_bars,   bar_index - i_swing_len)
+    if array.size(sl_prices) > 10
+        array.shift(sl_prices)
+        array.shift(sl_bars)
+
+// Nearest swing high/low above/below current price
+nearest_swing_high() =>
+    res = float(na)
+    if array.size(sh_prices) > 0
+        for i = array.size(sh_prices) - 1 to 0
+            p = array.get(sh_prices, i)
+            if p > close + atr * 0.5
+                res := p
+                break
+    res
+
+nearest_swing_low() =>
+    res = float(na)
+    if array.size(sl_prices) > 0
+        for i = array.size(sl_prices) - 1 to 0
+            p = array.get(sl_prices, i)
+            if p < close - atr * 0.5
+                res := p
+                break
+    res
+
+recent_swing_high_5 = array.size(sh_prices) > 0 ? array.get(sh_prices, array.size(sh_prices)-1) : float(na)
+recent_swing_low_5  = array.size(sl_prices) > 0 ? array.get(sl_prices, array.size(sl_prices)-1)  : float(na)
+
+// ═══════════════════════════════════════════════════════════════════
+// STRUCTURE (BOS / CHoCH) — port จาก _find_structure()
+// ═══════════════════════════════════════════════════════════════════
+var string curr_bias  = "neutral"
+var string last_struct = "none"    // "BOS_bull","BOS_bear","CHoCH_bull","CHoCH_bear"
+var float  last_sh_used = float(na)
+var float  last_sl_used = float(na)
+
+// update reference swing levels
+ref_sh = array.size(sh_prices) > 0 ? array.get(sh_prices, array.size(sh_prices)-1) : float(na)
+ref_sl = array.size(sl_prices) > 0 ? array.get(sl_prices, array.size(sl_prices)-1)  : float(na)
+
+struct_bull_bos   = false
+struct_bear_bos   = false
+struct_bull_choch = false
+struct_bear_choch = false
+
+if not na(ref_sh) and close > ref_sh
+    if curr_bias == "bearish"
+        struct_bull_choch := true
+        last_struct := "CHoCH_bull"
+    else
+        struct_bull_bos := true
+        last_struct := "BOS_bull"
+    curr_bias := "bullish"
+
+if not na(ref_sl) and close < ref_sl
+    if curr_bias == "bullish"
+        struct_bear_choch := true
+        last_struct := "CHoCH_bear"
+    else
+        struct_bear_bos := true
+        last_struct := "BOS_bear"
+    curr_bias := "bearish"
+
+bias_bull = curr_bias == "bullish"
+bias_bear = curr_bias == "bearish"
+
+// CHoCH age tracking
+var int choch_bull_age = 999
+var int choch_bear_age = 999
+choch_bull_age := struct_bull_choch ? 0 : math.min(choch_bull_age + 1, 999)
+choch_bear_age := struct_bear_choch ? 0 : math.min(choch_bear_age + 1, 999)
+recent_choch_bull = choch_bull_age <= 5
+recent_choch_bear = choch_bear_age <= 5
+
+// ═══════════════════════════════════════════════════════════════════
+// ORDER BLOCKS — last opposite candle before BOS/CHoCH
+// ═══════════════════════════════════════════════════════════════════
+var float ob_bull_top = float(na)
+var float ob_bull_bot = float(na)
+var int   ob_bull_bar = -999
+var float ob_bear_top = float(na)
+var float ob_bear_bot = float(na)
+var int   ob_bear_bar = -999
+
+// Bullish OB: last bearish candle before bullish BOS/CHoCH
+if struct_bull_bos or struct_bull_choch
+    for j = 1 to 10
+        if close[j] < open[j] and (open[j] - close[j]) > atr * 0.3
+            ob_bull_top := open[j]
+            ob_bull_bot := low[j]
+            ob_bull_bar := bar_index - j
+            break
+
+// Bearish OB: last bullish candle before bearish BOS/CHoCH
+if struct_bear_bos or struct_bear_choch
+    for j = 1 to 10
+        if close[j] > open[j] and (close[j] - open[j]) > atr * 0.3
+            ob_bear_top := high[j]
+            ob_bear_bot := close[j]
+            ob_bear_bar := bar_index - j
+            break
+
+// Mitigation check
+var bool ob_bull_mitigated = false
+var bool ob_bear_mitigated = false
+if not na(ob_bull_bot) and low < ob_bull_bot
+    ob_bull_mitigated := true
+if not na(ob_bear_top) and high > ob_bear_top
+    ob_bear_mitigated := true
+
+in_bull_ob = not ob_bull_mitigated and not na(ob_bull_bot) and low <= ob_bull_top and high >= ob_bull_bot
+in_bear_ob = not ob_bear_mitigated and not na(ob_bear_top) and low <= ob_bear_top and high >= ob_bear_bot
+
+// ═══════════════════════════════════════════════════════════════════
+// FAIR VALUE GAPS — port จาก _find_fvg()
+// Bullish FVG: low[0] > high[2]
+// Bearish FVG: high[0] < low[2]
+// ═══════════════════════════════════════════════════════════════════
+bull_fvg = low > high[2]
+bear_fvg = high < low[2]
+
+bull_fvg_top = bull_fvg ? low  : float(na)
+bull_fvg_bot = bull_fvg ? high[2] : float(na)
+bear_fvg_top = bear_fvg ? low[2]  : float(na)
+bear_fvg_bot = bear_fvg ? high    : float(na)
+
+// In FVG check (nearest unfilled FVG)
+var float active_bull_fvg_top = float(na)
+var float active_bull_fvg_bot = float(na)
+var float active_bear_fvg_top = float(na)
+var float active_bear_fvg_bot = float(na)
+
+if bull_fvg
+    active_bull_fvg_top := bull_fvg_top
+    active_bull_fvg_bot := bull_fvg_bot
+if bear_fvg
+    active_bear_fvg_top := bear_fvg_top
+    active_bear_fvg_bot := bear_fvg_bot
+
+// filled check
+if not na(active_bull_fvg_bot) and low < active_bull_fvg_bot
+    active_bull_fvg_top := float(na)
+    active_bull_fvg_bot := float(na)
+if not na(active_bear_fvg_top) and high > active_bear_fvg_top
+    active_bear_fvg_top := float(na)
+    active_bear_fvg_bot := float(na)
+
+in_bull_fvg = not na(active_bull_fvg_bot) and low <= active_bull_fvg_top and high >= active_bull_fvg_bot
+in_bear_fvg = not na(active_bear_fvg_top) and low <= active_bear_fvg_top and high >= active_bear_fvg_bot
+
+// Plot FVG boxes
+bgcolor(i_show_fvg and bull_fvg ? color.new(#FFD700, 88) : na, title="Bull FVG")
+bgcolor(i_show_fvg and bear_fvg ? color.new(#FF6B6B, 88) : na, title="Bear FVG")
+
+// ═══════════════════════════════════════════════════════════════════
+// SWEEP DETECTION — same as SMC_Complete_4
+// ═══════════════════════════════════════════════════════════════════
+sig_range = high - low
+grab_l = ta.lowest (low[1],  20)
+grab_h = ta.highest(high[1], 20)
+
+var int sweep_h_age = 999
+var int sweep_l_age = 999
+sweep_h_age := high > grab_h ? 0 : math.min(sweep_h_age + 1, 999)
+sweep_l_age := low  < grab_l ? 0 : math.min(sweep_l_age + 1, 999)
+recent_sweep_h = sweep_h_age <= 3
+recent_sweep_l = sweep_l_age <= 3
+
+// Candle quality
+body   = math.abs(close - open)
+rng    = math.max(sig_range, 0.001)
+upper  = high - math.max(close, open)
+lower  = math.min(close, open) - low
+
+bull_conf   = close > open and body / rng >= 0.5
+bull_wick_c = close > open and upper < lower * 0.35
+bear_conf   = close < open and body / rng >= 0.5
+bear_wick_c = close < open and lower < body * 0.35
+bull_candle = bull_conf or bull_wick_c
+bear_candle = bear_conf or bear_wick_c
+
+bull_wr = close > open ? (close - low)  / rng : 0.0
+bear_wr = close < open ? (high - close) / rng : 0.0
+
+bull_grab_strong = recent_sweep_l and close > open and bull_wr > 0.65
+bear_grab_strong = recent_sweep_h and close < open and bear_wr > 0.65
+bull_grab        = recent_sweep_l and close > open and bull_wr > 0.50
+bear_grab        = recent_sweep_h and close < open and bear_wr > 0.50
+
+// CHoCH + Sweep (Type C — highest quality)
+bull_choch_grab = recent_choch_bull and bull_grab
+bear_choch_grab = recent_choch_bear and bear_grab
+
+// ═══════════════════════════════════════════════════════════════════
+// MOMENTUM FILTER
+// ═══════════════════════════════════════════════════════════════════
+drop_5  = ta.highest(high, 6)[1] - close
+rally_5 = close - ta.lowest(low,  6)[1]
+momentum_bear = drop_5  > atr * 2.5
+momentum_bull = rally_5 > atr * 2.5
+
+// 50-bar extreme (override momentum for major structural sweeps)
+extreme_low  = ta.lowest(low[1],  50)
+extreme_high = ta.highest(high[1], 50)
+at_extreme_low  = low  < extreme_low
+at_extreme_high = high > extreme_high
+
+// ═══════════════════════════════════════════════════════════════════
+// EQUAL HIGHS / LOWS (EQH/EQL) — approximation
+// ═══════════════════════════════════════════════════════════════════
+eqh_threshold = atr * 0.3
+near_eqh = array.size(sh_prices) >= 2 and
+     math.abs(array.get(sh_prices, array.size(sh_prices)-1) -
+              array.get(sh_prices, array.size(sh_prices)-2)) < eqh_threshold
+near_eql = array.size(sl_prices) >= 2 and
+     math.abs(array.get(sl_prices, array.size(sl_prices)-1) -
+              array.get(sl_prices, array.size(sl_prices)-2)) < eqh_threshold
+
+// ═══════════════════════════════════════════════════════════════════
+// REVERSAL SCORE — port จาก detect_reversal()
+// Max 10 | threshold = i_min_score
+// ═══════════════════════════════════════════════════════════════════
+
+// Bullish Reversal Score
+bull_rev_score = 0
+bull_rev_score += recent_choch_bull  ? 3 : 0   // CHoCH fresh +3
+bull_rev_score += recent_sweep_l     ? 2 : 0   // Sweep low +2
+bull_rev_score += not na(recent_swing_low_5) and math.abs(close - recent_swing_low_5) < atr * 0.5 ? 1 : 0  // Near Weak Low +1
+bull_rev_score += near_eql           ? 1 : 0   // Near EQL +1
+bull_rev_score += bull_candle        ? 2 : bull_grab ? 1 : 0   // Confirm candle +2 / grab +1
+bull_rev_score += in_bull_ob         ? 1 : 0   // In OB +1
+bull_rev_score += (i_use_h1 ? h1_bull : true)  ? 1 : 0   // H1 aligned +1
+bull_rev_score += not momentum_bear  ? 1 : (at_extreme_low ? 1 : 0)  // No momentum / extreme +1
+
+// Bearish Reversal Score
+bear_rev_score = 0
+bear_rev_score += recent_choch_bear  ? 3 : 0
+bear_rev_score += recent_sweep_h     ? 2 : 0
+bear_rev_score += not na(recent_swing_high_5) and math.abs(close - recent_swing_high_5) < atr * 0.5 ? 1 : 0
+bear_rev_score += near_eqh           ? 1 : 0
+bear_rev_score += bear_candle        ? 2 : bear_grab ? 1 : 0
+bear_rev_score += in_bear_ob         ? 1 : 0
+bear_rev_score += (i_use_h1 ? not h1_bull : true) ? 1 : 0
+bear_rev_score += not momentum_bull  ? 1 : (at_extreme_high ? 1 : 0)
+
+// ═══════════════════════════════════════════════════════════════════
+// TREND FOLLOW SCORE — port จาก detect_trend_follow()
+// ต้องอยู่ใน OB หรือ FVG ก่อน (prerequisite)
+// ═══════════════════════════════════════════════════════════════════
+
+// Bullish Trend Follow (H4 bull prerequisite)
+h4_ok_bull = i_use_h4 ? h4_bull : true
+h4_ok_bear = i_use_h4 ? not h4_bull : true
+
+bull_tf_score = 0
+bull_tf_valid = false
+if h4_ok_bull
+    if in_bull_ob
+        bull_tf_score += 3
+        bull_tf_valid := true
+    if in_bull_fvg
+        bull_tf_score += in_bull_ob ? 1 : 2
+        bull_tf_valid := true
+    if bull_tf_valid
+        bull_tf_score += bull_candle ? 2 : bull_grab ? 1 : 0
+        bull_tf_score += not recent_choch_bear ? 1 : 0   // structure still bull
+        bull_tf_score += (i_use_h1 ? h1_bull : true) ? 1 : 0
+        bull_tf_score += not momentum_bear ? 1 : 0
+
+bear_tf_score = 0
+bear_tf_valid = false
+if h4_ok_bear
+    if in_bear_ob
+        bear_tf_score += 3
+        bear_tf_valid := true
+    if in_bear_fvg
+        bear_tf_score += in_bear_ob ? 1 : 2
+        bear_tf_valid := true
+    if bear_tf_valid
+        bear_tf_score += bear_candle ? 2 : bear_grab ? 1 : 0
+        bear_tf_score += not recent_choch_bull ? 1 : 0
+        bear_tf_score += (i_use_h1 ? not h1_bull : true) ? 1 : 0
+        bear_tf_score += not momentum_bull ? 1 : 0
+
+// ═══════════════════════════════════════════════════════════════════
+// SIGNAL DECISION — pick best setup (reversal vs trend follow)
+// ═══════════════════════════════════════════════════════════════════
+var int last_long_bar  = -999
+var int last_short_bar = -999
+long_cd  = (bar_index - last_long_bar)  >= i_cooldown
+short_cd = (bar_index - last_short_bar) >= i_cooldown
+
+// Long signal
+long_rev = i_show_rev and bull_rev_score >= i_min_score and bull_rev_score >= bear_rev_score and long_cd
+long_tf  = i_show_tf  and bull_tf_valid and bull_tf_score >= i_min_score and long_cd
+long_sig = long_rev or long_tf
+
+// Short signal
+short_rev = i_show_rev and bear_rev_score >= i_min_score and bear_rev_score > bull_rev_score and short_cd
+short_tf  = i_show_tf  and bear_tf_valid and bear_tf_score >= i_min_score and short_cd
+short_sig = short_rev or short_tf
+
+// Final score for display
+long_score  = long_tf  ? bull_tf_score  : bull_rev_score
+short_score = short_tf ? bear_tf_score  : bear_rev_score
+
+// Setup type label
+long_type  = long_tf  ? "TF" : "R"
+short_type = short_tf ? "TF" : "R"
+
+// Stars
+stars_str(s) =>
+    s >= 8 ? "★★★" : s >= 5 ? "★★" : "★"
+
+long_stars  = stars_str(long_score)
+short_stars = stars_str(short_score)
+
+// ═══════════════════════════════════════════════════════════════════
+// SL / TP CALCULATION — port จาก detect_reversal() + detect_trend_follow()
+// ═══════════════════════════════════════════════════════════════════
+calc_long_sltp() =>
+    // SL: ใต้ recent swing low หรือ OB bottom
+    sl_base = in_bull_ob and not na(ob_bull_bot) ? ob_bull_bot :
+              not na(recent_swing_low_5) ? recent_swing_low_5 :
+              close - atr * i_sl_atr
+    sl = sl_base - atr * 0.15
+    sl_dist = math.max(close - sl, atr * 0.5)
+    // TP: nearest swing high above, minimum RR
+    tp_swing = nearest_swing_high()
+    min_tp   = close + sl_dist * i_rr_min
+    tp = not na(tp_swing) ? math.max(tp_swing, min_tp) : min_tp
+    [sl, tp]
+
+calc_short_sltp() =>
+    sl_base = in_bear_ob and not na(ob_bear_top) ? ob_bear_top :
+              not na(recent_swing_high_5) ? recent_swing_high_5 :
+              close + atr * i_sl_atr
+    sl = sl_base + atr * 0.15
+    sl_dist = math.max(sl - close, atr * 0.5)
+    tp_swing = nearest_swing_low()
+    min_tp   = close - sl_dist * i_rr_min
+    tp = not na(tp_swing) ? math.min(tp_swing, min_tp) : min_tp
+    [sl, tp]
+
+// ═══════════════════════════════════════════════════════════════════
+// PLOT SIGNALS + SL/TP LABELS
+// ═══════════════════════════════════════════════════════════════════
+long_col  = long_stars  == "★★★" ? #00C853 : long_stars  == "★★" ? color.new(#00C853, 25) : color.new(#00C853, 55)
+short_col = short_stars == "★★★" ? #D50000  : short_stars == "★★" ? color.new(#D50000, 25)  : color.new(#D50000, 55)
+
+plotshape(long_sig,  "Long",  shape.triangleup,   location.belowbar, long_col,  size=long_stars  == "★★★" ? size.large : size.normal, text=long_stars,  textcolor=color.white)
+plotshape(short_sig, "Short", shape.triangledown, location.abovebar, short_col, size=short_stars == "★★★" ? size.large : size.normal, text=short_stars, textcolor=color.white)
+
+// SL/TP Lines + Labels
+var line  sl_line  = na
+var line  tp_line  = na
+var label sig_lbl  = na
+
+if long_sig and i_show_sltp
+    [sl, tp] = calc_long_sltp()
+    rr = (tp - close) / math.max(close - sl, 0.001)
+    label.delete(sig_lbl)
+    line.delete(sl_line)
+    line.delete(tp_line)
+    sl_line := line.new(bar_index, sl, bar_index + 30, sl, color=#FF5252, width=1, style=line.style_dashed)
+    tp_line := line.new(bar_index, tp, bar_index + 30, tp, color=#00C853, width=1, style=line.style_dashed)
+    sig_lbl := label.new(bar_index, low - atr,
+         long_type + " " + long_stars + " " + str.tostring(long_score) + "/10\n" +
+         "SL " + str.tostring(math.round(sl, 2)) + "\n" +
+         "TP " + str.tostring(math.round(tp, 2)) + "\n" +
+         "RR 1:" + str.tostring(math.round(rr, 1)),
+         color=color.new(#00C853, 20), textcolor=color.white, size=size.small, style=label.style_label_upper_right)
+    last_long_bar := bar_index
+
+if short_sig and i_show_sltp
+    [sl, tp] = calc_short_sltp()
+    rr = (close - tp) / math.max(sl - close, 0.001)
+    label.delete(sig_lbl)
+    line.delete(sl_line)
+    line.delete(tp_line)
+    sl_line := line.new(bar_index, sl, bar_index + 30, sl, color=#FF5252, width=1, style=line.style_dashed)
+    tp_line := line.new(bar_index, tp, bar_index + 30, tp, color=#00C853, width=1, style=line.style_dashed)
+    sig_lbl := label.new(bar_index, high + atr,
+         short_type + " " + short_stars + " " + str.tostring(short_score) + "/10\n" +
+         "SL " + str.tostring(math.round(sl, 2)) + "\n" +
+         "TP " + str.tostring(math.round(tp, 2)) + "\n" +
+         "RR 1:" + str.tostring(math.round(rr, 1)),
+         color=color.new(#D50000, 20), textcolor=color.white, size=size.small, style=label.style_label_lower_right)
+    last_short_bar := bar_index
+
+// ── update cooldown (without SL/TP)
+if long_sig and not i_show_sltp
+    last_long_bar := bar_index
+if short_sig and not i_show_sltp
+    last_short_bar := bar_index
+
+// ═══════════════════════════════════════════════════════════════════
+// INFO PANEL
+// ═══════════════════════════════════════════════════════════════════
+var table tbl = table.new(position.bottom_right, 2, 9,
+     bgcolor=color.new(#0D1117, 5),
+     border_color=color.new(#555555, 50), border_width=1,
+     frame_color=color.new(#555555, 30), frame_width=1)
+
+if barstate.islast
+    // Header
+    table.cell(tbl, 0, 0, "SMC-S Beam",   text_color=#CCCCCC, text_size=size.small, bgcolor=color.new(#1A1D2E, 0), text_halign=text.align_center)
+    table.cell(tbl, 1, 0, "สถานะ",         text_color=#CCCCCC, text_size=size.small, bgcolor=color.new(#1A1D2E, 0), text_halign=text.align_center)
+    // Bias rows
+    bias_txt = bias_bull ? "▲ BULL" : bias_bear ? "▼ BEAR" : "— NEUT"
+    bias_col = bias_bull ? color.new(#00C853, 55) : bias_bear ? color.new(#D50000, 55) : color.new(#555555, 55)
+    table.cell(tbl, 0, 1, "Swing",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 1, bias_txt,  text_color=color.white, text_size=size.small, bgcolor=bias_col)
+
+    h1_txt = h1_bull ? "▲ BULL" : "▼ BEAR"
+    h1_col = h1_bull ? color.new(#00C853, 68) : color.new(#D50000, 68)
+    table.cell(tbl, 0, 2, "H1",      text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 2, h1_txt,    text_color=color.white, text_size=size.small, bgcolor=h1_col)
+
+    h4_txt = h4_bull ? "▲ BULL" : "▼ BEAR"
+    h4_col = h4_bull ? color.new(#00C853, 68) : color.new(#D50000, 68)
+    table.cell(tbl, 0, 3, "H4",      text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 3, h4_txt,    text_color=color.white, text_size=size.small, bgcolor=h4_col)
+
+    // OB / FVG
+    ob_txt = in_bull_ob ? "Bull OB ✅" : in_bear_ob ? "Bear OB ✅" : "—"
+    ob_col = in_bull_ob ? color.new(#00C853, 68) : in_bear_ob ? color.new(#D50000, 68) : color.new(#0D1117, 0)
+    table.cell(tbl, 0, 4, "In OB",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 4, ob_txt,    text_color=color.white, text_size=size.small, bgcolor=ob_col)
+
+    fvg_txt = in_bull_fvg ? "Bull FVG ✅" : in_bear_fvg ? "Bear FVG ✅" : "—"
+    fvg_col = in_bull_fvg ? color.new(#FFD700, 60) : in_bear_fvg ? color.new(#FF6B6B, 60) : color.new(#0D1117, 0)
+    table.cell(tbl, 0, 5, "In FVG",  text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 5, fvg_txt,   text_color=color.white, text_size=size.small, bgcolor=fvg_col)
+
+    // CHoCH
+    choch_txt = recent_choch_bull ? "CHoCH ▲" : recent_choch_bear ? "CHoCH ▼" : "—"
+    choch_col = recent_choch_bull ? color.new(#00C853, 60) : recent_choch_bear ? color.new(#D50000, 60) : color.new(#0D1117, 0)
+    table.cell(tbl, 0, 6, "CHoCH",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 6, choch_txt, text_color=color.white, text_size=size.small, bgcolor=choch_col)
+
+    // Momentum
+    mom_txt = momentum_bear ? "↓ Bear" : momentum_bull ? "↑ Bull" : "Normal"
+    mom_col = momentum_bear ? color.new(#D50000, 55) : momentum_bull ? color.new(#00C853, 55) : color.new(#0D1117, 0)
+    table.cell(tbl, 0, 7, "Momentum", text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 7, mom_txt,    text_color=color.white, text_size=size.small, bgcolor=mom_col)
+
+    // Score
+    score_long_txt  = "L:" + str.tostring(bull_rev_score) + " R / " + str.tostring(bull_tf_score) + " TF"
+    score_short_txt = "S:" + str.tostring(bear_rev_score) + " R / " + str.tostring(bear_tf_score) + " TF"
+    table.cell(tbl, 0, 8, score_long_txt,  text_color=#88FF88, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 8, score_short_txt, text_color=#FF8888, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
+
+// ═══════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════
+alertcondition(long_sig,  "Long Signal",  "SMC-S Long ✅")
+alertcondition(short_sig, "Short Signal", "SMC-S Short ✅")
+alertcondition(long_sig  and long_stars  == "★★★", "Long ★★★",  "SMC-S Strong Long ★★★")
+alertcondition(short_sig and short_stars == "★★★", "Short ★★★", "SMC-S Strong Short ★★★")

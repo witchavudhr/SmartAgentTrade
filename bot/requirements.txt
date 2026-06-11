@@ -1,0 +1,20 @@
+# SmartAgentTrade — Python dependencies
+# pip install -r requirements.txt
+
+# AI
+anthropic>=0.40.0
+
+# Telegram Bot
+python-telegram-bot[job-queue]>=21.0
+
+# Market Data
+yfinance>=0.2.40
+
+# MT5 (Windows only)
+# pip install MetaTrader5
+# MetaTrader5>=5.0.45
+
+# Utils
+python-dotenv>=1.0.0
+pytz>=2024.1
+requests>=2.31.0

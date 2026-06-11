@@ -34,6 +34,7 @@ from agents.smc_engine import SMCEngine, summarize, detect_reversal, detect_tren
 from agents.news_calendar import NewsCalendar
 from agents import smc_engine
 from agents.chart_analyst import confirm_signal
+from agents import chart_analyst as _chart, supervisor as _supervisor, risk_manager as _risk
 
 smc = SMCEngine(swing_length=5)
 
@@ -309,6 +310,155 @@ def _trade_result(outcome, bars_held, entry, exit_price, pnl_pips, rr_plan, sign
     }
 
 
+# ── Live Pipeline (Realistic Backtest) ───────────────────────────
+_LIVE_CACHE_PATH = Path(__file__).parent / "data" / "ai_cache_live.json"
+
+def confirm_signal_live_pipeline(
+    df_slice: pd.DataFrame,
+    signal: dict,
+    h4_bias: str,
+    bar_time: str,
+    confidence_threshold: int = 70,
+) -> dict:
+    """
+    Realistic 4-agent pipeline สำหรับ backtest — เสมือน live trade จริง
+    - Chart Analyst  (Sonnet) → vote YES/NO + signal
+    - Bias Analyst   (rule-based จาก h4_bias ที่คำนวณแล้ว) → vote YES/NO
+    - News Scout     (rule-based — bar ผ่าน news filter แล้ว) → vote YES
+    - Supervisor     (Sonnet) → APPROVE/REJECT ถ้า votes ≥ 2/3
+    Cache: data/ai_cache_live.json — re-run ฟรี
+    """
+    cache_key = f"LIVE|{bar_time}|{signal['signal']}|{signal.get('score', 0)}"
+
+    _LIVE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cache: dict = {}
+    if _LIVE_CACHE_PATH.exists():
+        try:
+            cache = json.loads(_LIVE_CACHE_PATH.read_text())
+        except Exception:
+            cache = {}
+
+    if cache_key in cache:
+        cached = cache[cache_key]
+        return cached
+
+    # ── Stage 1: Build SMC Summary จาก historical df_slice ──────────
+    smc_result  = smc.analyze(df_slice)
+    current     = round(df_slice["close"].iloc[-1], 2)
+    smc_summary = summarize(smc_result, current, df_slice)
+    smc_summary["pair"]              = "XAUUSD"
+    smc_summary["timeframe"]         = "M5"
+    smc_summary["analyzed_at"]       = bar_time
+    smc_summary["tradeable_session"] = True  # ผ่าน session filter แล้ว
+
+    # ── Stage 2: Chart Analyst (Sonnet) ─────────────────────────────
+    chart        = _chart.analyze(smc_summary)
+    chart_vote   = chart.get("vote", "NO")
+    chart_signal = chart.get("signal", "NO_TRADE")
+
+    if chart_signal == "NO_TRADE" or chart_vote == "NO":
+        entry = {
+            "confirmed": False, "vote_score": 0,
+            "chart_vote": chart_vote,
+            "reasoning": f"Chart NO: {chart.get('vote_reasoning', '-')}",
+        }
+        _save_live_cache(cache, cache_key, entry)
+        return entry
+
+    # ── Stage 3: Bias Vote (rule-based จาก h4_bias) ──────────────────
+    # Live bot ดึง HTF live แล้วเรียก Sonnet — backtest ใช้ h4_bias ที่ resample แล้ว
+    # logic: REVERSAL trade ไม่ต้องการ HTF aligned (นั่นคือ intent ของ strategy)
+    setup_type  = signal.get("setup_type", "")
+    is_counter  = (h4_bias == "bear" and chart_signal == "BUY") or \
+                  (h4_bias == "bull" and chart_signal == "SELL")
+    if is_counter and setup_type != "REVERSAL":
+        bias_vote      = "NO"
+        bias_reasoning = f"H4={h4_bias} ขัดกับ {chart_signal} (TREND counter-trend ไม่ผ่าน)"
+    else:
+        bias_vote      = "YES"
+        bias_reasoning = f"H4={h4_bias} {'ตรง' if not is_counter else 'ขัด แต่ REVERSAL — pass'} {chart_signal}"
+
+    bias = {
+        "vote": bias_vote, "vote_reasoning": bias_reasoning,
+        "overall_bias": h4_bias if h4_bias in ("bull", "bear") else "neutral",
+        "daily_bias": h4_bias, "h4_bias": h4_bias, "h1_bias": h4_bias,
+        "aligned": not is_counter,
+        "trade_direction": "BUY_ONLY" if h4_bias == "bull" else "SELL_ONLY" if h4_bias == "bear" else "BOTH",
+        "reasoning": bias_reasoning, "from_cache": False,
+    }
+
+    # ── Stage 4: News Vote (rule-based) ──────────────────────────────
+    # Bar ถูก news filter กรองมาแล้วก่อนถึงจุดนี้ → vote YES
+    news = {
+        "vote": "YES",
+        "vote_reasoning": "ผ่าน news filter upstream — ไม่บล็อก",
+        "risk_level": "low", "key_event": None, "gold_impact": "neutral",
+        "is_blocked": False,
+    }
+
+    # ── Stage 5: Vote Count ──────────────────────────────────────────
+    vote_score = sum([chart_vote == "YES", bias_vote == "YES", True])  # news always YES
+    if vote_score < 2:
+        entry = {
+            "confirmed": False, "vote_score": vote_score,
+            "chart_vote": chart_vote, "bias_vote": bias_vote,
+            "reasoning": f"Vote {vote_score}/3 — ไม่ผ่าน ({bias_reasoning})",
+        }
+        _save_live_cache(cache, cache_key, entry)
+        return entry
+
+    # ── Stage 6: Risk Manager VETO (rule-based, ใช้ balance สมมติ) ───
+    risk = _risk.evaluate(chart, bias, balance=10000.0)
+    if risk.get("veto"):
+        entry = {
+            "confirmed": False, "vote_score": vote_score,
+            "reasoning": f"Risk VETO: {risk.get('veto_reason', '-')}",
+        }
+        _save_live_cache(cache, cache_key, entry)
+        return entry
+
+    # ── Stage 7: Supervisor (Sonnet) ────────────────────────────────
+    vote_details = {
+        "chart": chart.get("vote_reasoning", ""),
+        "bias":  bias_reasoning,
+        "news":  news["vote_reasoning"],
+    }
+    verdict = _supervisor._supervisor_judge(chart, bias, news, risk, vote_score, vote_details)
+    approved = verdict.get("approve", vote_score >= 2)
+
+    entry = {
+        "confirmed": approved,
+        "vote_score": vote_score,
+        "chart_vote": chart_vote, "bias_vote": bias_vote,
+        "supervisor_confidence": verdict.get("confidence", 0),
+        "reasoning": verdict.get("reasoning", ""),
+        "chart_reasoning": chart.get("vote_reasoning", ""),
+    }
+    _save_live_cache(cache, cache_key, entry)
+    return entry
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """แปลง numpy types ให้เป็น Python native ก่อน serialize"""
+    def default(self, obj):
+        import numpy as np
+        if isinstance(obj, (np.integer,)):  return int(obj)
+        if isinstance(obj, (np.floating,)): return float(obj)
+        if isinstance(obj, (np.ndarray,)):  return obj.tolist()
+        if isinstance(obj, (np.bool_,)):    return bool(obj)
+        return super().default(obj)
+
+
+def _save_live_cache(cache: dict, key: str, entry: dict):
+    cache[key] = entry
+    try:
+        _LIVE_CACHE_PATH.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=2, cls=_NumpyEncoder)
+        )
+    except Exception as e:
+        print(f"⚠️  Cache write error: {e}")
+
+
 # ── Main Backtest ─────────────────────────────────────────────────
 def get_h4_bias(df_slice: pd.DataFrame) -> str:
     """
@@ -338,7 +488,8 @@ def get_h4_bias(df_slice: pd.DataFrame) -> str:
 def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
                  session_open_only=True, h4_filter=True, news_filter=True,
                  max_sl=0, breakeven=False, trail_pips=0,
-                 use_ai=False, ai_confidence=60):
+                 use_ai=False, ai_confidence=60,
+                 live_pipeline=False, live_confidence=70):
     df = download_data(days)
     n  = len(df)
 
@@ -371,6 +522,7 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
     if trail_pips > 0:   mode_str.append(f"trail@{trail_pips:.0f}p")
     if breakeven:         mode_str.append("breakeven@1R")
     if use_ai:            mode_str.append(f"🤖 Claude AI ≥{ai_confidence}%")
+    if live_pipeline:     mode_str.append(f"🧠 LIVE PIPELINE (Sonnet 4-agent ≥{live_confidence}%)")
     print(f"\n🔍 สแกน {n} candles | mode: {', '.join(mode_str) or 'full'}")
     print(f"   min_score={min_score}, min_rr={min_rr}, cooldown={cooldown} bars\n")
 
@@ -445,7 +597,7 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
         if max_sl > 0 and signal.get("sl_pips", 0) > max_sl:
             continue
 
-        # Claude AI confirmation filter
+        # Claude AI confirmation filter (Haiku lightweight)
         if use_ai:
             ai_result = confirm_signal(
                 df_slice, signal, h4 if h4_filter else "neutral",
@@ -457,6 +609,20 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
             ai_confirmed += 1
             signal["ai_confidence"] = ai_result["confidence"]
             signal["ai_reasoning"]  = ai_result["reasoning"]
+
+        # Live pipeline filter (Sonnet 4-agent — realistic simulation)
+        if live_pipeline:
+            lp_result = confirm_signal_live_pipeline(
+                df_slice, signal, h4 if h4_filter else "neutral",
+                str(bar_time)[:16], live_confidence
+            )
+            if not lp_result["confirmed"]:
+                ai_filtered += 1
+                continue
+            ai_confirmed += 1
+            signal["ai_confidence"] = lp_result.get("supervisor_confidence", 0)
+            signal["ai_reasoning"]  = lp_result.get("reasoning", "")
+            signal["vote_score"]    = lp_result.get("vote_score", 0)
 
         # Simulate trade
         trade = simulate_trade(df, i + 1, signal, max_hold,
@@ -471,7 +637,12 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
         setup     = signal.get("setup_type", "")
         setup_tag = "🔄REV" if setup == "REVERSAL" else "📈TRD" if setup == "TREND" else "   "
         icon      = "✅" if trade["outcome"] == "win" else "❌" if trade["outcome"] == "loss" else "↔️"
-        ai_tag    = f" 🤖{signal.get('ai_confidence','')}%" if use_ai else ""
+        if live_pipeline:
+            ai_tag = f" 🧠{signal.get('ai_confidence','')}% [{signal.get('vote_score',0)}/3]"
+        elif use_ai:
+            ai_tag = f" 🤖{signal.get('ai_confidence','')}%"
+        else:
+            ai_tag = ""
         print(
             f"  {icon} [{trade['bar_time']}] {setup_tag} {trade['signal']:4s} H4={trade['h4_bias']:7s} "
             f"{trade['stars'] or '':<3} score={trade['score']}{ai_tag} | "
@@ -484,10 +655,11 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
         src = news_cal.source if news_cal else "-"
         print(f"\n📰 News filter blocked {news_blocked} bars (hybrid: {src} + 08:30 ET always)")
 
-    if use_ai:
+    if use_ai or live_pipeline:
         total_ai = ai_confirmed + ai_filtered
         pct = round(ai_filtered / total_ai * 100) if total_ai > 0 else 0
-        print(f"🤖 Claude AI: {ai_confirmed} confirmed | {ai_filtered} filtered ({pct}% rejection rate)")
+        label = "🧠 Live Pipeline (Sonnet)" if live_pipeline else "🤖 Claude AI (Haiku)"
+        print(f"{label}: {ai_confirmed} confirmed | {ai_filtered} filtered ({pct}% rejection rate)")
 
     return trades
 
@@ -657,6 +829,8 @@ if __name__ == "__main__":
     parser.add_argument("--breakeven",        action="store_true",     help="เลื่อน SL → entry เมื่อราคาถึง 1:1 RR (legacy)")
     parser.add_argument("--use-ai",           action="store_true",     help="ใช้ Claude Haiku confirm signal ก่อน simulate")
     parser.add_argument("--ai-confidence",    type=int,   default=60,  help="Confidence threshold สำหรับ AI filter (default=60)")
+    parser.add_argument("--live-pipeline",    action="store_true",     help="Sonnet 4-agent pipeline (Chart+Supervisor Sonnet, เสมือน live จริง)")
+    parser.add_argument("--live-confidence",  type=int,   default=70,  help="Supervisor confidence threshold สำหรับ live pipeline (default=70)")
     args = parser.parse_args()
 
     session_open_only = not args.no_session_open
@@ -675,6 +849,7 @@ if __name__ == "__main__":
     print(f"  Trailing Stop:       {f'ON every {args.trail:.0f}p → BE then lock profit' if args.trail > 0 else 'OFF'}")
     print(f"  Breakeven Stop:      {'ON @ 1:1 RR → SL=entry' if args.breakeven else 'OFF'}")
     print(f"  Claude AI Filter:    {'ON (Haiku ≥' + str(args.ai_confidence) + '%)' if args.use_ai else 'OFF (rule-only)'}")
+    print(f"  Live Pipeline:       {'ON (Sonnet Chart+Supervisor ≥' + str(args.live_confidence) + '%)' if args.live_pipeline else 'OFF'}")
     print("=" * 60)
 
     trades = run_backtest(
@@ -691,6 +866,8 @@ if __name__ == "__main__":
         trail_pips       = args.trail,
         use_ai           = args.use_ai,
         ai_confidence    = args.ai_confidence,
+        live_pipeline    = args.live_pipeline,
+        live_confidence  = args.live_confidence,
     )
     print_trade_history(trades)
     print_stats(trades, args.min_score)

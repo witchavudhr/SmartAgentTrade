@@ -16,6 +16,7 @@ import json
 from datetime import datetime
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
+from agents.trade_log import get_performance_summary
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -78,11 +79,15 @@ def run(balance: float = 10000.0) -> dict:
     bias_vote = bias.get("vote", "NO")
 
     result["stages"]["bias"] = {
-        "overall":        bias.get("overall_bias"),
+        "overall":         bias.get("overall_bias"),
+        "weekly_bias":     bias.get("weekly_bias"),
         "trade_direction": bias.get("trade_direction"),
-        "vote":           bias_vote,
-        "vote_reasoning": bias.get("vote_reasoning", ""),
-        "from_cache":     bias.get("from_cache", False),
+        "vote":            bias_vote,
+        "vote_reasoning":  bias.get("vote_reasoning", ""),
+        "case":            bias.get("case", "?"),
+        "at_htf_level":    bias.get("at_htf_level", False),
+        "htf_level_detail":bias.get("htf_level_detail"),
+        "from_cache":      bias.get("from_cache", False),
     }
 
     # ── Stage 4: News Scout (Sonnet, cached) — รู้ signal แล้ว ──
@@ -113,12 +118,8 @@ def run(balance: float = 10000.0) -> dict:
         "news":  news.get("vote_reasoning", ""),
     }
 
-    if vote_score < 2:
-        losing = [k for k, v in votes.items() if not v]
-        reasons = " | ".join(
-            f"{k}: {result['vote_details'][k]}" for k in losing
-        )
-        result["reject_reason"] = f"Vote {vote_score}/3 — {reasons}"
+    if vote_score < 1:
+        result["reject_reason"] = "Vote 0/3 — ทุก agent reject"
         return result
 
     # ── Stage 6: Risk Manager (VETO) ──────────────────────────
@@ -160,33 +161,128 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
     bias_r  = vote_details.get("bias",  bias.get("reasoning", ""))
     news_r  = vote_details.get("news",  news.get("reasoning", ""))
 
-    prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้ายว่าจะ APPROVE หรือ REJECT trade นี้
+    # สร้าง vote summary สำหรับ prompt
+    chart_vote_str = analysis.get('vote', '?')
+    bias_vote_str  = bias.get('vote', '?')
+    news_vote_str  = news.get('vote', '?')
+    bias_case      = bias.get('case', '?')
+    at_htf         = bias.get('at_htf_level', False)
+    htf_detail     = bias.get('htf_level_detail', '')
 
-═══ Agent Votes ═══
-🔍 Chart Analyst  [{analysis.get('vote','?')}]: {chart_r}
-   Signal: {analysis.get('signal')} | Confidence: {analysis.get('confidence')}% | RR: 1:{analysis.get('rr_ratio')} | Entry: {analysis.get('entry_zone')} | SL: {analysis.get('stop_loss')} | TP: {analysis.get('take_profit')}
+    perf = get_performance_summary(days=30)
 
-🌍 Bias Analyst   [{bias.get('vote','?')}]: {bias_r}
-   HTF: Daily={bias.get('daily_bias')} H4={bias.get('h4_bias')} H1={bias.get('h1_bias')} | Direction: {bias.get('trade_direction')}
+    prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้าย APPROVE หรือ REJECT trade นี้
+Vote รวม {vote_score}/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง (ไม่ต้องนับเสียงข้างมาก)
 
-📰 News Scout     [{news.get('vote','?')}]: {news_r}
-   Risk: {news.get('risk_level')} | Key Event: {news.get('key_event')} | Impact: {news.get('gold_impact')}
+{perf}
 
-⚖️ Risk Manager: Lot={risk.get('lot')} Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
+═══ Agent Votes & Reasoning ═══
+🔍 Chart Analyst [{chart_vote_str}]
+   {chart_r}
+   → Signal: {analysis.get('signal')} | Confidence: {analysis.get('confidence')}% | Setup: {analysis.get('setup_type')} | RR: 1:{analysis.get('rr_ratio')}
+   → Entry: {analysis.get('entry_zone')} | SL: {analysis.get('stop_loss')} | TP: {analysis.get('take_profit')}
 
-Vote Score: {vote_score}/3
+🌍 Bias Analyst [{bias_vote_str}] (Case {bias_case}{' — ถึง HTF level แล้ว' if at_htf else ''})
+   {bias_r}
+   → Weekly={bias.get('weekly_bias')} Daily={bias.get('daily_bias')} H4={bias.get('h4_bias')} H1={bias.get('h1_bias')}
+   → Direction: {bias.get('trade_direction')} | HTF Level: {htf_detail or '–'}
 
-═══ คำถาม ═══
-พิจารณา reasoning ของแต่ละ agent อย่างละเอียด:
-- Agent ที่โหวต NO มีเหตุผลน่าเป็นห่วงแค่ไหน?
-- Risk/Reward คุ้มค่าในสภาวะตลาดนี้มั้ย?
-- มีจุดที่ต้องระวังพิเศษมั้ย (counter-trend, ก่อนข่าว, SL กว้าง)?
+📰 News Scout [{news_vote_str}]
+   {news_r}
+   → Risk: {news.get('risk_level')} | Key Event: {news.get('key_event')} | Gold Impact: {news.get('gold_impact')}
+
+⚖️ Risk Manager: Lot={risk.get('lot')} | Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
+
+═══ วิธีตัดสิน ═══
+อ่าน reasoning แต่ละ agent แล้วประเมิน:
+
+1. Agent ที่โหวต YES — เหตุผลมีน้ำหนักแค่ไหน? setup ชัดจริงมั้ย?
+2. Agent ที่โหวต NO — เหตุผลของเขา "ขัดแย้งกับ thesis จริง" หรือแค่ "ระมัดระวัง"?
+   - NO เพราะ counter-trend แต่ Bias บอกว่าถึง HTF demand/supply zone แล้ว → น้ำหนักลดลง
+   - NO เพราะข่าว High Impact ใกล้ → น้ำหนักสูง ต้องฟัง
+3. Chart Analyst เป็น agent หลัก — ถ้าเขา YES และ setup ชัด (Sweep→CHoCH→OB ครบ) → น้ำหนักสูงสุด
+4. ถ้า vote 1/3 แต่เหตุผลของ agent ที่ YES แข็งมาก และ NO มาจากความระมัดระวังทั่วไป → APPROVE ได้
+5. ถ้า vote 2/3 แต่ agent ที่ YES ให้เหตุผลอ่อน หรือ NO มีเหตุผลชัดเจนมาก → REJECT ได้
 
 ตอบ JSON เท่านั้น:
 {{
   "approve": true/false,
   "confidence": 0-100,
-  "reasoning": "เหตุผล 2-3 ประโยค ภาษาไทย — ระบุว่าโหวตใครหนักที่สุดและทำไม"
+  "key_agent": "chart/bias/news — agent ที่มีน้ำหนักมากสุดในการตัดสิน",
+  "reasoning": "2-3 ประโยค ภาษาไทย — ระบุว่าชั่งน้ำหนักอะไร ทำไมถึง approve/reject"
+}}"""
+
+    response = client.messages.create(
+        model=MODEL_SMART,
+        max_tokens=600,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    text = response.content[0].text.strip()
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+
+    try:
+        result = json.loads(text)
+        # ensure confidence เป็น int เสมอ
+        result["confidence"] = int(result.get("confidence", 0))
+        return result
+    except Exception as e:
+        print(f"⚠️  Supervisor parse error: {e} | raw: {text[:200]}")
+        return {"approve": vote_score >= 2, "confidence": 0, "reasoning": "Auto-approve by vote score"}
+
+
+def analyze_reentry(open_trade: dict, current_price: float, smc_summary: dict) -> dict:
+    """
+    Sonnet วิเคราะห์ว่าควร re-enter หลังราคากลับมาที่ entry zone หรือไม่
+    เรียกเมื่อราคาดิ่งกลับมาใกล้ entry หลังจากเคยกำไร ≥200p
+    """
+    direction = open_trade.get("direction", "?")
+    entry     = open_trade.get("entry", 0)
+    peak      = open_trade.get("peak_price", entry)
+    original_sl = open_trade.get("original_sl", 0)
+    tp        = open_trade.get("tp", 0)
+    profit_had = abs(peak - entry)
+
+    active_ob    = smc_summary.get("active_ob")
+    last_choch   = smc_summary.get("last_choch")
+    last_sweep   = smc_summary.get("last_sweep")
+    equal_highs  = smc_summary.get("equal_highs")
+    equal_lows   = smc_summary.get("equal_lows")
+    nearest_fvg  = smc_summary.get("nearest_fvg")
+
+    prompt = f"""คุณคือ Chart Analyst ผู้เชี่ยวชาญ SMC
+trade นี้เปิดไปแล้ว แต่ราคากลับมาใกล้ entry zone — วิเคราะห์ว่าควร re-enter หรือยกเลิก
+
+═══ สถานะ Trade เดิม ═══
+Direction:  {direction}
+Entry:      {entry}
+Peak Price: {peak} (เคย profit {profit_had:.1f}p)
+ราคาปัจจุบัน: {current_price} (กลับมาจาก peak แล้ว {abs(current_price - peak):.1f}p)
+Original SL: {original_sl}  |  TP: {tp}
+
+═══ SMC Context ตอนนี้ ═══
+Active OB:   {active_ob}
+CHoCH ล่าสุด: {last_choch}
+Sweep ล่าสุด: {last_sweep}
+EQH: {equal_highs}  |  EQL: {equal_lows}
+FVG ใกล้สุด: {nearest_fvg}
+
+วิเคราะห์:
+1. ราคาอยู่ที่ OB หรือ Key Level จริงมั้ย?
+2. Structure ยัง intact อยู่มั้ย (CHoCH ยังสด/ไม่ถูก invalidate)?
+3. ถ้า re-enter SL ใหม่ควรอยู่ที่ไหน?
+4. หรือ pullback นี้เป็นสัญญาณว่า thesis เสียแล้ว?
+
+ตอบ JSON เท่านั้น:
+{{
+  "reenter": true/false,
+  "confidence": 0-100,
+  "reasoning": "2-3 ประโยค ภาษาไทย — ระบุว่า OB/Level ที่กลับมาถึงคืออะไร",
+  "new_sl": ราคา SL ใหม่ หรือ null,
+  "caution": "ข้อควรระวัง 1 ประโยค" หรือ null
 }}"""
 
     response = client.messages.create(
@@ -204,7 +300,7 @@ Vote Score: {vote_score}/3
     try:
         return json.loads(text)
     except Exception:
-        return {"approve": vote_score >= 2, "reasoning": "Auto-approve by vote score"}
+        return {"reenter": False, "confidence": 0, "reasoning": "Parse error", "new_sl": None, "caution": None}
 
 
 def format_alert(result: dict) -> str:
@@ -229,11 +325,15 @@ def format_alert(result: dict) -> str:
     votes_map   = result.get("votes", {})
 
     vote_lines = ""
+    bias_stage  = result.get("stages", {}).get("bias", {})
     for agent, passed in votes_map.items():
         icon    = "✅" if passed else "❌"
         reason  = vote_detail.get(agent, "")
         label   = {"chart": "Chart", "bias": "Bias ", "news": "News "}[agent]
-        vote_lines += f"\n  {icon} {label}: _{reason[:60]}_"
+        extra   = ""
+        if agent == "bias" and bias_stage.get("at_htf_level"):
+            extra = f" 📍_{bias_stage.get('htf_level_detail','HTF level')}_"
+        vote_lines += f"\n  {icon} {label}: _{reason[:60]}_{extra}"
 
     entry = result.get("entry_zone")
     entry_str = f"`{entry[0]} - {entry[1]}`" if entry else "N/A"

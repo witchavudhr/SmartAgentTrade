@@ -25,9 +25,10 @@ def get_htf_data() -> dict:
     result = {}
 
     timeframes = {
-        "H1":    ("5d",  "1h"),
-        "H4":    ("30d", "4h"),
-        "Daily": ("90d", "1d"),
+        "H1":     ("5d",   "1h"),
+        "H4":     ("30d",  "4h"),
+        "Daily":  ("90d",  "1d"),
+        "Weekly": ("730d", "1wk"),
     }
 
     for tf_name, (period, interval) in timeframes.items():
@@ -173,37 +174,71 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
         return fast
 
     # ── Slow path: Claude Sonnet ──────────────────────────────
-    signal_ctx = f"\nChart Analyst เสนอเข้า: {signal_direction}" if signal_direction else ""
-    prompt = f"""คุณคือ Bias Analyst Agent ผู้เชี่ยวชาญ Higher Timeframe Analysis
-หน้าที่: วิเคราะห์ HTF bias แล้ว VOTE YES/NO ว่าสนับสนุน trade ที่ Chart Analyst เสนอหรือไม่
+    signal_ctx = f"Chart Analyst เสนอเข้า: {signal_direction}" if signal_direction else "ยังไม่มี signal direction"
+
+    # สรุป key data แต่ละ TF ให้ compact
+    def _tf_summary(tf: str) -> str:
+        d = htf_data.get(tf, {})
+        if "error" in d:
+            return f"[{tf}] ERROR"
+        return (
+            f"[{tf}] bias={d.get('bias','?')} | price={d.get('current_price','?')} | "
+            f"OB={d.get('active_ob','–')} | CHoCH={d.get('last_choch','–')} | "
+            f"Sweep={d.get('last_sweep','–')} | EQH={d.get('equal_highs','–')} | EQL={d.get('equal_lows','–')}"
+        )
+
+    htf_lines = "\n".join(_tf_summary(tf) for tf in ["Weekly","Daily","H4","H1"])
+
+    prompt = f"""คุณคือ Bias Analyst Agent — วิเคราะห์ภาพใหญ่ของ XAUUSD จาก Weekly/Daily/H4/H1
 {signal_ctx}
 
-ข้อมูล SMC แต่ละ Timeframe ของ XAUUSD:
-{json.dumps(htf_data, indent=2, ensure_ascii=False)}
+══════ HTF Data ══════
+{htf_lines}
 
-วิเคราะห์:
-1. ให้น้ำหนัก Daily > H4 > H1
-2. มี Key Level (OB หรือ EQH/EQL) ที่สำคัญมั้ย?
-3. HTF สนับสนุน signal ที่เสนอมั้ย? หรือ counter-trend เกินไป?
+══════ หน้าที่ของคุณ ══════
 
-ตอบเป็น JSON เท่านั้น:
+① อ่าน macro trend จากภาพใหญ่ (Weekly > Daily > H4 > H1)
+   — ตอนนี้อยู่ใน trend ไหน? Bear run มานานแค่ไหน? ราคามาไกลแค่ไหนแล้ว?
+
+② ตรวจสอบ Demand/Supply Zone ของ HTF
+   — มี OB, EQH/EQL, หรือ Key Level สำคัญของ H4/Daily/Weekly ที่ราคากำลังถึงหรือไม่?
+   — ถ้าราคาเข้าสู่ Daily/Weekly Demand zone (ใน downtrend) → โอกาส rebound มีสูง
+   — ถ้าราคาเข้าสู่ Daily/Weekly Supply zone (ใน uptrend) → โอกาส pullback มีสูง
+
+③ ประเมิน Signal ที่เสนอ
+   สถานการณ์ที่ vote YES ได้:
+   A) signal ตรงกับ macro trend (เช่น SELL ใน downtrend) → ปกติ
+   B) signal สวนทาง แต่ราคาถึง HTF Demand/Supply zone ที่สำคัญ → bounce/rebound trade ได้ (ระบุให้ชัด)
+
+   สถานการณ์ที่ vote NO:
+   C) signal สวนทาง และราคายังไม่ถึง HTF level ใดเลย → รอก่อน
+   D) trend แข็งมาก ไม่มี level ที่น่าสนใจ → ไม่เอา
+
+══════ เกณฑ์ vote ══════
+YES — ถ้า A หรือ B (ระบุว่าเป็น case ไหน + level ที่ราคาถึง)
+NO  — ถ้า C หรือ D (ระบุว่ายังขาดอะไร)
+
+ตอบ JSON เท่านั้น:
 {{
   "vote": "YES/NO",
-  "vote_reasoning": "เหตุผลที่โหวต 1-2 ประโยค — ระบุว่า HTF สนับสนุน/ขัดแย้ง signal อย่างไร",
+  "vote_reasoning": "1-2 ประโยค — Case A/B/C/D + level สำคัญที่เกี่ยวข้อง",
+  "case": "A/B/C/D",
+  "at_htf_level": true/false,
+  "htf_level_detail": "ชื่อ level + TF + ราคา เช่น Daily Demand OB 4050-4080 หรือ null",
   "overall_bias": "bullish/bearish/neutral",
   "bias_strength": "strong/moderate/weak",
+  "weekly_bias": "bullish/bearish/neutral",
   "daily_bias": "bullish/bearish/neutral",
   "h4_bias": "bullish/bearish/neutral",
   "h1_bias": "bullish/bearish/neutral",
-  "aligned": true/false,
   "trade_direction": "BUY_ONLY/SELL_ONLY/BOTH/NO_TRADE",
-  "key_levels": [{{"level": ราคา, "type": "resistance/support/ob", "timeframe": "H4/Daily"}}],
-  "reasoning": "อธิบาย HTF context สั้นๆ ภาษาไทย"
+  "key_levels": [{{"level": ราคา, "type": "demand/supply/ob/eqh/eql", "timeframe": "Weekly/Daily/H4/H1", "note": "ใกล้/ถึงแล้ว/ห่างอยู่"}}],
+  "reasoning": "ภาษาไทย — ระบุ macro trend, ระยะที่วิ่งมา, level ที่เกี่ยวข้อง และเหตุผลที่ vote"
 }}"""
 
     response = client.messages.create(
         model=MODEL_SMART,
-        max_tokens=600,
+        max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -219,7 +254,9 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
         result = {
             "overall_bias": "neutral", "bias_strength": "weak",
             "aligned": False, "trade_direction": "BOTH",
-            "key_levels": [], "reasoning": "Parse error — ระวังด้วย"
+            "case": "D", "at_htf_level": False, "htf_level_detail": None,
+            "weekly_bias": "neutral", "key_levels": [],
+            "reasoning": "Parse error — ระวังด้วย"
         }
 
     result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

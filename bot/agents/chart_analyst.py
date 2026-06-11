@@ -13,26 +13,40 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc = SMCEngine(swing_length=5)
 
 def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str = "5m") -> tuple[pd.DataFrame, dict]:
-    """ดึงข้อมูลราคา Gold จาก yfinance และรัน SMC Engine"""
+    """
+    ดึงข้อมูลราคา Gold — M15 (OB zone) + M5 (entry timing)
+    คืน df_m5, summary ที่มี m15_summary ฝังอยู่ด้วย
+    """
     ticker = yf.Ticker("GC=F")
-    df = ticker.history(period=period, interval=interval)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if df.empty:
+    # ── M15 (โครงสร้างใหญ่ — OB zone, CHoCH, Sweep) ──────────────
+    df15 = ticker.history(period="10d", interval="15m")
+    m15_summary = None
+    if not df15.empty:
+        df15.columns = [c.lower() for c in df15.columns]
+        df15 = df15[['open', 'high', 'low', 'close', 'volume']].dropna()
+        res15 = smc.analyze(df15)
+        m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2))
+        m15_summary["timeframe"] = "M15"
+
+    # ── M5 (entry timing — micro OB, confirm candle) ───────────────
+    df5 = ticker.history(period=period, interval=interval)
+    if df5.empty:
         return None, None
 
-    df.columns = [c.lower() for c in df.columns]
-    df = df[['open', 'high', 'low', 'close', 'volume']].dropna()
+    df5.columns = [c.lower() for c in df5.columns]
+    df5 = df5[['open', 'high', 'low', 'close', 'volume']].dropna()
 
-    current_price = round(df['close'].iloc[-1], 2)
+    current_price = round(df5['close'].iloc[-1], 2)
+    res5  = smc.analyze(df5)
+    summary = summarize(res5, current_price, df5)
+    summary["pair"]        = pair
+    summary["timeframe"]   = "M5"
+    summary["analyzed_at"] = now_str
+    summary["m15"]         = m15_summary  # ฝัง M15 ไว้ใน summary
 
-    # รัน SMC Engine (ส่ง df ไปด้วยให้ summarize เรียก advanced_signals อัตโนมัติ)
-    result = smc.analyze(df)
-    summary = summarize(result, current_price, df)
-    summary["pair"] = pair
-    summary["timeframe"] = "M5"
-    summary["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    return df, summary
+    return df5, summary
 
 def has_signal(smc_summary: dict) -> bool:
     """
@@ -163,81 +177,98 @@ def analyze(smc_summary: dict = None) -> dict:
     adv  = smc_summary.get("advanced", {})
     sess = smc_summary.get("session", {})
     rev  = smc_summary.get("reversal", {})
+    m15  = smc_summary.get("m15") or {}
 
     momentum_warn = ""
     if adv.get("momentum_bear"): momentum_warn = "⚠️ Momentum ลงแรง (>2.5×ATR) — ระวัง Long"
     if adv.get("momentum_bull"): momentum_warn = "⚠️ Momentum ขึ้นแรง (>2.5×ATR) — ระวัง Short"
 
-    # Reversal block สำหรับ prompt
     rev_signal = rev.get("reversal_signal")
     rev_block  = ""
     if rev_signal:
         rev_block = f"""
-─── 🔄 REVERSAL SETUP DETECTED ───
-Direction:  {rev_signal}
-Score:      {rev.get('reversal_score')}/10  {rev.get('reversal_stars','')}  [{rev.get('reversal_grade','')}]
-Reasons:    {', '.join(rev.get('reversal_reasons', []))}
-Entry Zone: {rev.get('entry_zone')}
-SL Suggest: {rev.get('stop_loss')} ({rev.get('sl_pips')} pips)
-TP Suggest: {rev.get('take_profit')} ({rev.get('tp_pips')} pips)
-RR Suggest: 1:{rev.get('rr')}
-Weak Low:   {rev.get('weak_low')} | Weak High: {rev.get('weak_high')}
-EQL: {rev.get('eql_levels')} | EQH: {rev.get('eqh_levels')}
+─── 🔄 M5 REVERSAL DETECTED ───
+Direction: {rev_signal} | Score: {rev.get('reversal_score')}/10 {rev.get('reversal_stars','')}
+Entry Zone: {rev.get('entry_zone')} | SL: {rev.get('stop_loss')} | TP: {rev.get('take_profit')} | RR: 1:{rev.get('rr')}
 """
 
-    prompt = f"""คุณคือ Chart Analyst Agent ผู้เชี่ยวชาญ Smart Money Concepts (SMC)
-หน้าที่: วิเคราะห์ chart แล้ว VOTE YES/NO ว่าควรเข้า trade นี้หรือไม่
-เน้น: หาจุดกลับตัว (Reversal) ที่ราคา sweep liquidity แล้วกลับทิศ
+    sweep_l_age = adv.get('sweep_l_age_bars') or 999
+    sweep_h_age = adv.get('sweep_h_age_bars') or 999
+    choch_age   = adv.get('choch_age_bars')   or 999
+    h1_bull     = adv.get('h1_bull', False)
+    h4_bull     = adv.get('h4_bull', False)
+    macro_bias  = "BULL" if (h1_bull and h4_bull) else "BEAR" if (not h1_bull and not h4_bull) else "MIXED"
 
-═══ SMC Analysis: {smc_summary.get('pair')} {smc_summary.get('timeframe')} ═══
+    prompt = f"""คุณคือ Chart Analyst Agent — หาจุดเข้า trade XAUUSD
+วิเคราะห์ M15 ก่อน (โครงสร้าง + OB zone) แล้วหา entry แม่นใน M5
+จุดออก/trailing stop ใช้ EA — หน้าที่คุณคือหาจุดเข้าเท่านั้น
+
+══════ ① Macro Bias (H1/H4) — กำหนด direction ══════
+H1: {'▲ BULL' if h1_bull else '▼ BEAR'}  |  H4: {'▲ BULL' if h4_bull else '▼ BEAR'}  |  Macro: {macro_bias}
+→ BEAR = SELL เท่านั้น | BULL = BUY เท่านั้น | MIXED = ลด confidence 20
+
+══════ ② M15 — โครงสร้างใหญ่ + OB zone ══════
+Bias:        {m15.get('bias','?')}
+CHoCH:       {m15.get('last_choch','–')}
+BOS:         {m15.get('last_bos','–')}
+Last Sweep:  {m15.get('last_sweep','–')}
+Active OB:   {m15.get('active_ob','–')}   ← OB zone หลักสำหรับ entry
+FVG:         {m15.get('nearest_fvg','–')}
+EQH/EQL:     {m15.get('equal_highs','–')} / {m15.get('equal_lows','–')}
+
+→ M15 OB คือ zone ที่จะรอราคา pullback มาถึง
+→ ถ้า M15 ไม่มี OB ที่ชัด หรือ bias ขัด macro = NO_TRADE
+
+══════ ③ M5 — จุดเข้าแม่นภายใน M15 OB ══════
 ราคาปัจจุบัน: {smc_summary.get('current_price')}
+Sweep Low:   {adv.get('recent_sweep_low','–')} ({sweep_l_age} bars ago)
+Sweep High:  {adv.get('recent_sweep_high','–')} ({sweep_h_age} bars ago)
+CHoCH:       {smc_summary.get('last_choch','–')} ({choch_age} bars ago)
+BOS:         {smc_summary.get('last_bos','–')}
+Active OB:   {smc_summary.get('active_ob','–')}   ← micro OB ใน M5 สำหรับ entry จุดแม่น
+FVG:         {smc_summary.get('nearest_fvg','–')}
+Confirm:     Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
+{rev_block}{momentum_warn}
+
+→ ลำดับ Sweep→CHoCH บังคับ (sweep_age > choch_age = ถูกต้อง)
+→ เข้าที่ M5 micro OB ภายใน M15 OB zone
+→ SL ใต้ M15 sweep low (BUY) หรือ เหนือ M15 sweep high (SELL)
 Session: {sess.get('emoji','')} {sess.get('session','')} ({sess.get('time_thai','')})
-Bias (M5): {smc_summary.get('bias')}
-{rev_block}
-─── Structure ───
-CHoCH ล่าสุด: {smc_summary.get('last_choch')}  อายุ {adv.get('choch_age_bars','?')} บาร์
-BOS ล่าสุด:   {smc_summary.get('last_bos')}
-Sweep ล่าสุด: {smc_summary.get('last_sweep')}
 
-─── Liquidity Levels ───
-EQH: {smc_summary.get('equal_highs')}
-EQL: {smc_summary.get('equal_lows')}
-Active OB: {smc_summary.get('active_ob')}
-FVG: {smc_summary.get('nearest_fvg')}
+══════ เกณฑ์โหวต ══════
+YES:
+  ✓ direction ตรง macro bias (H1/H4)
+  ✓ M15 มี OB zone + Sweep + CHoCH ชัดเจน
+  ✓ M5 Sweep เกิดก่อน CHoCH
+  ✓ ราคาอยู่ที่ M5 OB/FVG ภายใน M15 zone แล้ว
+  ✓ มี confirm candle | RR ≥ 1.5
 
-─── Confirmation ───
-H1: {'▲ Bull' if adv.get('h1_bull') else '▼ Bear'}  H4: {'▲ Bull' if adv.get('h4_bull') else '▼ Bear'}
-Sweep Low: {adv.get('recent_sweep_low')} ({adv.get('sweep_l_age_bars')}b ago)
-Sweep High: {adv.get('recent_sweep_high')} ({adv.get('sweep_h_age_bars')}b ago)
-CHoCH Grab: Bull={adv.get('bull_choch_grab')} Bear={adv.get('bear_choch_grab')}
-Candle: Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
-{momentum_warn}
-
-ตัดสินใจโดย:
-1. ถ้า REVERSAL SETUP DETECTED → ให้น้ำหนักมากที่สุด score ≥7 = confidence ≥80
-2. Reversal ที่ดี = CHoCH สด + Sweep + Confirm candle ครบ
-3. SL ต้องอยู่ใต้ sweep zone เสมอ — ถ้า SL ไม่ชัด = NO_TRADE
-4. TP = next liquidity (EQH/EQL) หรือ OB ฝั่งตรงข้าม
-5. momentum แรงสวนทาง → ลด confidence 20 หรือ NO_TRADE
+NO ทันที:
+  ✗ signal สวน H1/H4 macro
+  ✗ M15 ไม่มี OB zone ที่ชัด
+  ✗ M5 ไม่มี Sweep ก่อน CHoCH
+  ✗ ราคายังไม่ถึง OB zone
+  ✗ ไม่มี confirm candle
 
 ตอบ JSON เท่านั้น:
 {{
   "vote": "YES/NO",
-  "vote_reasoning": "เหตุผลที่โหวต 1-2 ประโยค — ระบุจุดเด่น/ข้อกังวลหลัก",
+  "vote_reasoning": "1-2 ประโยค — M15 OB zone + M5 entry confirmation",
   "signal": "BUY/SELL/NO_TRADE",
   "confidence": 0-100,
-  "entry_zone": [low, high] หรือ null,
-  "stop_loss": ราคา หรือ null,
-  "take_profit": ราคา หรือ null,
+  "setup_type": "TREND_OB/REVERSAL/NO_TRADE",
+  "entry_zone": [low, high] จาก M5 micro OB หรือ null,
+  "stop_loss": ราคา (ใต้/เหนือ M15 sweep zone) หรือ null,
+  "take_profit": ราคา (next liquidity — R:R เท่านั้น EA จัดการ exit) หรือ null,
   "rr_ratio": number หรือ null,
-  "setup_type": "REVERSAL/CONTINUATION/NO_TRADE",
+  "m15_ob": "M15 OB zone ที่ใช้ เช่น 3285-3300" หรือ null,
   "key_factors": ["factor1", "factor2"],
-  "reasoning": "สั้นๆ ภาษาไทย — ระบุว่า reversal จาก sweep zone ไหน"
+  "reasoning": "ภาษาไทย — ระบุ: M15 structure, M5 entry zone, Sweep→CHoCH order, confirm"
 }}"""
 
     response = client.messages.create(
         model=MODEL_SMART,
-        max_tokens=800,
+        max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -254,6 +285,7 @@ Candle: Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
     result["had_sweep"]     = smc_summary.get("last_sweep") is not None
     result["reversal_score"] = smc_summary.get("reversal_score", 0)
     result["reversal_stars"] = smc_summary.get("reversal_stars")
+    result["m15_bias"]      = m15.get("bias")
     result["claude_called"] = True
 
     return result
