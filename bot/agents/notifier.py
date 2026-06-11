@@ -824,14 +824,15 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chart_r    = details.get("chart", chart_s.get("reasoning", ""))[:120]
 
         # Bias
-        bias_td    = bias_s.get("trade_direction", "?")
-        bias_r     = details.get("bias", "")[:100]
+        chart_rejected = (chart_vote is False or chart_s.get("signal") == "NO_TRADE")
+        bias_td    = bias_s.get("trade_direction", "ไม่ได้รัน" if chart_rejected else "?")
+        bias_r     = details.get("bias", "ข้ามเพราะ Chart rejected" if chart_rejected else "")[:100]
         bias_cache = "📦 cached" if bias_s.get("from_cache") else ""
 
         # News
-        news_risk  = news_s.get("risk_level", "?")
-        news_key   = news_s.get("key_event") or "ไม่มีข่าว"
-        news_r     = details.get("news", "")[:100]
+        news_risk  = news_s.get("risk_level", "ไม่ได้รัน" if chart_rejected else "?")
+        news_key   = news_s.get("key_event") or ("—" if chart_rejected else "ไม่มีข่าว")
+        news_r     = details.get("news", "ข้ามเพราะ Chart rejected" if chart_rejected else "")[:100]
 
         # Supervisor
         sup_conf   = sup_s.get("confidence", "?") if sup_s else "—"
