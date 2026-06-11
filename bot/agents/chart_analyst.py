@@ -12,39 +12,103 @@ _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc = SMCEngine(swing_length=5)
 
+def _get_mt5_price() -> float | None:
+    """ดึงราคา ask/bid ล่าสุดจาก MT5 ถ้าเชื่อมอยู่"""
+    try:
+        from agents import mt5_executor
+        from config.settings import MT5_SYMBOL
+        if not mt5_executor.is_available():
+            return None
+        try:
+            import MetaTrader5 as mt5
+            ok, _ = mt5_executor._connect()
+            if not ok:
+                return None
+            tick = mt5.symbol_info_tick(MT5_SYMBOL)
+            mt5_executor.disconnect()
+            if tick:
+                return round((tick.bid + tick.ask) / 2, 2)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return None
+
+
+def _get_mt5_ohlcv(timeframe_mt5, count: int) -> pd.DataFrame | None:
+    """ดึง OHLCV จาก MT5 โดยตรง"""
+    try:
+        from agents import mt5_executor
+        from config.settings import MT5_SYMBOL
+        import MetaTrader5 as mt5
+        ok, _ = mt5_executor._connect()
+        if not ok:
+            return None
+        rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
+        mt5_executor.disconnect()
+        if rates is None or len(rates) == 0:
+            return None
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df = df.set_index('time')
+        df = df.rename(columns={'tick_volume': 'volume'})[['open', 'high', 'low', 'close', 'volume']]
+        return df.dropna()
+    except Exception:
+        return None
+
+
 def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str = "5m") -> tuple[pd.DataFrame, dict]:
     """
     ดึงข้อมูลราคา Gold — M15 (OB zone) + M5 (entry timing)
-    คืน df_m5, summary ที่มี m15_summary ฝังอยู่ด้วย
+    ถ้า MT5 เชื่อมอยู่ → ดึงจาก MT5 (real-time)
+    fallback → yfinance (delay ~15 นาที)
     """
-    ticker = yf.Ticker("GC=F")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ── M15 (โครงสร้างใหญ่ — OB zone, CHoCH, Sweep) ──────────────
-    df15 = ticker.history(period="10d", interval="15m")
+    # ── ลองดึงจาก MT5 ก่อน ────────────────────────────────────────
+    df15, df5 = None, None
+    price_source = "yfinance"
+    try:
+        import MetaTrader5 as mt5
+        df15 = _get_mt5_ohlcv(mt5.TIMEFRAME_M15, 400)
+        df5  = _get_mt5_ohlcv(mt5.TIMEFRAME_M5,  500)
+        if df15 is not None and df5 is not None:
+            price_source = "MT5"
+    except Exception:
+        pass
+
+    # ── Fallback: yfinance ─────────────────────────────────────────
+    if df5 is None:
+        ticker = yf.Ticker("GC=F")
+        df_yf15 = ticker.history(period="10d", interval="15m")
+        if not df_yf15.empty:
+            df_yf15.columns = [c.lower() for c in df_yf15.columns]
+            df15 = df_yf15[['open', 'high', 'low', 'close', 'volume']].dropna()
+        df_yf5 = ticker.history(period=period, interval=interval)
+        if df_yf5.empty:
+            return None, None
+        df_yf5.columns = [c.lower() for c in df_yf5.columns]
+        df5 = df_yf5[['open', 'high', 'low', 'close', 'volume']].dropna()
+
+    # ── M15 summary ────────────────────────────────────────────────
     m15_summary = None
-    if not df15.empty:
-        df15.columns = [c.lower() for c in df15.columns]
-        df15 = df15[['open', 'high', 'low', 'close', 'volume']].dropna()
+    if df15 is not None and not df15.empty:
         res15 = smc.analyze(df15)
         m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2))
         m15_summary["timeframe"] = "M15"
 
-    # ── M5 (entry timing — micro OB, confirm candle) ───────────────
-    df5 = ticker.history(period=period, interval=interval)
-    if df5.empty:
-        return None, None
+    # ── M5 summary ─────────────────────────────────────────────────
+    # ใช้ราคาจาก MT5 tick ถ้าได้ (แม่นที่สุด)
+    mt5_price = _get_mt5_price() if price_source == "MT5" else None
+    current_price = mt5_price or round(df5['close'].iloc[-1], 2)
 
-    df5.columns = [c.lower() for c in df5.columns]
-    df5 = df5[['open', 'high', 'low', 'close', 'volume']].dropna()
-
-    current_price = round(df5['close'].iloc[-1], 2)
-    res5  = smc.analyze(df5)
+    res5    = smc.analyze(df5)
     summary = summarize(res5, current_price, df5)
-    summary["pair"]        = pair
-    summary["timeframe"]   = "M5"
-    summary["analyzed_at"] = now_str
-    summary["m15"]         = m15_summary  # ฝัง M15 ไว้ใน summary
+    summary["pair"]         = pair
+    summary["timeframe"]    = "M5"
+    summary["analyzed_at"]  = now_str
+    summary["price_source"] = price_source
+    summary["m15"]          = m15_summary
 
     return df5, summary
 
