@@ -76,7 +76,9 @@ class SMCResult:
     last_bos: Optional[Structure] = None
     last_choch: Optional[Structure] = None
     last_sweep: Optional[LiquiditySweep] = None
-    active_ob: Optional[OrderBlock] = None
+    active_ob: Optional[OrderBlock] = None       # most recent non-mitigated (any kind)
+    active_bull_ob: Optional[OrderBlock] = None  # most recent non-mitigated bullish OB
+    active_bear_ob: Optional[OrderBlock] = None  # most recent non-mitigated bearish OB
 
 
 # ─── Core Engine ────────────────────────────────────────────────────
@@ -109,7 +111,9 @@ class SMCEngine:
         # 3. หา Order Blocks
         obs = self._find_order_blocks(df, structures)
         result.order_blocks = obs
-        result.active_ob = next((ob for ob in reversed(obs) if not ob.mitigated), None)
+        result.active_ob      = next((ob for ob in reversed(obs) if not ob.mitigated), None)
+        result.active_bull_ob = next((ob for ob in reversed(obs) if not ob.mitigated and ob.kind == 'bullish'), None)
+        result.active_bear_ob = next((ob for ob in reversed(obs) if not ob.mitigated and ob.kind == 'bearish'), None)
 
         # 4. หา Fair Value Gaps
         result.fvgs = self._find_fvg(df)
@@ -195,56 +199,96 @@ class SMCEngine:
 
     # ─── Order Blocks ─────────────────────────────────────────────
 
-    def _find_order_blocks(self, df: pd.DataFrame, structures: list):
+    def _find_order_blocks(self, df: pd.DataFrame, structures: list = None):
         """
-        Bullish OB: แท่งแดงสุดท้ายก่อน Bullish BOS/CHoCH
-        Bearish OB: แท่งเขียวสุดท้ายก่อน Bearish BOS/CHoCH
+        OB detection ที่ match SmartPartialClose EA (DetectOrderBlocks) ทุกขั้นตอน:
+
+        Algorithm (same as EA):
+          1. Scan newest → oldest หา Swing High/Low (str bars แต่ละด้าน)
+          2. Bullish OB: พบ Swing High → หา Bullish BOS (newer bar ที่ close > swing high)
+                         → หาแท่งแดงสุดท้ายระหว่าง swing ถึง BOS
+          3. Bearish OB: พบ Swing Low  → หา Bearish BOS (newer bar ที่ close < swing low)
+                         → หาแท่งเขียวสุดท้ายระหว่าง swing ถึง BOS
+          4. Zone: high→low ของแท่ง OB (full range เหมือน EA)
+          5. Mitigation: ต้อง CLOSE ทะลุ zone (wick ไม่นับ)
         """
-        obs = []
-        atr = self._atr(df)
+        obs   = []
+        n     = len(df)
+        str_n = self.swing_length           # bars each side (M15 ควรใช้ 2 เหมือน EA)
+        lookback = min(150, n - str_n * 2)
+        max_bull = 5
+        max_bear = 5
+        bull_count = 0
+        bear_count = 0
+        seen_idx = set()
 
-        for struct in structures:
-            idx = struct.index
-            if idx < 2:
-                continue
+        # วน newest → oldest (index n-str_n-1 ลงไป)
+        for i in range(n - str_n - 1, max(str_n, n - lookback), -1):
+            if bull_count >= max_bull and bear_count >= max_bear:
+                break
 
-            # หาแท่งก่อน BOS
-            if struct.direction == 'bullish':
-                # หาแท่งแดง (bearish candle) ล่าสุดก่อน BOS
-                for j in range(idx - 1, max(idx - 10, 0), -1):
-                    if df['close'].iloc[j] < df['open'].iloc[j]:  # bearish candle
-                        ob = OrderBlock(
-                            top=df['open'].iloc[j],
-                            bottom=df['low'].iloc[j],
-                            kind='bullish',
-                            index=j
-                        )
-                        # Filter: OB ต้องมีขนาดพอสมควร
-                        if not self.ob_filter_atr or (ob.top - ob.bottom) > atr.iloc[j] * 0.3:
-                            obs.append(ob)
-                        break
+            hi = df['high'].iloc[i]
+            lo = df['low'].iloc[i]
 
-            elif struct.direction == 'bearish':
-                # หาแท่งเขียว (bullish candle) ล่าสุดก่อน BOS
-                for j in range(idx - 1, max(idx - 10, 0), -1):
-                    if df['close'].iloc[j] > df['open'].iloc[j]:  # bullish candle
-                        ob = OrderBlock(
-                            top=df['high'].iloc[j],
-                            bottom=df['close'].iloc[j],
-                            kind='bearish',
-                            index=j
-                        )
-                        if not self.ob_filter_atr or (ob.top - ob.bottom) > atr.iloc[j] * 0.3:
-                            obs.append(ob)
-                        break
+            # ── Swing High → Bullish OB ──────────────────────────
+            if bull_count < max_bull:
+                is_sh = (all(hi > df['high'].iloc[i + k] for k in range(1, str_n + 1)) and
+                         all(hi > df['high'].iloc[i - k] for k in range(1, str_n + 1)))
+                if is_sh:
+                    # หา Bullish BOS: bar ที่ newer (j > i) แล้ว close > swing high
+                    for j in range(i + 1, n):
+                        if df['close'].iloc[j] > hi:
+                            # หาแท่งแดงสุดท้ายระหว่าง i+1 ถึง j-1
+                            ob_idx = -1
+                            for k in range(i + 1, j):
+                                if df['close'].iloc[k] < df['open'].iloc[k]:
+                                    ob_idx = k
+                            if ob_idx == -1:
+                                ob_idx = i  # fallback: ใช้แท่ง swing เอง
+                            if ob_idx not in seen_idx:
+                                obs.append(OrderBlock(
+                                    top=df['high'].iloc[ob_idx],
+                                    bottom=df['low'].iloc[ob_idx],
+                                    kind='bullish',
+                                    index=ob_idx
+                                ))
+                                seen_idx.add(ob_idx)
+                                bull_count += 1
+                            break
 
-        # เช็ค mitigation (ราคากลับมาทะลุ OB)
+            # ── Swing Low → Bearish OB ───────────────────────────
+            if bear_count < max_bear:
+                is_sl = (all(lo < df['low'].iloc[i + k] for k in range(1, str_n + 1)) and
+                         all(lo < df['low'].iloc[i - k] for k in range(1, str_n + 1)))
+                if is_sl:
+                    # หา Bearish BOS: bar ที่ newer (j > i) แล้ว close < swing low
+                    for j in range(i + 1, n):
+                        if df['close'].iloc[j] < lo:
+                            # หาแท่งเขียวสุดท้ายระหว่าง i+1 ถึง j-1
+                            ob_idx = -1
+                            for k in range(i + 1, j):
+                                if df['close'].iloc[k] > df['open'].iloc[k]:
+                                    ob_idx = k
+                            if ob_idx == -1:
+                                ob_idx = i
+                            if ob_idx not in seen_idx:
+                                obs.append(OrderBlock(
+                                    top=df['high'].iloc[ob_idx],
+                                    bottom=df['low'].iloc[ob_idx],
+                                    kind='bearish',
+                                    index=ob_idx
+                                ))
+                                seen_idx.add(ob_idx)
+                                bear_count += 1
+                            break
+
+        # Mitigation: ต้อง CLOSE ทะลุ zone (wick ไม่นับ เหมือน EA)
         for ob in obs:
-            for i in range(ob.index + 1, len(df)):
-                if ob.kind == 'bullish' and df['low'].iloc[i] < ob.bottom:
+            for i in range(ob.index + 1, n):
+                if ob.kind == 'bullish' and df['close'].iloc[i] < ob.bottom:
                     ob.mitigated = True
                     break
-                elif ob.kind == 'bearish' and df['high'].iloc[i] > ob.top:
+                elif ob.kind == 'bearish' and df['close'].iloc[i] > ob.top:
                     ob.mitigated = True
                     break
 
@@ -397,7 +441,7 @@ def get_session() -> dict:
     return {
         "session": name,
         "emoji": emoji,
-        "tradeable": is_london or is_ny,  # เทรดเฉพาะ London + NY
+        "tradeable": is_london or is_ny or is_tokyo,  # London + NY + Tokyo
         "is_london": is_london,
         "is_ny": is_ny,
         "is_overlap": is_overlap,
@@ -502,9 +546,18 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     momentum_bull = rally_5 > atr * 2.5   # ขึ้นแรง → ห้าม Short
 
     # ── In OB ────────────────────────────────────────────────
-    aob = result.active_ob
-    in_bull_ob = bool(aob and aob.kind == 'bullish' and aob.bottom <= current_close <= aob.top)
-    in_bear_ob = bool(aob and aob.kind == 'bearish' and aob.bottom <= current_close <= aob.top)
+    # เช็ค OB ทุกตัว (ไม่ใช่แค่ active_ob ตัวเดียว) เพื่อจับ bull/bear OB แยกกัน
+    all_obs = result.order_blocks or []
+    in_bull_ob = any(
+        ob.kind == 'bullish' and not ob.mitigated
+        and ob.bottom <= current_close <= ob.top
+        for ob in all_obs
+    )
+    in_bear_ob = any(
+        ob.kind == 'bearish' and not ob.mitigated
+        and ob.bottom <= current_close <= ob.top
+        for ob in all_obs
+    )
 
     # ── Bias ─────────────────────────────────────────────────
     bias_bull = result.current_bias == 'bullish'
@@ -796,31 +849,39 @@ def detect_trend_follow(df: pd.DataFrame, result: SMCResult, h4_bias: str) -> di
     }
 
 
-# ─── Reversal Detector ───────────────────────────────────────────
+# ─── Swing Entry Detector ────────────────────────────────────────
+# ไม่ใช่ reversal — เป็นการเล่น swing ใน OB ช่วงนั้น
+# ต่อให้ downtrend ก็ยังมี swing ขึ้น | uptrend ก็มี swing ลง
+# จุดที่เข้าคือ OB / EQL / EQH ที่ราคา sweep แล้ว bounce
+# TP = next swing high/low เท่านั้น ไม่ได้คาดว่าจะกลับ trend
 
 def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
-    """
-    หาจุดกลับตัวโดยเฉพาะ — ไม่ใช่แค่ signal ทั่วไป
+    """Alias kept for backward compat — calls detect_swing_entry"""
+    return detect_swing_entry(df, result)
 
-    Bullish Reversal (ราคากำลังจะกลับขึ้น):
-      1. Sweep below EQL / Weak Low / OB bottom  ← ดูด liquidity ก่อนกลับ
-      2. CHoCH bullish บน M5 (เปลี่ยนจาก bear → bull)
+
+def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
+    """
+    หาจุดเข้า swing — เล่นใน swing นั้นๆ ไม่ใช่คาด reversal
+
+    Bullish Swing (เล่น swing ขึ้นใน swing นั้น แม้ trend ใหญ่จะลง):
+      1. Sweep below EQL / Weak Low / OB bottom  ← ดูด liquidity ก่อน bounce
+      2. CHoCH bullish บน M5 (เปลี่ยนทิศ swing นี้)
       3. Confirmation: bull candle wick ใหญ่ + body ≥50%
       4. ไม่มี momentum ลงแรง (momentum_bear = False)
+      TP = nearest swing high ข้างบน (ไม่ใช่ all-time high)
 
-    Bearish Reversal (ราคากำลังจะกลับลง):
-      1. Sweep above EQH / Strong High / OB top
-      2. CHoCH bearish บน M5
-      3. Confirmation: bear candle wick ใหญ่ + body ≥50%
-      4. ไม่มี momentum ขึ้นแรง
+    Bearish Swing (เล่น swing ลง แม้ trend ใหญ่จะขึ้น):
+      ตรงกันข้าม — sweep high → CHoCH bear → bear candle → TP = nearest swing low
+      TP = nearest swing low ข้างล่าง
 
-    Reversal Score (0-10):
-      CHoCH fresh (≤5 bars): +3  ← หัวใจของการกลับตัว
+    Swing Score (0-10):
+      CHoCH fresh (≤5 bars): +3  ← หัวใจของ swing เปลี่ยนทิศ
       Sweep occurred:        +2  ← ดูด liquidity แล้ว
-      Confirmation candle:   +2  ← ยืนยันการปฏิเสธ
-      In OB zone:            +1  ← เพิ่มความน่าเชื่อถือ
-      H1 aligned:            +1  ← HTF เริ่มยืนยัน
-      No momentum against:   +1  ← ปลอดภัยจาก news spike
+      Confirmation candle:   +2  ← ยืนยัน rejection
+      In OB zone:            +1  ← zone ที่ราคา respect
+      H1 aligned:            +1  ← H1 เริ่มเปลี่ยนทิศ swing
+      No momentum against:   +1  ← ไม่ถูก news spike
     """
     n = len(df)
     if n < 20:
@@ -940,17 +1001,17 @@ def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
         return None, None
 
     # เลือก direction ที่ score สูงกว่า (ต้องอย่างน้อย 3)
-    reversal_signal  = None
-    reversal_score   = 0
-    reversal_stars   = None
-    reversal_grade   = None
-    reversal_reasons = []
+    swing_signal  = None
+    swing_score   = 0
+    swing_stars   = None
+    swing_grade   = None
+    swing_reasons = []
 
     if bull_score >= 3 and bull_score >= bear_score:
-        reversal_signal  = "BUY"
-        reversal_score   = bull_score
-        reversal_stars, reversal_grade = grade(bull_score)
-        reversal_reasons = bull_reasons
+        swing_signal  = "BUY"
+        swing_score   = bull_score
+        swing_stars, swing_grade = grade(bull_score)
+        swing_reasons = bull_reasons
 
         # คำนวณ entry zone จาก active OB หรือ current price
         aob = result.active_ob
@@ -992,10 +1053,10 @@ def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
             tp = round(current_price + sl_distance * 2.0, 2)  # fallback 2:1
 
     elif bear_score >= 3 and bear_score > bull_score:
-        reversal_signal  = "SELL"
-        reversal_score   = bear_score
-        reversal_stars, reversal_grade = grade(bear_score)
-        reversal_reasons = bear_reasons
+        swing_signal  = "SELL"
+        swing_score   = bear_score
+        swing_stars, swing_grade = grade(bear_score)
+        swing_reasons = bear_reasons
 
         aob = result.active_ob
         if aob and aob.kind == "bearish":
@@ -1035,8 +1096,9 @@ def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
 
     else:
         return {
-            "reversal_signal": None,
-            "reversal_score": max(bull_score, bear_score),
+            "reversal_signal": None,   # backward-compat key
+            "swing_signal": None,
+            "swing_score": max(bull_score, bear_score),
             "bull_score": bull_score,
             "bear_score": bear_score,
             "atr": atr,
@@ -1047,11 +1109,18 @@ def detect_reversal(df: pd.DataFrame, result: SMCResult) -> dict:
     rr      = round(tp_pips / sl_pips, 2) if sl_pips > 0 else 0
 
     return {
-        "reversal_signal":  reversal_signal,
-        "reversal_score":   reversal_score,
-        "reversal_stars":   reversal_stars,
-        "reversal_grade":   reversal_grade,
-        "reversal_reasons": reversal_reasons,
+        # backward-compat keys (used by chart_analyst / supervisor)
+        "reversal_signal":  swing_signal,
+        "reversal_score":   swing_score,
+        "reversal_stars":   swing_stars,
+        "reversal_grade":   swing_grade,
+        "reversal_reasons": swing_reasons,
+        # new preferred keys
+        "swing_signal":  swing_signal,
+        "swing_score":   swing_score,
+        "swing_stars":   swing_stars,
+        "swing_grade":   swing_grade,
+        "swing_reasons": swing_reasons,
         "bull_score":       bull_score,
         "bear_score":       bear_score,
         "entry_zone":       [entry_low, entry_high],
@@ -1075,15 +1144,38 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
     แปลง SMCResult เป็น dict สรุปสำหรับส่งให้ Claude
     ถ้าส่ง df มาด้วย จะรวม advanced_signals + session อัตโนมัติ
     """
-    last_sweep = result.last_sweep
-    active_ob  = result.active_ob
-    last_bos   = result.last_bos
-    last_choch = result.last_choch
+    last_sweep    = result.last_sweep
+    active_ob     = result.active_ob
+    last_bos      = result.last_bos
+    last_choch    = result.last_choch
 
-    # เช็คว่า price อยู่ใน OB มั้ย
-    in_ob = False
-    if active_ob and active_ob.bottom <= current_price <= active_ob.top:
-        in_ob = True
+    # เลือก OB ที่ใกล้ current_price มากที่สุด (closest) แทน most-recently-formed
+    # สำหรับ Bull OB → OB ที่อยู่ต่ำกว่าราคา ใกล้ top สุด (demand zone บนสุด)
+    # สำหรับ Bear OB → OB ที่อยู่สูงกว่าราคา ใกล้ bottom สุด (supply zone ล่างสุด)
+    all_obs = result.order_blocks or []
+    _bull_obs = [ob for ob in all_obs if not ob.mitigated and ob.kind == 'bullish']
+    _bear_obs = [ob for ob in all_obs if not ob.mitigated and ob.kind == 'bearish']
+
+    if _bull_obs:
+        # Bull OB ที่ top ใกล้ราคามากสุด (ไม่เกินราคา — demand อยู่ต่ำกว่า)
+        below = [ob for ob in _bull_obs if ob.top <= current_price]
+        active_bull_ob = min(below, key=lambda ob: current_price - ob.top) if below else \
+                         min(_bull_obs, key=lambda ob: abs(ob.top - current_price))
+    else:
+        active_bull_ob = None
+
+    if _bear_obs:
+        # Bear OB ที่ bottom ใกล้ราคามากสุด (ไม่ต่ำกว่าราคา — supply อยู่สูงกว่า)
+        above = [ob for ob in _bear_obs if ob.bottom >= current_price]
+        active_bear_ob = min(above, key=lambda ob: ob.bottom - current_price) if above else \
+                         min(_bear_obs, key=lambda ob: abs(ob.bottom - current_price))
+    else:
+        active_bear_ob = None
+
+    # เช็คว่า price อยู่ใน OB มั้ย (เช็คแยก bull/bear)
+    in_bull_ob = bool(active_bull_ob and active_bull_ob.bottom <= current_price <= active_bull_ob.top)
+    in_bear_ob = bool(active_bear_ob and active_bear_ob.bottom <= current_price <= active_bear_ob.top)
+    in_ob = in_bull_ob or in_bear_ob
 
     # FVG ที่ยังไม่ถูก fill
     open_fvgs   = [f for f in result.fvgs if not f.filled]
@@ -1117,6 +1209,18 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             "in_ob": in_ob,
         } if active_ob else None,
 
+        "active_bull_ob": {
+            "top":    active_bull_ob.top,
+            "bottom": active_bull_ob.bottom,
+            "in_ob":  in_bull_ob,
+        } if active_bull_ob else None,
+
+        "active_bear_ob": {
+            "top":    active_bear_ob.top,
+            "bottom": active_bear_ob.bottom,
+            "in_ob":  in_bear_ob,
+        } if active_bear_ob else None,
+
         "nearest_fvg": {
             "kind": nearest_fvg.kind,
             "top": nearest_fvg.top,
@@ -1131,16 +1235,17 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         "total_sweeps":      len(result.sweeps),
     }
 
-    # ── Advanced Signals + Reversal (จาก df) ─────────────────
+    # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:
         try:
             adv  = advanced_signals(df, result)
             sess = get_session()
-            rev  = detect_reversal(df, result)
+            rev  = detect_swing_entry(df, result)
 
             summary["session"]   = sess
             summary["advanced"]  = adv
-            summary["reversal"]  = rev
+            summary["reversal"]  = rev   # backward-compat key
+            summary["swing"]     = rev   # new key
 
             # shortcuts ที่ใช้บ่อย
             summary["signal_type"]       = adv.get("signal_type")
@@ -1152,10 +1257,13 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             summary["momentum_bull"]     = adv.get("momentum_bull")
             summary["tradeable_session"] = sess.get("tradeable", True)
 
-            # reversal shortcuts
-            summary["reversal_signal"] = rev.get("reversal_signal")
-            summary["reversal_stars"]  = rev.get("reversal_stars")
-            summary["reversal_score"]  = rev.get("reversal_score", 0)
+            # swing shortcuts (+ backward-compat reversal_*)
+            summary["reversal_signal"] = rev.get("swing_signal")
+            summary["reversal_stars"]  = rev.get("swing_stars")
+            summary["reversal_score"]  = rev.get("swing_score", 0)
+            summary["swing_signal"]    = rev.get("swing_signal")
+            summary["swing_stars"]     = rev.get("swing_stars")
+            summary["swing_score"]     = rev.get("swing_score", 0)
         except Exception:
             pass
 

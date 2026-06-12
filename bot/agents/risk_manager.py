@@ -18,6 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from config.settings import MAX_RISK_PERCENT, FIXED_LOT, BALANCE, MAX_LOT
+from agents.json_utils import fmt_pts
 
 DB_PATH = Path(__file__).parent.parent / "data" / "trade_log.db"
 
@@ -166,6 +167,21 @@ def calculate_scale_in(
     }
 
 
+def pyramid_bos_lots(balance: float, sl_pips: float, risk_pct: float = None) -> dict:
+    """
+    คำนวณ lot สำหรับ BOS Breakout Pyramid:
+      ไม้ 1 (BOS entry):   40% lot — เล็ก รับ momentum ก่อน
+      ไม้ 2 (OB pullback): 60% lot — ใหญ่ขึ้น SL แน่นกว่า
+    Total risk ≤ risk_pct% ของ balance (ทั้งสองไม้รวมกัน)
+    """
+    if risk_pct is None:
+        risk_pct = MAX_RISK_PERCENT
+    total = calculate_lot(balance, sl_pips, risk_pct)
+    lot1 = min(max(0.01, round(total * 0.40, 2)), MAX_LOT)
+    lot2 = min(max(0.01, round(total * 0.60, 2)), MAX_LOT)
+    return {"lot1": lot1, "lot2": lot2, "total": round(lot1 + lot2, 2)}
+
+
 def calculate_lot(balance: float, sl_pips: float, risk_pct: float = None) -> float:
     """
     คำนวณ lot size
@@ -312,8 +328,8 @@ def format_scale_in_message(scale: dict) -> str:
     lines = [
         f"{emoji} *Scale-in Plan — {direction.upper()}*",
         f"━━━━━━━━━━━━━━━━━",
-        f"📐 OB Range: `{scale.get('ob_range_pips')} pips`",
-        f"🌊 Sweep Buffer: `{scale.get('sweep_buffer_pips')} pips` ใต้ OB",
+        f"📐 OB Range: `{fmt_pts(scale.get('ob_range_pips'))} จุด`",
+        f"🌊 Sweep Buffer: `{fmt_pts(scale.get('sweep_buffer_pips'))} จุด` ใต้ OB",
         f"",
     ]
 
@@ -325,7 +341,7 @@ def format_scale_in_message(scale: dict) -> str:
 
     lines += [
         f"",
-        f"🛑 SL: `{scale.get('stop_loss')}` ({scale.get('sl_pips')} pips)",
+        f"🛑 SL: `{scale.get('stop_loss')}` ({fmt_pts(scale.get('sl_pips'))} จุด)",
         f"📦 Total Lot: `{scale.get('total_lot')}`",
         f"💰 Total Risk: `{scale.get('total_risk_pct')}%`",
         f"📍 Avg Entry: `{scale.get('avg_entry')}`",
@@ -355,7 +371,7 @@ def format_risk_message(risk: dict, analysis: dict) -> str:
         f"Mode: {caution}\n"
         f"📦 Lot Size: `{risk.get('lot')}`\n"
         f"💰 Risk: `{risk.get('risk_pct')}%` (${risk.get('risk_amount')})\n"
-        f"📏 SL Distance: `{risk.get('sl_pips')} pips`\n"
+        f"📏 SL Distance: `{fmt_pts(risk.get('sl_pips'))} จุด`\n"
         f"📊 Daily P&L: `{risk.get('daily_pnl_pct')}%`\n"
         f"🔴 Loss Streak: `{risk.get('loss_streak')}`\n"
         f"📝 {risk.get('notes')}"

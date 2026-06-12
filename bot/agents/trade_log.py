@@ -12,6 +12,7 @@ import csv
 import json
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from agents.json_utils import fmt_pts
 
 DB_PATH  = Path(__file__).parent.parent / "data" / "trade_log.db"
 CSV_PATH = Path(__file__).parent.parent / "data" / "trades_export.csv"
@@ -487,13 +488,13 @@ def format_today_summary() -> str:
     lines = [
         f"📅 *สรุปวันนี้ {s['date']}*",
         "━━━━━━━━━━━━━━━━━",
-        f"{bar} W`{s['wins']}` / L`{s['losses']}` | WR: `{wr_str}` | P&L: `{s['total_pips']:+.1f}p`",
+        f"{bar} W`{s['wins']}` / L`{s['losses']}` | WR: `{wr_str}` | P&L: `{fmt_pts(s['total_pips'], sign=True)} จุด`",
         "",
         "*รายการเทรดวันนี้:*",
     ]
     for t in s["trades"]:
         icon = "✅" if t["outcome"] == "win" else "❌" if t["outcome"] == "loss" else "⏳"
-        pips = f"{t['pnl_pips']:+.1f}p" if t["pnl_pips"] is not None else "pending"
+        pips = f"{fmt_pts(t['pnl_pips'], sign=True)} จุด" if t["pnl_pips"] is not None else "pending"
         lines.append(f"  {icon} `{t['time']}` {t['signal']} {t['stars'] or ''} `{pips}`")
 
     if s["pending"] > 0:
@@ -536,7 +537,7 @@ def format_report() -> str:
         f"📡 Signal ทั้งหมด: `{s['total_signals']}`  |  Confirmed: `{s['confirmed']}`  |  Skip: `{s['skipped']}`",
         f"🏆 W: `{s['wins']}` | L: `{s['losses']}` | BE: `{s['be']}` | ⏳ Pending: `{s['pending']}`",
         f"📈 Win Rate: `{s['win_rate']}%`  |  PF: `{pf_str}`",
-        f"💰 Total P&L: `{pips_str} pips`  |  Avg: `{s['avg_pips']:+.1f}p`",
+        f"💰 Total P&L: `{fmt_pts(s['total_pips'], sign=True)} จุด`  |  Avg: `{fmt_pts(s['avg_pips'], sign=True)} จุด`",
         f"⭐ Best Setup: `{s['best_setup']}`",
         "",
         "📅 *P&L รายวัน (7 วันล่าสุด)*",
@@ -551,7 +552,7 @@ def format_report() -> str:
             wr   = f"{d['wins']/(d['wins']+d['losses'])*100:.0f}%" if (d["wins"]+d["losses"]) > 0 else "-"
             lines.append(
                 f"{bar} `{d['day']}` — {d['trades']}T  W{d['wins']}/L{d['losses']}  "
-                f"WR:{wr}  `{d['pips']:+.1f}p`"
+                f"WR:{wr}  `{fmt_pts(d['pips'], sign=True)} จุด`"
             )
 
     lines += ["", "📋 *5 Confirmed Trade ล่าสุด*", "━━━━━━━━━━━━━━━━━"]
@@ -562,14 +563,14 @@ def format_report() -> str:
         for t in recent:
             icon   = "✅" if t["outcome"] == "win" else "❌" if t["outcome"] == "loss" else "⏳" if t["outcome"] == "pending" else "↔️"
             stars  = t.get("stars") or ""
-            pips_t = f"{t['pnl_pips']:+.1f}p" if t["pnl_pips"] is not None else "pending"
+            pips_t = f"{fmt_pts(t['pnl_pips'], sign=True)} จุด" if t["pnl_pips"] is not None else "pending"
             lines.append(
                 f"{icon} #{t['id']} `{t['signal']}` {stars}  "
                 f"score={t.get('score') or '-'}  "
                 f"{t['timestamp'][:16]}  `{pips_t}`"
             )
 
-    lines += ["", "📤 Export CSV: `/export`  |  อัพเดทผล: `/outcome [id] [win/loss/be] [pips] [exit]`"]
+    lines += ["", "📤 Export CSV: `/export`  |  อัพเดทผล: `/outcome [id] [win/loss/be] [จุด] [exit]`"]
     return "\n".join(lines)
 
 
@@ -584,7 +585,7 @@ def format_trade_list(trades: list[dict]) -> str:
         act    = "👆" if t["action"] == "confirmed" else "⏭"
         stars  = t.get("stars") or ""
         sess   = t.get("session") or "-"
-        pips_t = f"`{t['pnl_pips']:+.1f}p`" if t["pnl_pips"] is not None else "`pending`"
+        pips_t = f"`{fmt_pts(t['pnl_pips'], sign=True)} จุด`" if t["pnl_pips"] is not None else "`pending`"
         entry  = t.get("entry_low") or "-"
         sl     = t.get("stop_loss") or "-"
         tp     = t.get("take_profit") or "-"

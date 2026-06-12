@@ -9,7 +9,7 @@ import time
 from config.settings import (
     MT5_LOGIN, MT5_PASSWORD, MT5_SERVER,
     MT5_SYMBOL, MT5_MAGIC, MT5_ENABLED,
-    MT5_MAX_SLIPPAGE_PIPS,
+    MT5_MAX_SLIPPAGE_PIPS, MT5_PATH,
 )
 
 try:
@@ -27,7 +27,10 @@ def _connect() -> tuple[bool, str]:
         return False, "MetaTrader5 package ไม่ได้ติดตั้ง (Windows only)"
     if not MT5_ENABLED:
         return False, "MT5_ENABLED=false ใน .env"
-    if not mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
+    kwargs = dict(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+    if MT5_PATH:
+        kwargs["path"] = MT5_PATH
+    if not mt5.initialize(**kwargs):
         err = mt5.last_error()
         return False, f"initialize() ล้มเหลว: {err}"
     return True, ""
@@ -88,6 +91,22 @@ def open_trade(
         return {"error": f"ดึง tick ของ {MT5_SYMBOL} ไม่ได้"}
 
     price = tick.ask if direction == "BUY" else tick.bid
+
+    # ตรวจ SL/TP valid ก่อน send — ป้องกัน Retcode 10016
+    if tp and tp > 0:
+        if direction == "BUY" and tp <= price:
+            disconnect()
+            return {"error": f"Invalid stops: BUY TP {tp} ต้องสูงกว่าราคา {round(price,2)} — entry zone ห่างจากตลาดมากเกินไป"}
+        if direction == "SELL" and tp >= price:
+            disconnect()
+            return {"error": f"Invalid stops: SELL TP {tp} ต้องต่ำกว่าราคา {round(price,2)} — entry zone ห่างจากตลาดมากเกินไป"}
+    if sl:
+        if direction == "BUY" and sl >= price:
+            disconnect()
+            return {"error": f"Invalid stops: BUY SL {sl} ต้องต่ำกว่าราคา {round(price,2)}"}
+        if direction == "SELL" and sl <= price:
+            disconnect()
+            return {"error": f"Invalid stops: SELL SL {sl} ต้องสูงกว่าราคา {round(price,2)}"}
 
     # slippage = MT5_MAX_SLIPPAGE_PIPS points (XAUUSD: 1 pip = 10 points)
     slippage_points = MT5_MAX_SLIPPAGE_PIPS * 10

@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 from config.settings import (
     ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-    MODEL_SMART, TRADING_PAIR
+    MODEL_SMART, TRADING_PAIR, BALANCE
 )
 from agents import chart_analyst, bias_analyst, news_scout
 from agents import supervisor, risk_manager
@@ -22,8 +22,31 @@ from agents import paper_trader
 from agents import state_manager
 from agents import mt5_executor
 from agents import pos_guard
+from agents.json_utils import fmt_pts
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def _md(text: str) -> str:
+    """Escape Telegram Markdown v1 special chars ใน AI-generated text"""
+    for ch in ('_', '*', '`', '['):
+        text = text.replace(ch, f'\\{ch}')
+    return text
+
+
+async def _safe_send(send_fn, text: str, **kwargs):
+    """ส่ง Telegram message — ถ้า Markdown parse fail → retry เป็น plain text"""
+    try:
+        await send_fn(text, **kwargs)
+    except Exception as e:
+        if "parse" in str(e).lower() or "entity" in str(e).lower() or "BadRequest" in str(type(e).__name__):
+            # Strip markdown และส่งใหม่เป็น plain text
+            plain = text.replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
+            kw = {k: v for k, v in kwargs.items() if k != "parse_mode"}
+            await send_fn(plain, **kw)
+        else:
+            raise
+
 
 # โหลด state จาก disk (รองรับ restart / ย้าย session)
 bot_state = state_manager.load()
@@ -47,7 +70,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📊 *Report & Tools*\n"
         "/report — สรุป trade จริง + P&L รายวัน\n"
         "/trades — ดู trade history ทั้งหมด\n"
-        "/outcome [id] [win/loss/be] [pips] [exit] — บันทึกผลหลังเทรด\n"
+        "/outcome [id] [win/loss/be] [จุด] [exit] — บันทึกผลหลังเทรด\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
         "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n"
         "/closetrade [exit_price] — ปิด trailing monitor\n\n"
@@ -64,7 +87,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
-    result = supervisor.run()
+    result = supervisor.run(force_session=True)  # manual scan ข้าม session filter
     log_scan(result)
     state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     await _handle_scan_result(result, update.message.reply_text)
@@ -254,8 +277,8 @@ async def cmd_paper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━\n"
             f"Direction: *{d}*\n"
             f"Entry: `{result['entry']}`\n"
-            f"SL: `{result['sl']}` ({result['sl_pips']} pips)\n"
-            f"TP: `{result['tp']}` ({result['tp_pips']} pips)\n"
+            f"SL: `{result['sl']}` ({fmt_pts(result['sl_pips'])} จุด)\n"
+            f"TP: `{result['tp']}` ({fmt_pts(result['tp_pips'])} จุด)\n"
             f"RR: `1:{result['rr']}`\n"
             f"Lot: `{result['lot']}`\n"
             f"Session: {sess.get('emoji','')} {sess.get('session','')}\n\n"
@@ -288,7 +311,7 @@ async def cmd_trades(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    /outcome [id] [win/loss/be] [pips] [exit_price] [notes...]
+    /outcome [id] [win/loss/be] [จุด] [exit_price] [notes...]
     ตัวอย่าง:
       /outcome 5 win 150 3310
       /outcome 5 loss -80
@@ -300,7 +323,7 @@ async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📝 *บันทึกผล Trade*\n"
             "━━━━━━━━━━━━━━━━━\n"
             "รูปแบบ:\n"
-            "`/outcome [id] [win/loss/be] [pips] [exit_price]`\n\n"
+            "`/outcome [id] [win/loss/be] [จุด] [exit_price]`\n\n"
             "ตัวอย่าง:\n"
             "`/outcome 5 win 150 3310`\n"
             "`/outcome 5 loss -80 3270`\n"
@@ -346,7 +369,7 @@ async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
         icon   = "✅" if outcome == "win" else "❌" if outcome == "loss" else "↔️"
-        pips_s = f"{pnl_pips:+.1f}p" if pnl_pips is not None else "-"
+        pips_s = f"{fmt_pts(pnl_pips, sign=True)} จุด" if pnl_pips is not None else "-"
         dur_s  = f"{duration_min} นาที" if duration_min else "-"
         exit_s = f"`{actual_exit}`" if actual_exit else "-"
 
@@ -355,7 +378,7 @@ async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         today = get_today_summary()
         today_str = (
             f"วันนี้: W`{today['wins']}` L`{today['losses']}` "
-            f"| `{today['total_pips']:+.1f}p`"
+            f"| `{fmt_pts(today['total_pips'], sign=True)} จุด`"
         )
 
         await update.message.reply_text(
@@ -421,8 +444,8 @@ async def handle_question(update: Update, question: str):
     await update.message.reply_text("🤔 กำลังวิเคราะห์...")
 
     # ดึงราคาปัจจุบัน
-    price_data = chart_analyst.get_price_data()
-    price_info = f"ราคา Gold ปัจจุบัน: {price_data['current_price']}" if price_data else ""
+    _, price_data = chart_analyst.get_price_data()
+    price_info = f"ราคา Gold ปัจจุบัน: {price_data.get('current_price')}" if price_data else ""
 
     response = claude.messages.create(
         model=MODEL_SMART,
@@ -517,12 +540,36 @@ async def _handle_scan_result(result: dict, send_fn):
         # ── เช็คว่ามี open trade ค้างอยู่หรือไม่ ─────────────────
         existing_trade = bot_state.get("open_trade")
         if existing_trade:
-            # BLOCK mode: ไม่เปิดเพิ่ม ประหยัด token
-            # เปลี่ยนเป็น advisory ได้โดยแทนบรรทัดนี้ด้วย:
-            # await _send_advisory_alert(result, existing_trade, send_fn)
+            # Cross-check กับ MT5 จริง — ถ้า ticket ปิดไปแล้ว clear state อัตโนมัติ
+            stale = False
+            ticket = existing_trade.get("mt5_ticket")
+            if ticket:
+                try:
+                    positions = mt5_executor.get_open_positions()
+                    tickets_open = {p["ticket"] for p in positions}
+                    if ticket not in tickets_open:
+                        stale = True
+                except Exception:
+                    pass
+            else:
+                # ไม่มี ticket (paper trade หรือ manual) — เช็คจาก MT5 positions ทั่วไป
+                try:
+                    positions = mt5_executor.get_open_positions()
+                    if not positions:
+                        stale = True
+                except Exception:
+                    pass
+
+            if stale:
+                state_manager.set_field(bot_state, "open_trade", None)
+                existing_trade = None
+                print(f"[notifier] 🧹 open_trade state cleared — MT5 position already closed")
+
+        if existing_trade:
             ex_dir = existing_trade.get("direction", "?")
             ex_tid = existing_trade.get("trade_id", "?")
-            await send_fn(
+            await _safe_send(
+                send_fn,
                 f"🔒 *มีไม้ค้างอยู่ — ข้าม setup นี้*\n"
                 f"Trade #{ex_tid} ({ex_dir}) ยังเปิดอยู่\n"
                 f"_ปิดก่อนด้วย `/closetrade` แล้วค่อย scan ใหม่_",
@@ -549,6 +596,22 @@ async def _handle_scan_result(result: dict, send_fn):
         direction = signal.get("signal")
 
         if entry_price and sl_price and direction in ("BUY", "SELL"):
+            # pyramid mode: ถ้า TREND_BOS_BREAK → ใช้ lot1 เล็ก + รอ lot2 ที่ OB
+            is_pyramid = signal.get("pyramid_mode", False) or signal.get("setup_type") == "TREND_BOS_BREAK"
+            pyramid_lot2 = None
+            if is_pyramid:
+                sl_pips = abs(entry_price - float(sl_price)) * 10
+                plots = risk_manager.pyramid_bos_lots(BALANCE, sl_pips)
+                pyramid_lot2 = plots["lot2"]
+
+            # หา OB zone สำหรับรอ pyramid ไม้ 2
+            pyramid_ob = None
+            if is_pyramid:
+                _, _smc = chart_analyst.get_price_data()
+                if _smc:
+                    ob_key = "active_bull_ob" if direction == "BUY" else "active_bear_ob"
+                    pyramid_ob = _smc.get(ob_key)
+
             open_trade = {
                 "entry":            entry_price,
                 "original_sl":      float(sl_price),
@@ -560,6 +623,10 @@ async def _handle_scan_result(result: dict, send_fn):
                 "peak_price":       entry_price,
                 "opened_at":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "reentry_analyzed": False,
+                "pyramid_waiting":  is_pyramid,
+                "pyramid_lot2":     pyramid_lot2,
+                "pyramid_ob":       pyramid_ob,
+                "pyramid_alerted":  False,
             }
             state_manager.set_field(bot_state, "open_trade", open_trade)
 
@@ -567,20 +634,51 @@ async def _handle_scan_result(result: dict, send_fn):
 
         # ── MT5 Auto-Execute ────────────────────────────────
         mt5_tag = ""
-        if mt5_executor.is_available() and entry_price and sl_price and direction in ("BUY","SELL"):
+        current_mkt = result.get("current_price") or 0
+
+        # ตรวจว่า entry zone valid สำหรับ market order
+        # ใช้ OB top/bottom (ไม่ใช่ midpoint) เปรียบกับราคาตลาด
+        # BUY: ราคาต้องไม่สูงกว่า OB_top เกิน $25 (มิฉะนั้น = ยังไม่ pullback ถึง OB)
+        # SELL: ราคาต้องไม่ต่ำกว่า OB_bottom เกิน $25
+        entry_far = False
+        entry_far_msg = ""
+        if entry_price and current_mkt:
+            entry_raw2 = signal.get("entry_zone")
+            ob_top    = entry_raw2[1] if isinstance(entry_raw2, list) else entry_price
+            ob_bottom = entry_raw2[0] if isinstance(entry_raw2, list) else entry_price
+            FAR_THRESHOLD = 25  # $25 = ห่างจาก OB edge เกินไป (XAUUSD raw price)
+
+            if direction == "BUY" and (current_mkt - ob_top) > FAR_THRESHOLD:
+                dist_usd = round(current_mkt - ob_top, 2)
+                entry_far = True
+                entry_far_msg = (
+                    f"⏳ *รอ Pullback*\n"
+                    f"ราคาตลาด `{current_mkt}` สูงกว่า OB top `{ob_top}` อยู่ `${dist_usd}`\n"
+                    f"_ตั้ง BUY LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาลงมาถึงก่อน_"
+                )
+            elif direction == "SELL" and (ob_bottom - current_mkt) > FAR_THRESHOLD:
+                dist_usd = round(ob_bottom - current_mkt, 2)
+                entry_far = True
+                entry_far_msg = (
+                    f"⏳ *รอ Rally*\n"
+                    f"ราคาตลาด `{current_mkt}` ต่ำกว่า OB bottom `{ob_bottom}` อยู่ `${dist_usd}`\n"
+                    f"_ตั้ง SELL LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาขึ้นมาถึงก่อน_"
+                )
+
+        if mt5_executor.is_available() and entry_price and sl_price and direction in ("BUY","SELL") and not entry_far:
             lot_val = signal.get("lot") or 0.01
-            tp_val  = float(tp_price) if tp_price else 0.0
             ex = mt5_executor.open_trade(
                 direction = direction,
                 lot       = float(lot_val),
                 sl        = float(sl_price),
-                tp        = tp_val,
+                tp        = 0.0,   # ไม่ตั้ง TP — ให้ EA POS Guard จัดการ exit
                 comment   = f"SAT-{trade_id}",
             )
             if "ticket" in ex:
                 mt5_tag = (
                     f"\n\n✅ *MT5 Executed!*\n"
-                    f"Ticket: `{ex['ticket']}` | Price: `{ex['price']}` | Lot: `{ex['volume']}`"
+                    f"Ticket: `{ex['ticket']}` | Price: `{ex['price']}` | Lot: `{ex['volume']}`\n"
+                    f"_EA POS Guard จัดการ exit — ไม่มี fixed TP_"
                 )
                 # เก็บ ticket ใน open_trade สำหรับ auto-close ในอนาคต
                 if bot_state.get("open_trade"):
@@ -589,16 +687,17 @@ async def _handle_scan_result(result: dict, send_fn):
                     state_manager.set_field(bot_state, "open_trade", ot_upd)
             else:
                 mt5_tag = f"\n\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
+        elif entry_far:
+            mt5_tag = f"\n\n{entry_far_msg}"
         elif not mt5_executor.is_available():
             mt5_tag = "\n\n📋 _MT5_ENABLED=false — กรุณาเปิด trade เองใน MT5_"
 
         message += mt5_tag
         message += f"\n🤖 *Trade #{trade_id}* | `/closetrade` เมื่อปิด position"
-        await send_fn(message, parse_mode="Markdown")
+        await _safe_send(send_fn, message, parse_mode="Markdown")
     else:
-        reason = result.get("reject_reason", "ไม่มี setup")
-        stage  = result.get("vote_score", 0)
-        await send_fn(f"❌ {reason} (vote {stage}/3)", parse_mode="Markdown")
+        message = supervisor.format_alert(result)
+        await _safe_send(send_fn, message, parse_mode="Markdown")
 
 
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
@@ -608,6 +707,56 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     action = query.data
+
+    # ── Pyramid ไม้ 2 callback ────────────────────────────
+    if action in ("pyramid_confirm", "pyramid_skip"):
+        p = bot_state.get("pending_pyramid")
+        if not p:
+            await query.edit_message_text("⚠️ ไม่มี pyramid signal")
+            return
+        bot_state.pop("pending_pyramid", None)
+        state_manager.save(bot_state)
+
+        if action == "pyramid_confirm":
+            direction = p["direction"]
+            lot2      = p["lot"]
+            ob        = p["ob_zone"] or {}
+            orig_tid  = p["original_trade_id"]
+            cur       = p["current_price"]
+
+            # MT5 execute ไม้ 2
+            mt5_tag = ""
+            if mt5_executor.is_available():
+                sl_price = ob.get("bottom", cur - 5) if direction == "BUY" else ob.get("top", cur + 5)
+                ot = bot_state.get("open_trade", {})
+                tp_price = ot.get("tp", 0) or 0
+                ex = mt5_executor.open_trade(
+                    direction=direction, lot=float(lot2),
+                    sl=float(sl_price), tp=float(tp_price),
+                    comment=f"SAT-{orig_tid}-P2",
+                )
+                mt5_tag = (
+                    f"\n✅ MT5: Ticket `{ex['ticket']}` @ `{ex['price']}`"
+                    if "ticket" in ex
+                    else f"\n⚠️ MT5 Error: `{ex.get('error','?')}`"
+                )
+
+            await query.edit_message_text(
+                f"🔺 *Pyramid ไม้ 2 เปิดแล้ว!*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{direction} | Lot: `{lot2}` | ราคา: `{cur}`\n"
+                f"OB Zone: `{ob.get('bottom','?')}–{ob.get('top','?')}`\n"
+                f"_รวมกับไม้ 1 แล้ว average entry ดีขึ้น_"
+                + mt5_tag,
+                parse_mode="Markdown",
+            )
+        else:
+            await query.edit_message_text(
+                f"⏭ ข้าม pyramid ไม้ 2\n_ไม้ 1 ยังเปิดอยู่ตามปกติ_",
+                parse_mode="Markdown",
+            )
+        return
+
     signal = bot_state.get("pending_signal")
 
     if not signal:
@@ -796,7 +945,8 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sup_s     = stages.get("supervisor", {})
     risk_s    = stages.get("risk", {})
 
-    chart_vote = votes.get("chart")
+    # votes dict ว่างถ้า chart reject early — fallback ดึงจาก stages โดยตรง
+    chart_vote = votes.get("chart") if votes else (chart_s.get("vote") == "YES" if chart_s else None)
     bias_vote  = votes.get("bias")
     news_vote  = votes.get("news")
     vote_score = result.get("vote_score", 0)
@@ -821,22 +971,22 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Chart
         chart_conf = chart_s.get("confidence", "?")
         chart_sig  = chart_s.get("signal", "?")
-        chart_r    = details.get("chart", chart_s.get("reasoning", ""))[:120]
+        chart_r    = details.get("chart", chart_s.get("reasoning", ""))[:200]
 
         # Bias
         chart_rejected = (chart_vote is False or chart_s.get("signal") == "NO_TRADE")
         bias_td    = bias_s.get("trade_direction", "ไม่ได้รัน" if chart_rejected else "?")
-        bias_r     = details.get("bias", "ข้ามเพราะ Chart rejected" if chart_rejected else "")[:100]
+        bias_r     = details.get("bias", "ข้ามเพราะ Chart rejected" if chart_rejected else "")[:150]
         bias_cache = "📦 cached" if bias_s.get("from_cache") else ""
 
         # News
         news_risk  = news_s.get("risk_level", "ไม่ได้รัน" if chart_rejected else "?")
         news_key   = news_s.get("key_event") or ("—" if chart_rejected else "ไม่มีข่าว")
-        news_r     = details.get("news", "ข้ามเพราะ Chart rejected" if chart_rejected else "")[:100]
+        news_r     = details.get("news", "ข้ามเพราะ Chart rejected" if chart_rejected else "")[:150]
 
         # Supervisor
         sup_conf   = sup_s.get("confidence", "?") if sup_s else "—"
-        sup_r      = sup_s.get("reasoning", "—")[:150] if sup_s else "—"
+        sup_r      = sup_s.get("reasoning", "—")[:200] if sup_s else "—"
 
         # Reject reason
         reject     = result.get("reject_reason", "")
@@ -852,13 +1002,13 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"*[1] SMC Engine:* ✅ พบ setup\n"
             f"*[2] Chart Analyst:* {vi(chart_vote)}\n"
             f"   Signal: `{chart_sig}` Conf: `{chart_conf}%`\n"
-            f"   _{chart_r}_\n\n"
+            f"   _{_md(chart_r)}_\n\n"
             f"*[3] Bias Analyst:* {vi(bias_vote)} {bias_cache}\n"
             f"   Direction: `{bias_td}`\n"
-            f"   _{bias_r}_\n\n"
+            f"   _{_md(bias_r)}_\n\n"
             f"*[4] News Scout:* {vi(news_vote)}\n"
-            f"   Risk: `{news_risk}` | Key: `{news_key}`\n"
-            f"   _{news_r}_\n\n"
+            f"   Risk: `{news_risk}` | Key: `{_md(str(news_key))}`\n"
+            f"   _{_md(news_r)}_\n\n"
             f"*[5] Vote:* `{vote_score}/3`\n"
         )
 
@@ -869,11 +1019,11 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if sup_s:
             msg += (
                 f"*[7] Supervisor:* Conf: `{sup_conf}%`\n"
-                f"   _{sup_r}_\n\n"
+                f"   _{_md(sup_r)}_\n\n"
             )
 
         if reject:
-            msg += f"⛔ Reject: _{reject[:150]}_\n"
+            msg += f"⛔ Reject: _{_md(reject[:250])}_\n"
         elif result.get("approved"):
             msg += (
                 f"\n✅ *ผ่านทุก stage — จะเปิด {final_sig}*\n"
@@ -924,7 +1074,7 @@ async def cmd_closetrade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Trade #{trade_id} | {direction} | Entry: `{entry}`\n"
         f"Peak ที่เคยถึง: `{peak}`"
         + pnl_str
-        + (f"\n\nบันทึกผล: `/outcome {trade_id} win/loss/be [pips]`" if trade_id else ""),
+        + (f"\n\nบันทึกผล: `/outcome {trade_id} win/loss/be [จุด]`" if trade_id else ""),
         parse_mode="Markdown"
     )
 
@@ -989,6 +1139,68 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
             ),
             parse_mode="Markdown"
         )
+
+    # ── Pyramid ไม้ 2 Check ───────────────────────────────
+    # trigger: มีไม้ 1 เปิด (BOS breakout) ยังไม่กำไร → รอ pull back มา OB
+    pyramid_waiting  = ot.get("pyramid_waiting", False)
+    pyramid_alerted  = ot.get("pyramid_alerted", False)
+    pyramid_lot2     = ot.get("pyramid_lot2")
+    pyramid_ob       = ot.get("pyramid_ob")
+
+    if pyramid_waiting and not pyramid_alerted and pyramid_lot2:
+        # ยัง "ไม่กำไร" = ราคายังไม่ห่างจาก entry เกิน 80 pips
+        profit_now = (current - entry) if is_buy else (entry - current)
+        still_near = profit_now < 80
+
+        if still_near:
+            # อัพเดต OB zone จาก SMC ปัจจุบันถ้าไม่มี
+            if not pyramid_ob:
+                ob_key = "active_bull_ob" if is_buy else "active_bear_ob"
+                pyramid_ob = smc_summary.get(ob_key)
+                ot["pyramid_ob"] = pyramid_ob
+                state_manager.set_field(bot_state, "open_trade", ot)
+
+            if pyramid_ob:
+                ob_top = pyramid_ob.get("top", 0)
+                ob_bot = pyramid_ob.get("bottom", 0)
+                # ราคาถึง OB หรืออยู่ใน OB แล้ว (±15 pip buffer)
+                if is_buy:
+                    at_ob = ob_bot - 1.5 <= current <= ob_top + 1.5
+                else:
+                    at_ob = ob_bot - 1.5 <= current <= ob_top + 1.5
+
+                if at_ob:
+                    ot["pyramid_alerted"] = True
+                    state_manager.set_field(bot_state, "open_trade", ot)
+
+                    bot_state["pending_pyramid"] = {
+                        "direction":          direction,
+                        "lot":                pyramid_lot2,
+                        "ob_zone":            pyramid_ob,
+                        "original_trade_id":  trade_id,
+                        "current_price":      current,
+                    }
+                    state_manager.save(bot_state)
+
+                    keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ เปิดไม้ 2", callback_data="pyramid_confirm"),
+                        InlineKeyboardButton("⏭ ข้าม",      callback_data="pyramid_skip"),
+                    ]])
+                    await ctx.bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=(
+                            f"🔺 *Pyramid ไม้ 2 — ราคาถึง OB แล้ว!*\n"
+                            f"━━━━━━━━━━━━━━━━━\n"
+                            f"ไม้ 1: `{direction}` @ `{entry}` (เปิดอยู่)\n"
+                            f"ราคาปัจจุบัน: `{current}`\n"
+                            f"🎯 OB Zone: `{ob_bot}–{ob_top}`\n"
+                            f"📦 ไม้ 2 Lot: `{pyramid_lot2}` (60% ของ full size)\n"
+                            f"💡 Average entry จะดีขึ้น ค่า risk เพิ่มนิดเดียว\n\n"
+                            f"เปิดไม้ 2 ที่ OB เลยมั้ย?"
+                        ),
+                        parse_mode="Markdown",
+                        reply_markup=keyboard,
+                    )
 
     # ── Re-entry Analysis ────────────────────────────────
     # trigger: เคย profit ≥200p แล้วราคากลับมาใกล้ entry
@@ -1136,6 +1348,31 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Main ───────────────────────────────────────────────
 
+def _startup_clear_stale_trade():
+    """ตอน startup เช็ค open_trade state ว่ายังมี position ใน MT5 จริงไหม
+    ถ้าไม่มี → clear state ป้องกัน false-lock หลัง restart"""
+    existing = bot_state.get("open_trade")
+    if not existing:
+        return
+    try:
+        positions = mt5_executor.get_open_positions()
+        ticket = existing.get("mt5_ticket")
+        if ticket:
+            open_tickets = {p["ticket"] for p in positions}
+            stale = ticket not in open_tickets
+        else:
+            stale = len(positions) == 0
+        if stale:
+            state_manager.set_field(bot_state, "open_trade", None)
+            tid = existing.get("trade_id", "?")
+            print(f"[startup] 🧹 Trade #{tid} state cleared — no matching MT5 position")
+        else:
+            tid = existing.get("trade_id", "?")
+            print(f"[startup] ✅ Trade #{tid} still open in MT5 — keeping state")
+    except Exception as e:
+        print(f"[startup] ⚠️ Could not verify open_trade vs MT5: {e}")
+
+
 def run():
     from config.settings import SCAN_INTERVAL_MINUTES
 
@@ -1195,6 +1432,9 @@ def run():
         daily_close_summary,
         time=dtime(23, 30, tzinfo=thai_tz),
     )
+
+    # ── Startup: clear stale open_trade state ──────────────────────
+    _startup_clear_stale_trade()
 
     print("🏢 SmartAgentTrade Bot เริ่มทำงานแล้ว...")
     app.run_polling()

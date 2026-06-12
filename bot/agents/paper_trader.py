@@ -20,6 +20,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass
+from agents.json_utils import fmt_pts
 
 DB_PATH = Path(__file__).parent.parent / "data" / "paper_trades.db"
 
@@ -317,7 +318,7 @@ def format_open_trade(t: dict) -> str:
     return (
         f"{emoji} *#{t['id']} {d}* {stars} {stype}\n"
         f"  Entry: `{t['entry']}` | SL: `{t['sl']}` | TP: `{t['tp']}`\n"
-        f"  SL: `{t['sl_pips']}p` | TP: `{t['tp_pips']}p` | RR: `1:{t['rr']}`\n"
+        f"  SL: `{fmt_pts(t['sl_pips'])} จุด` | TP: `{fmt_pts(t['tp_pips'])} จุด` | RR: `1:{t['rr']}`\n"
         f"  🕐 {t['opened_at']}"
     )
 
@@ -330,7 +331,7 @@ def format_close_result(r: dict) -> str:
         f"━━━━━━━━━━━━━━━━━\n"
         f"Direction: {r['direction']}\n"
         f"Entry: `{r['entry']}` → Close: `{r['close']}`\n"
-        f"P&L: `{pips_sign}{r['pnl_pips']} pips` (${pips_sign}{r['pnl_dollar']})\n"
+        f"P&L: `{fmt_pts(r['pnl_pips'], sign=True)} จุด` (${pips_sign}{r['pnl_dollar']})\n"
         f"RR Actual: `1:{r['rr_actual']}`\n"
         f"Status: *{r['status'].upper()}*"
     )
@@ -352,8 +353,8 @@ def format_pnl_summary(s: dict) -> str:
         f"✅ Win: `{s['wins']}` | ❌ Loss: `{s['losses']}` | ↔️ BE: `{s['be']}`\n"
         f"🎯 Win Rate: `{s['win_rate']}%`\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"📊 Total P&L: `{pips_sign}{s['total_pips']} pips` ({pips_sign}{s['total_pct']}%)\n"
+        f"📊 Total P&L: `{fmt_pts(s['total_pips'], sign=True)} จุด` ({pips_sign}{s['total_pct']}%)\n"
         f"⚖️ Avg RR: `1:{s['avg_rr']}`\n"
-        f"🏆 Best: `+{s['best_pips']}p` | 💀 Worst: `{s['worst_pips']}p`"
+        f"🏆 Best: `{fmt_pts(s['best_pips'], sign=True)} จุด` | 💀 Worst: `{fmt_pts(s['worst_pips'], sign=True)} จุด`"
         f"{streak_txt}"
     )

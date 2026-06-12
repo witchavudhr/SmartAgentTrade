@@ -18,7 +18,7 @@ input ulong  InpMagicNumber = 0;  // Magic Number (0 = all positions)
 int    PANEL_X = 15;
 int    PANEL_Y = 32;
 #define PANEL_W      400   // wider panel for Windows font rendering
-#define PANEL_ROWS   16
+#define PANEL_ROWS   17
 #define ROW_H        28
 #define FEAT_W       132   // wider label column — fits "TRAILING (stairs)" on Windows
 #define INPUT_W      202   // input area width (unchanged)
@@ -145,6 +145,29 @@ int    g_keepBestTotalCount = 0;      // จำนวน positions ทั้ง�
 //--- Position count tracking (recalc trigger)
 int    g_lastPositionCount  = -1;     // -1 = ยังไม่เคย init
 
+//--- ── Order Block detection (M15) ────────────────────────────────
+struct SOBZone {
+   bool     isBull;      // true = Bullish OB, false = Bearish OB
+   double   zoneHigh;
+   double   zoneLow;
+   datetime timeStart;   // เวลาเปิดแท่ง OB
+   bool     mitigated;   // ราคาเข้า zone แล้ว
+   string   name;        // ชื่อ object บน chart
+};
+
+SOBZone  g_OBZones[];
+datetime g_lastM15BarTime = 0;        // ใช้ detect new M15 bar
+#define  OB_PREFIX       "OB_"
+#define  OB_MAX_BULL     5
+#define  OB_MAX_BEAR     5
+#define  OB_SWING_STR    2            // bars แต่ละด้านสำหรับ swing detection
+#define  OB_LOOKBACK     150          // bars M15 ที่ scan
+bool     g_ShowOB        = true;           // toggle show/hide OB zones
+
+#define  OB_BULL_CLR     C'240,255,240'    // Honeydew   — Bullish OB
+#define  OB_BEAR_CLR     C'255,228,225'    // MistyRose  — Bearish OB
+#define  OB_MIT_CLR      C'230,230,250'    // Lavender   — mitigated
+
 //--- Close All confirm state
 bool     g_closeAllArmed    = false;
 datetime g_closeAllArmedAt  = 0;
@@ -176,6 +199,9 @@ int OnInit()
 
    //--- ถ้า DCA เปิดอยู่จากครั้งก่อน → init state จาก positions ปัจจุบัน
    if(g_EnableDCA) InitDCAState();
+
+   ArrayResize(g_OBZones, 0);
+   if(g_ShowOB) DetectOrderBlocks();
    return INIT_SUCCEEDED;
 }
 
@@ -183,6 +209,7 @@ void OnDeinit(const int reason)
 {
    SaveSettings();
    DeletePanel();
+   ClearOBObjects();
    Comment("");   // clear debug comment ที่อาจค้างอยู่
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, false);
 }
@@ -294,6 +321,16 @@ void OnTick()
    if(g_EnableProtectProfit)   CheckProtectProfit();
    if(g_EnableBreakeven)       CheckBreakeven();
    if(g_EnableTrailing)        CheckTrailingStop();
+
+   //--- Order Block: re-detect ทุก M15 bar ใหม่, mitigation check ทุก tick
+   datetime m15Now = iTime(Symbol(), PERIOD_M15, 0);
+   if(g_ShowOB)
+   {
+      if(m15Now != g_lastM15BarTime && g_lastM15BarTime != 0)
+         DetectOrderBlocks();
+      CheckOBMitigation();
+   }
+   g_lastM15BarTime = m15Now;
 }
 
 //+------------------------------------------------------------------+
@@ -521,6 +558,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       }
       if(sparam == PREFIX+"TOG_TOTALSL")  { g_EnableTotalSL      = !g_EnableTotalSL;      RefreshToggle(sparam, g_EnableTotalSL);
                                             if(g_EnableTotalSL) ApplyTotalSL(); else ClearSLAll(); }
+      if(sparam == PREFIX+"TOG_OB")
+      {
+         g_ShowOB = !g_ShowOB;
+         RefreshToggle(sparam, g_ShowOB);
+         if(g_ShowOB) DetectOrderBlocks();
+         else         ClearOBObjects();
+      }
       if(sparam == PREFIX+"BTN_CLOSEALL")
       {
          if(!g_closeAllArmed)
@@ -635,6 +679,8 @@ void CheckPartialClose()
       double curVol = posInfo.Volume();
       //--- skip ถ้าเหลือ ≤ keepLot
       if(curVol <= keepLot + 0.0001) continue;
+      //--- skip ไม้ที่ขาดทุนอยู่ — ไม่ partial close ไม้ติดลบ (เช่น pyramid ไม้ใหม่)
+      if(posInfo.Profit() < 0) continue;
 
       double closeLots = NormVol(sym, curVol * g_PartialClosePct / 100.0);
       //--- ถ้าปิดแล้วเหลือ < keepLot → ปรับให้เหลือ keepLot พอดี
@@ -852,10 +898,15 @@ bool PairTP(int idxA, int idxB,
 
 //+------------------------------------------------------------------+
 //| FEATURE: Pair Close                                              |
-//| จับคู่ worst[i]+best[i] ทุกไม้ set TP รวม = target$ ต่อคู่     |
-//| ทำซ้ำจนเหลือ N ไม้                                             |
+//| จับคู่ worst[i]+best[i] แยก BUY/SELL → set TP รวม = target$    |
 //+------------------------------------------------------------------+
 void CheckPairClose()
+{
+   CheckPairCloseDir(POSITION_TYPE_BUY);
+   CheckPairCloseDir(POSITION_TYPE_SELL);
+}
+
+void CheckPairCloseDir(ENUM_POSITION_TYPE dir)
 {
    string sym       = Symbol();
    double tickValue = SymbolInfoDouble(sym,SYMBOL_TRADE_TICK_VALUE);
@@ -872,6 +923,7 @@ void CheckPairClose()
       if(!posInfo.SelectByIndex(i)) continue;
       if(posInfo.Symbol()!=sym) continue;
       if(InpMagicNumber!=0&&posInfo.Magic()!=InpMagicNumber) continue;
+      if(posInfo.PositionType()!=dir) continue;
       ArrayResize(tickets,count+1);ArrayResize(lots,count+1);ArrayResize(opens,count+1);
       ArrayResize(types,count+1);ArrayResize(sls,count+1);ArrayResize(profits,count+1);
       tickets[count]=posInfo.Ticket();lots[count]=posInfo.Volume();
@@ -881,29 +933,24 @@ void CheckPairClose()
    }
    if(count<=g_KeepBestN) return;
 
-   //--- sort by open price: BUY net → highest open = worst (rank0), SELL net → lowest open = worst
-   double netDir=0;
-   for(int j=0;j<count;j++) netDir+=(types[j]==POSITION_TYPE_BUY?lots[j]:-lots[j]);
-   double dirSign=(netDir>=0)?-1.0:1.0;  // BUY: -open → ascending ให้ highest open อยู่ index 0
+   // BUY worst = highest open (dirSign=-1), SELL worst = lowest open (dirSign=+1)
+   double dirSign = (dir==POSITION_TYPE_BUY) ? -1.0 : 1.0;
    double sortKey[]; ArrayResize(sortKey,count);
    for(int j=0;j<count;j++) sortKey[j]=dirSign*opens[j];
    int sortIdx[]; SortByProfit(sortKey,sortIdx,count);
-   //--- PairClose: จับคู่ global worst + global best → เหลือ middle N ไม้
-   //--- pairs: (sortIdx[0], sortIdx[count-1]), (sortIdx[1], sortIdx[count-2]), ...
 
    double bid=SymbolInfoDouble(sym,SYMBOL_BID), ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   string dTag=(dir==POSITION_TYPE_BUY)?"BUY":"SELL";
    int closeCount = count - g_KeepBestN;
    int numPairs   = closeCount / 2;
 
    for(int p=0;p<numPairs;p++)
    {
-      int iA=sortIdx[p],           // p-th worst (global)
-          iB=sortIdx[count-1-p];   // p-th best (global) → middle N คือ rank6 ที่เหลือ
+      int iA=sortIdx[p], iB=sortIdx[count-1-p];
       double tp; bool ok=PairTP(iA,iB,tickets,lots,opens,types,profits,g_PairCloseTarget,vpp,digits,bid,ask,tp);
-
       if(!ok)
       {  if(tp==-1){ trade.PositionClose(tickets[iA]); trade.PositionClose(tickets[iB]);
-                     Print("PairClose | Pair[",p,"] market close | iA:",tickets[iA]," iB:",tickets[iB]); }
+                     Print("PairClose[",dTag,"] Pair[",p,"] market | iA:",tickets[iA]," iB:",tickets[iB]); }
          continue;
       }
       int pair[2]={iA,iB};
@@ -912,36 +959,40 @@ void CheckPairClose()
          if(!posInfo.SelectByTicket(tickets[pair[k]])) continue;
          if(MathAbs(posInfo.TakeProfit()-tp)>point*2)
             if(trade.PositionModify(tickets[pair[k]],sls[pair[k]],tp))
-               Print("PairClose | Pair[",p,"] Ticket:",tickets[pair[k]]," TP:",tp," tgt:$",g_PairCloseTarget);
+               Print("PairClose[",dTag,"] Pair[",p,"] Ticket:",tickets[pair[k]]," TP:",tp);
       }
    }
-   //--- ไม้ odd: set soloTP ให้ปิดที่กำไร target$ แล้ว ApplyProfitTargetTP จะ set TP ให้ middle N
    int oddIdx = -1;
-   if(closeCount%2==1 && numPairs>0)      oddIdx = sortIdx[numPairs];
-   else if(closeCount==1 && numPairs==0)  oddIdx = sortIdx[0];
+   if(closeCount%2==1 && numPairs>0)     oddIdx = sortIdx[numPairs];
+   else if(closeCount==1 && numPairs==0) oddIdx = sortIdx[0];
    if(oddIdx >= 0 && posInfo.SelectByTicket(tickets[oddIdx]))
    {
       double lotOdd = lots[oddIdx];
       if(lotOdd > 0)
       {
-         double soloTP = (types[oddIdx]==POSITION_TYPE_BUY)
+         double soloTP = (dir==POSITION_TYPE_BUY)
             ? NormalizeDouble(opens[oddIdx] + g_PairCloseTarget/(vpp*lotOdd), digits)
             : NormalizeDouble(opens[oddIdx] - g_PairCloseTarget/(vpp*lotOdd), digits);
-         bool past = (types[oddIdx]==POSITION_TYPE_BUY) ? (soloTP<=ask) : (soloTP>=bid);
-         if(past) { trade.PositionClose(tickets[oddIdx]); Print("PairClose | Odd close at market | Ticket:",tickets[oddIdx]); }
+         bool past = (dir==POSITION_TYPE_BUY) ? (soloTP<=ask) : (soloTP>=bid);
+         if(past) { trade.PositionClose(tickets[oddIdx]); Print("PairClose[",dTag,"] Odd market | Ticket:",tickets[oddIdx]); }
          else if(MathAbs(posInfo.TakeProfit()-soloTP)>point*2)
             if(trade.PositionModify(tickets[oddIdx],sls[oddIdx],soloTP))
-               Print("PairClose | Odd soloTP | Ticket:",tickets[oddIdx]," TP:",soloTP);
+               Print("PairClose[",dTag,"] Odd soloTP | Ticket:",tickets[oddIdx]," TP:",soloTP);
       }
    }
 }
 
 //+------------------------------------------------------------------+
 //| FEATURE: Pair Guard                                              |
-//| ปกป้อง best N → จับคู่เฉพาะไม้นอก N                           |
-//| Pair: worst[0]+best_of_unprotected[0], ...                      |
+//| ปกป้อง best N แยก BUY/SELL → จับคู่ excess ของแต่ละฝั่ง       |
 //+------------------------------------------------------------------+
 void CheckPairGuard()
+{
+   CheckPairGuardDir(POSITION_TYPE_BUY);
+   CheckPairGuardDir(POSITION_TYPE_SELL);
+}
+
+void CheckPairGuardDir(ENUM_POSITION_TYPE dir)
 {
    string sym       = Symbol();
    double tickValue = SymbolInfoDouble(sym,SYMBOL_TRADE_TICK_VALUE);
@@ -958,6 +1009,7 @@ void CheckPairGuard()
       if(!posInfo.SelectByIndex(i)) continue;
       if(posInfo.Symbol()!=sym) continue;
       if(InpMagicNumber!=0&&posInfo.Magic()!=InpMagicNumber) continue;
+      if(posInfo.PositionType()!=dir) continue;
       ArrayResize(tickets,count+1);ArrayResize(lots,count+1);ArrayResize(opens,count+1);
       ArrayResize(types,count+1);ArrayResize(sls,count+1);ArrayResize(profits,count+1);
       tickets[count]=posInfo.Ticket();lots[count]=posInfo.Volume();
@@ -965,54 +1017,38 @@ void CheckPairGuard()
       sls[count]=posInfo.StopLoss();profits[count]=posInfo.Profit()+posInfo.Swap();
       count++;
    }
-
    if(count < 2) return;
    int keepN = MathMax(0, g_KeepBestN);
-   if(keepN > 0 && count <= keepN) return;  // เหลือ ≤ N แล้ว — หยุด
+   if(keepN > 0 && count <= keepN) return;
 
-   //--- sort worst→best by open price
-   double netDir=0;
-   for(int j=0;j<count;j++) netDir+=(types[j]==POSITION_TYPE_BUY?lots[j]:-lots[j]);
-   bool isBuyNet = (netDir >= 0);
-   double dirSign = isBuyNet ? -1.0 : 1.0;
+   // BUY worst = highest open, SELL worst = lowest open
+   double dirSign = (dir==POSITION_TYPE_BUY) ? -1.0 : 1.0;
    double sortKey[]; ArrayResize(sortKey,count);
    for(int j=0;j<count;j++) sortKey[j]=dirSign*opens[j];
    int sortIdx[]; SortByProfit(sortKey,sortIdx,count);
-   // sortIdx[0]=worst ... sortIdx[count-1]=best
 
    double bid=SymbolInfoDouble(sym,SYMBOL_BID), ask=SymbolInfoDouble(sym,SYMBOL_ASK);
-
-   // ── excess = ไม้ที่เกิน N (worst สุด) ── protected = keepN ตัวที่ดีที่สุด (ท้าย)
-   // จับคู่เฉพาะใน excess เท่านั้น: worst[p] ↔ best-of-excess[p]
-   // → ทั้งคู่ปิดพร้อมกัน ได้กำไรรวม ≥ tgt$ ทั้งคู่บวกแน่นอน
-   int excess   = count - keepN;          // จำนวนไม้ที่ต้องปิด
+   string dTag=(dir==POSITION_TYPE_BUY)?"BUY":"SELL";
+   int excess   = count - keepN;
    int numPairs = excess / 2;
 
    for(int p=0;p<numPairs;p++)
    {
-      int iA = sortIdx[p];              // p-th worst ใน excess
-      int iB = sortIdx[excess-1-p];     // p-th best ใน excess (mirror)
+      int iA=sortIdx[p], iB=sortIdx[excess-1-p];
       double tp; bool ok=PairTP(iA,iB,tickets,lots,opens,types,profits,g_PairGuardTarget,vpp,digits,bid,ask,tp);
-
       if(!ok)
-      {  if(tp==-1){
-            trade.PositionClose(tickets[iA]);
-            trade.PositionClose(tickets[iB]);
-            Print("PairGuard | Pair[",p,"] past target → market close both");
-         }
+      {  if(tp==-1){ trade.PositionClose(tickets[iA]); trade.PositionClose(tickets[iB]);
+                     Print("PairGuard[",dTag,"] Pair[",p,"] past target → market close both"); }
          continue;
       }
-
-      //--- ตั้ง TP ทั้งสองตัวให้ปิดพร้อมกัน → combined = tgt$ (เหมือน PairClose)
-      //--- P_worst อาจปิดขาดทุนส่วนตัวได้ถ้า lot ไม่เท่ากัน แต่ combined = tgt$ เสมอ
       if(posInfo.SelectByTicket(tickets[iA]) && MathAbs(posInfo.TakeProfit()-tp)>point*2)
          if(trade.PositionModify(tickets[iA],sls[iA],tp))
-            Print("PairGuard | Pair[",p,"] A:",tickets[iA]," TP:",NormalizeDouble(tp,digits));
+            Print("PairGuard[",dTag,"] Pair[",p,"] A:",tickets[iA]," TP:",NormalizeDouble(tp,digits));
       if(posInfo.SelectByTicket(tickets[iB]) && MathAbs(posInfo.TakeProfit()-tp)>point*2)
          if(trade.PositionModify(tickets[iB],sls[iB],tp))
-            Print("PairGuard | Pair[",p,"] B:",tickets[iB]," TP:",NormalizeDouble(tp,digits));
+            Print("PairGuard[",dTag,"] Pair[",p,"] B:",tickets[iB]," TP:",NormalizeDouble(tp,digits));
    }
-   //--- odd excess (excess คี่): sortIdx[numPairs] — ไม้กลาง รอคู่ถัดไป ไม่ set TP
+   // odd excess: sortIdx[numPairs] — รอคู่ ไม่ set TP
 }
 
 //+------------------------------------------------------------------+
@@ -1248,14 +1284,34 @@ void CheckKeepBest()
       // fall through → recalculate
    }
 
-   //--- เก็บ positions
+   // Process BUY and SELL groups separately, both append to g_keepWorstTickets
+   ArrayResize(g_keepWorstTickets, 0);
+   double beTP_buy=0, netLots_buy=0, beTP_sell=0, netLots_sell=0;
+   bool hadBuy  = KeepBestProcessDir(POSITION_TYPE_BUY,  beTP_buy,  netLots_buy);
+   bool hadSell = KeepBestProcessDir(POSITION_TYPE_SELL, beTP_sell, netLots_sell);
+   if(!hadBuy && !hadSell) return;
+
+   g_keepBestPending    = true;
+   g_keepBestTotalCount = PositionsTotal();
+   // Backup monitor: valid only when single direction active
+   if(hadBuy && !hadSell)       { g_keepBestBeTP=beTP_buy;  g_keepBestNetLots=netLots_buy; }
+   else if(hadSell && !hadBuy)  { g_keepBestBeTP=beTP_sell; g_keepBestNetLots=netLots_sell; }
+   else                         { g_keepBestBeTP=0;          g_keepBestNetLots=0; } // both: disable backup
+}
+
+// Process one direction group for KeepBest — append worst tickets to g_keepWorstTickets
+// Returns true if any worst positions were found/processed
+bool KeepBestProcessDir(ENUM_POSITION_TYPE dir, double &beTP_out, double &netLots_out)
+{
+   string sym = Symbol();
    ulong tickets[]; double lots[],opens[],sls[],profits[]; int types[];
-   int count = 0;
-   for(int i=PositionsTotal()-1; i>=0; i--)
+   int count=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
    {
       if(!posInfo.SelectByIndex(i)) continue;
       if(posInfo.Symbol()!=sym) continue;
-      if(InpMagicNumber!=0 && posInfo.Magic()!=InpMagicNumber) continue;
+      if(InpMagicNumber!=0&&posInfo.Magic()!=InpMagicNumber) continue;
+      if(posInfo.PositionType()!=dir) continue;
       ArrayResize(tickets,count+1); ArrayResize(lots,count+1);
       ArrayResize(opens,count+1);   ArrayResize(types,count+1);
       ArrayResize(sls,count+1);     ArrayResize(profits,count+1);
@@ -1264,103 +1320,82 @@ void CheckKeepBest()
       sls[count]=posInfo.StopLoss(); profits[count]=posInfo.Profit()+posInfo.Swap();
       count++;
    }
-   if(count==0) return;
-
-   int keepN  = MathMin(g_KeepBestN, count);
+   if(count==0) return false;
+   int keepN = MathMin(g_KeepBestN, count);
    int closeN = count - keepN;
-   if(closeN==0) return;
+   if(closeN==0) return false;
 
-   //--- Sort ascending: sortIdx[0]=worst (ต่ำสุด), sortIdx[last]=best
-   int sortIdx[]; ArrayResize(sortIdx, count);
+   // Sort by profit ascending: worst (lowest profit) first
+   int sortIdx[]; ArrayResize(sortIdx,count);
    for(int i=0;i<count;i++) sortIdx[i]=i;
    for(int a=0;a<count-1;a++)
       for(int b=a+1;b<count;b++)
-         if(profits[sortIdx[a]] > profits[sortIdx[b]])
+         if(profits[sortIdx[a]]>profits[sortIdx[b]])
          { int tmp=sortIdx[a]; sortIdx[a]=sortIdx[b]; sortIdx[b]=tmp; }
 
-   //--- min$=0 → TP ที่ beTP (กำไร=0), min$>0 → TP ที่กำไร=min$ (เหมือน tgt$ ของ PairClose)
-   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   int    digits    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
-   if(tickSize==0 || tickValue==0) return;
+   double tickValue = SymbolInfoDouble(sym,SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(sym,SYMBOL_TRADE_TICK_SIZE);
+   int    digits    = (int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double point     = SymbolInfoDouble(sym,SYMBOL_POINT);
+   if(tickSize==0||tickValue==0) return false;
 
-   double wBuyLots=0, wSellLots=0, wBuyW=0, wSellW=0;
-   for(int k=0; k<closeN; k++)
+   double wBuyLots=0,wSellLots=0,wBuyW=0,wSellW=0;
+   for(int k=0;k<closeN;k++)
    {
       int idx=sortIdx[k];
-      if(types[idx]==POSITION_TYPE_BUY){ wBuyLots+=lots[idx]; wBuyW+=opens[idx]*lots[idx]; }
-      else                             { wSellLots+=lots[idx]; wSellW+=opens[idx]*lots[idx]; }
+      if(types[idx]==POSITION_TYPE_BUY){wBuyLots+=lots[idx]; wBuyW+=opens[idx]*lots[idx];}
+      else                             {wSellLots+=lots[idx]; wSellW+=opens[idx]*lots[idx];}
    }
-   double wNetLots = wBuyLots - wSellLots;
-   if(MathAbs(wNetLots) < 0.0001)
-   { Print("KeepBest: worst positions hedged → skip"); return; }
+   double wNetLots=wBuyLots-wSellLots;
+   if(MathAbs(wNetLots)<0.0001) return false;
 
-   double beTP  = NormalizeDouble((wBuyW - wSellW) / wNetLots, digits);
-   double vpp   = tickValue / tickSize;
-   int    sign  = (wNetLots > 0) ? 1 : -1;
+   double vpp      = tickValue/tickSize;
+   double beTP     = NormalizeDouble((wBuyW-wSellW)/wNetLots, digits);
+   int    sign     = (wNetLots>0)?1:-1;
+   double tgtOff   = (g_KeepBestMinProfit>0&&vpp>0) ? g_KeepBestMinProfit/(vpp*MathAbs(wNetLots)) : 0.0;
+   double targetTP = NormalizeDouble(beTP+sign*tgtOff, digits);
+   double bid=SymbolInfoDouble(sym,SYMBOL_BID), ask=SymbolInfoDouble(sym,SYMBOL_ASK);
+   string dTag=(dir==POSITION_TYPE_BUY)?"BUY":"SELL";
 
-   //--- targetTP: beTP + profit offset จาก min$ (min$=0 → ปิดที่ BE, min$>0 → ปิดที่กำไร min$)
-   double tgtOffset = (g_KeepBestMinProfit > 0 && vpp > 0 && MathAbs(wNetLots) > 0)
-                      ? (g_KeepBestMinProfit / (vpp * MathAbs(wNetLots)))
-                      : 0.0;
-   double targetTP  = NormalizeDouble(beTP + sign * tgtOffset, digits);
-
-   double bid   = SymbolInfoDouble(sym, SYMBOL_BID);
-   double ask   = SymbolInfoDouble(sym, SYMBOL_ASK);
-
-   //--- ถ้า worst ผ่าน targetTP ไปแล้ว → ปิดทันที
-   bool alreadyPast = (wNetLots>0 && targetTP<=ask) || (wNetLots<0 && targetTP>=bid);
+   bool alreadyPast=(wNetLots>0&&targetTP<=ask)||(wNetLots<0&&targetTP>=bid);
    if(alreadyPast)
    {
-      PrintFormat("KeepBest: worst past target (TP=%.5f) → closing %d at market", targetTP, closeN);
-      ArrayResize(g_keepWorstTickets, 0);
-      for(int k=0; k<closeN; k++)
+      PrintFormat("KeepBest[%s]: past target %.5f → market closing %d", dTag, targetTP, closeN);
+      for(int k=0;k<closeN;k++)
       {
          int idx=sortIdx[k];
-         Append(g_keepWorstTickets, tickets[idx]);
+         Append(g_keepWorstTickets,tickets[idx]);
          if(trade.PositionClose(tickets[idx]))
-            PrintFormat("KeepBest | Closed | Ticket:%d PnL:$%.2f", (int)tickets[idx], profits[idx]);
+            PrintFormat("KeepBest[%s] Closed | Ticket:%d PnL:$%.2f", dTag, (int)tickets[idx], profits[idx]);
       }
-      g_keepBestBeTP    = targetTP;
-      g_keepBestNetLots = wNetLots;
-      g_keepBestPending = true;
-      g_keepBestTotalCount = count;
-      return;
+      beTP_out=targetTP; netLots_out=wNetLots;
+      return true;
    }
 
-   //--- ตั้ง TP ที่ targetTP บน worst positions → รอราคามาถึงแล้วปิด
-   long   stopLvl     = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
-   double minStopDist = stopLvl * point;
-   ArrayResize(g_keepWorstTickets, 0);
-   int setOK=0, setFail=0;
-   for(int k=0; k<closeN; k++)
+   long   stopLvl=SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist =stopLvl*point;
+   int setOK=0,setFail=0;
+   for(int k=0;k<closeN;k++)
    {
       int idx=sortIdx[k];
-      Append(g_keepWorstTickets, tickets[idx]);
+      Append(g_keepWorstTickets,tickets[idx]);
       if(!posInfo.SelectByTicket(tickets[idx])) continue;
-      if(MathAbs(posInfo.TakeProfit()-targetTP) <= point*2){ setOK++; continue; }
-
-      bool valid = (types[idx]==POSITION_TYPE_BUY) ? (targetTP>ask+minStopDist) : (targetTP<bid-minStopDist);
-      if(!valid){ setFail++; continue; }
-
-      if(trade.PositionModify(tickets[idx], sls[idx], targetTP))
-      { PrintFormat("KeepBest | TP set | Ticket:%d targetTP:%.5f (beTP:%.5f + $%.2f)",
-                    (int)tickets[idx], targetTP, beTP, g_KeepBestMinProfit); setOK++; }
+      if(MathAbs(posInfo.TakeProfit()-targetTP)<=point*2){setOK++; continue;}
+      bool valid=(types[idx]==POSITION_TYPE_BUY)?(targetTP>ask+minDist):(targetTP<bid-minDist);
+      if(!valid){setFail++; continue;}
+      if(trade.PositionModify(tickets[idx],sls[idx],targetTP))
+      { PrintFormat("KeepBest[%s] TP set | Ticket:%d targetTP:%.5f (BE:%.5f+$%.2f)",
+                    dTag,(int)tickets[idx],targetTP,beTP,g_KeepBestMinProfit); setOK++; }
       else
-      { PrintFormat("KeepBest | TP FAILED | Ticket:%d retcode:%d", (int)tickets[idx], trade.ResultRetcode()); setFail++; }
+      { PrintFormat("KeepBest[%s] TP FAIL | Ticket:%d", dTag,(int)tickets[idx]); setFail++; }
    }
-
-   g_keepBestBeTP       = targetTP;   // ใช้ targetTP เป็น monitor threshold
-   g_keepBestNetLots    = wNetLots;
-   g_keepBestPending    = true;
-   g_keepBestTotalCount = count;
-
-   double worstPnL=0, bestPnL=0;
+   double worstPnL=0,bestPnL=0;
    for(int k=0;k<closeN;k++) worstPnL+=profits[sortIdx[k]];
    for(int k=closeN;k<count;k++) bestPnL+=profits[sortIdx[k]];
-   PrintFormat("KeepBest | targetTP:%.5f (BE:%.5f tgt:$%.2f) | worst:%d $%.2f | best:%d $%.2f",
-               targetTP, beTP, g_KeepBestMinProfit, closeN, worstPnL, keepN, bestPnL);
+   PrintFormat("KeepBest[%s] | targetTP:%.5f (BE:%.5f) | worst:%d $%.2f | best:%d $%.2f",
+               dTag,targetTP,beTP,closeN,worstPnL,keepN,bestPnL);
+   beTP_out=targetTP; netLots_out=wNetLots;
+   return true;
 }
 
 //--- ตรวจว่า worst positions ยังเปิดอยู่มั้ย
@@ -1804,18 +1839,24 @@ void CheckProtectProfit()
    if(count == 0) return;
    if(totalProfit < g_ProtectProfitThreshold) return;
 
-   // คำนวณ combined BE SL (profit รวม = $0)
-   // สูตรเดียวกับ TotalSL แต่ target=0: beSL = (buyW - sellW) / netLots
-   double buyLots=0, sellLots=0, buyW=0, sellW=0;
+   // คำนวณ combined BE SL (profit รวม = $0) รวม swap ด้วย
+   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize2 = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   double vpp = (tickSize2 > 0 && tickValue > 0) ? tickValue / tickSize2 : 0;
+
+   double buyLots=0, sellLots=0, buyW=0, sellW=0, totalSwap=0;
    for(int j=0; j<count; j++)
    {
+      if(posInfo.SelectByTicket(tickets[j])) totalSwap += posInfo.Swap();
       if(types[j]==POSITION_TYPE_BUY){ buyLots+=lots[j]; buyW+=opens[j]*lots[j]; }
       else                           { sellLots+=lots[j]; sellW+=opens[j]*lots[j]; }
    }
    double netLots = buyLots - sellLots;
    if(MathAbs(netLots) < 0.0001) return;
 
-   double beSL = NormalizeDouble((buyW - sellW) / netLots, digits);
+   // ปรับ BE ให้ครอบ swap สะสม (swap < 0 → SL ต้องสูงกว่า open นิดนึง)
+   double swapAdj = (vpp > 0 && MathAbs(netLots) > 0) ? (-totalSwap) / (vpp * MathAbs(netLots)) : 0;
+   double beSL = NormalizeDouble((buyW - sellW) / netLots + (netLots > 0 ? swapAdj : -swapAdj), digits);
 
    // Validate: SL ต้องอยู่ฝั่งขาดทุน (ราคายังไม่ผ่านไปแล้ว)
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
@@ -2289,6 +2330,12 @@ void CreatePanel()
       CreateCompactRow(PREFIX+"R_PPR", y, "PROTECT PROFIT", C'140,95,0', "TOG_PROTPFT", g_EnableProtectProfit);
       InlLabel(PREFIX+"IL_PPR1", INPUT_AREA_X+2,  y, "at$:");
       CreateMiniEdit(PREFIX+"EDT_PPRT", INPUT_AREA_X+34, y, 168, DoubleToString(g_ProtectProfitThreshold,0));
+      row--;
+   }
+   {  //--- Row: ORDER BLOCK (M15)
+      int y = PANEL_Y + row * ROW_H;
+      CreateCompactRow(PREFIX+"R_OB", y, "ORDER BLOCK M15", C'30,60,100', "TOG_OB", g_ShowOB);
+      InlLabel(PREFIX+"IL_OB1", INPUT_AREA_X+4, y, "5 Bull  +  5 Bear  (auto)");
       // row-- not needed (last row)
    }
 
@@ -3247,3 +3294,187 @@ void Append(ulong &arr[], ulong val)
 
 void AppendDouble(double &arr[], double val)
 { int s=ArraySize(arr); ArrayResize(arr,s+1); arr[s]=val; }
+
+//+------------------------------------------------------------------+
+//| ORDER BLOCK DETECTION (M15)                                       |
+//| - scan swing high/low → confirm BOS → หาแท่ง OB สุดท้าย         |
+//| - วาด rectangle สี BUY=ฟ้า, SELL=แดง, mitigated=เทา             |
+//+------------------------------------------------------------------+
+
+void ClearOBObjects()
+{
+   for(int i=0; i<ArraySize(g_OBZones); i++)
+      ObjectDelete(0, g_OBZones[i].name);
+   ArrayResize(g_OBZones, 0);
+}
+
+void DrawOBRect(SOBZone &z)
+{
+   // ลบของเก่าก่อน
+   ObjectDelete(0, z.name);
+
+   string sym  = Symbol();
+   int    digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+
+   // ขยาย zone ไปข้างหน้า 80 M15 bars
+   datetime t2 = z.timeStart + 80 * 15 * 60;
+
+   ObjectCreate(0, z.name, OBJ_RECTANGLE, 0, z.timeStart, z.zoneHigh, t2, z.zoneLow);
+
+   color clr;
+   if(z.mitigated)        clr = OB_MIT_CLR;
+   else if(z.isBull)      clr = OB_BULL_CLR;
+   else                   clr = OB_BEAR_CLR;
+
+   ObjectSetInteger(0, z.name, OBJPROP_COLOR,      clr);
+   ObjectSetInteger(0, z.name, OBJPROP_FILL,       true);
+   ObjectSetInteger(0, z.name, OBJPROP_BACK,       true);  // render behind candles
+   ObjectSetInteger(0, z.name, OBJPROP_ZORDER,     0);     // lowest z among background objs
+   ObjectSetInteger(0, z.name, OBJPROP_WIDTH,      1);
+   ObjectSetInteger(0, z.name, OBJPROP_STYLE,      STYLE_SOLID);
+   ObjectSetInteger(0, z.name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, z.name, OBJPROP_HIDDEN,  false);
+
+   // tooltip แสดงรายละเอียด
+   string label = (z.isBull ? "Bull OB  " : "Bear OB  ")
+                + "H:" + DoubleToString(z.zoneHigh, digits)
+                + "  L:" + DoubleToString(z.zoneLow,  digits)
+                + (z.mitigated ? "  [MIT]" : "");
+   ObjectSetString(0, z.name, OBJPROP_TOOLTIP, label);
+}
+
+void DetectOrderBlocks()
+{
+   string sym = Symbol();
+
+   MqlRates rates[];
+   int bars = CopyRates(sym, PERIOD_M15, 0, OB_LOOKBACK + OB_SWING_STR + 5, rates);
+   if(bars < OB_LOOKBACK) return;
+
+   // rates[0] = newest, rates[bars-1] = oldest
+   // ลบ zones เดิมออกก่อน แล้วสร้างใหม่
+   ClearOBObjects();
+
+   int str = OB_SWING_STR;
+   int bullCount = 0, bearCount = 0;
+
+   // scan จาก newest ไป oldest (หา OB ใหม่ก่อน)
+   for(int i = str; i < bars - str - 1 && (bullCount < OB_MAX_BULL || bearCount < OB_MAX_BEAR); i++)
+   {
+      // ── Swing High ──
+      if(bullCount < OB_MAX_BULL)
+      {
+         bool isSwingHigh = true;
+         for(int k = 1; k <= str && isSwingHigh; k++)
+            if(rates[i].high <= rates[i-k].high || rates[i].high <= rates[i+k].high)
+               isSwingHigh = false;
+
+         if(isSwingHigh)
+         {
+            // หา Bullish BOS: แท่งก่อนหน้า (newer, index < i) ที่ close > swing high
+            for(int j = i-1; j >= str; j--)
+            {
+               if(rates[j].close > rates[i].high)
+               {
+                  // พบ Bullish BOS ที่ bar j → หาแท่งแดงสุดท้ายระหว่าง j+1..i-1
+                  int obIdx = -1;
+                  for(int k = j+1; k <= i-1; k++)
+                     if(rates[k].close < rates[k].open)   // bearish candle
+                        obIdx = k;                         // เก็บล่าสุด (closest to BOS)
+
+                  if(obIdx == -1) obIdx = i;  // fallback: ใช้แท่ง swing high เอง
+
+                  SOBZone z;
+                  z.isBull     = true;
+                  z.zoneHigh   = rates[obIdx].high;
+                  z.zoneLow    = rates[obIdx].low;
+                  z.timeStart  = rates[obIdx].time;
+                  z.mitigated  = false;
+                  z.name       = OB_PREFIX + "B_" + IntegerToString((int)rates[obIdx].time);
+
+                  DrawOBRect(z);
+                  int sz = ArraySize(g_OBZones);
+                  ArrayResize(g_OBZones, sz+1);
+                  g_OBZones[sz] = z;
+                  bullCount++;
+                  break;
+               }
+            }
+         }
+      }
+
+      // ── Swing Low ──
+      if(bearCount < OB_MAX_BEAR)
+      {
+         bool isSwingLow = true;
+         for(int k = 1; k <= str && isSwingLow; k++)
+            if(rates[i].low >= rates[i-k].low || rates[i].low >= rates[i+k].low)
+               isSwingLow = false;
+
+         if(isSwingLow)
+         {
+            // หา Bearish BOS: แท่ง newer ที่ close < swing low
+            for(int j = i-1; j >= str; j--)
+            {
+               if(rates[j].close < rates[i].low)
+               {
+                  // พบ Bearish BOS → หาแท่งเขียวสุดท้ายระหว่าง j+1..i-1
+                  int obIdx = -1;
+                  for(int k = j+1; k <= i-1; k++)
+                     if(rates[k].close > rates[k].open)   // bullish candle
+                        obIdx = k;
+
+                  if(obIdx == -1) obIdx = i;
+
+                  SOBZone z;
+                  z.isBull     = false;
+                  z.zoneHigh   = rates[obIdx].high;
+                  z.zoneLow    = rates[obIdx].low;
+                  z.timeStart  = rates[obIdx].time;
+                  z.mitigated  = false;
+                  z.name       = OB_PREFIX + "S_" + IntegerToString((int)rates[obIdx].time);
+
+                  DrawOBRect(z);
+                  int sz = ArraySize(g_OBZones);
+                  ArrayResize(g_OBZones, sz+1);
+                  g_OBZones[sz] = z;
+                  bearCount++;
+                  break;
+               }
+            }
+         }
+      }
+   }
+
+   ChartRedraw(0);
+   Print("OB | Detected ", bullCount, " Bull + ", bearCount, " Bear zones (M15)");
+}
+
+void CheckOBMitigation()
+{
+   string sym  = Symbol();
+   double bid  = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask  = SymbolInfoDouble(sym, SYMBOL_ASK);
+   bool   any  = false;
+
+   for(int i=0; i<ArraySize(g_OBZones); i++)
+   {
+      if(g_OBZones[i].mitigated) continue;
+
+      bool touched = false;
+      if(g_OBZones[i].isBull)
+         touched = (bid <= g_OBZones[i].zoneHigh && ask >= g_OBZones[i].zoneLow);
+      else
+         touched = (bid <= g_OBZones[i].zoneHigh && ask >= g_OBZones[i].zoneLow);
+
+      if(touched)
+      {
+         g_OBZones[i].mitigated = true;
+         DrawOBRect(g_OBZones[i]);
+         string tag = g_OBZones[i].isBull ? "Bull" : "Bear";
+         Print("OB | ", tag, " zone mitigated  H:", g_OBZones[i].zoneHigh, "  L:", g_OBZones[i].zoneLow);
+         any = true;
+      }
+   }
+   if(any) ChartRedraw(0);
+}

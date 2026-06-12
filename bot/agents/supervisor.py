@@ -13,15 +13,23 @@ Pipeline:
 
 import anthropic
 import json
+
+
+def _md(text: str) -> str:
+    """Escape Telegram Markdown v1 special chars ใน AI-generated text"""
+    for ch in ('_', '*', '`', '['):
+        text = text.replace(ch, f'\\{ch}')
+    return text
 from datetime import datetime
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
 from agents.trade_log import get_performance_summary
+from agents.json_utils import safe_json_parse
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def run(balance: float = 10000.0) -> dict:
+def run(balance: float = 10000.0, force_session: bool = False) -> dict:
     """
     รัน pipeline ทั้งหมด:
     1. SMC scan (ฟรี)
@@ -49,7 +57,7 @@ def run(balance: float = 10000.0) -> dict:
     result["current_price"] = smc_summary.get("current_price")
 
     # Pre-filter: ถ้าไม่มี signal ไม่เรียก Claude เลย
-    if not chart_analyst.has_signal(smc_summary):
+    if not chart_analyst.has_signal(smc_summary, force_session=force_session):
         result["reject_reason"] = "SMC Engine: ไม่มี setup ครบเงื่อนไข"
         result["stages"]["smc"] = "NO_SIGNAL"
         return result
@@ -69,6 +77,8 @@ def run(balance: float = 10000.0) -> dict:
         "vote_reasoning": analysis.get("vote_reasoning", ""),
         "reasoning":     analysis.get("reasoning"),
     }
+
+    result["analysis"] = analysis  # เก็บไว้เสมอ เพื่อให้ format_alert แสดง signal/conf/setup จริง
 
     if signal == "NO_TRADE" or chart_vote == "NO":
         result["reject_reason"] = f"Chart Analyst voted NO — {analysis.get('vote_reasoning', 'NO_TRADE')}"
@@ -130,7 +140,36 @@ def run(balance: float = 10000.0) -> dict:
         result["reject_reason"] = risk.get("veto_reason")
         return result
 
-    # ── Stage 7: Supervisor Final Decision (Sonnet) ───────────
+    setup_type = analysis.get("setup_type", "")
+    rr         = float(analysis.get("rr_ratio") or 0)
+
+    # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
+    # เหตุผล: BULL_OB_ENTRY / BULL_OB_SWEEP_REJECT / TREND_OB คือ
+    # setups ที่ผ่านเงื่อนไข OB + RR + Chart YES มาแล้ว ไม่ต้องให้ LLM หาเหตุผล reject เพิ่ม
+    ob_setups = {"BULL_OB_ENTRY", "BULL_OB_SWEEP_REJECT", "TREND_OB", "TREND_BOS_BREAK"}
+    if setup_type in ob_setups and chart_vote == "YES" and rr >= 1.5 and not blocked:
+        auto_reason = {
+            "BULL_OB_SWEEP_REJECT": "Sweep + rejection ที่ Bull OB — สัญญาณแข็งที่สุด auto-approve",
+            "BULL_OB_ENTRY":        f"ราคาอยู่ที่ Bull OB (pyramid ไม้ 1) — RR {rr} auto-approve",
+            "TREND_OB":             f"Trend-aligned OB entry — RR {rr} auto-approve",
+            "TREND_BOS_BREAK":      f"BOS break pyramid — RR {rr} auto-approve",
+        }.get(setup_type, f"{setup_type} auto-approve")
+
+        result["approved"]    = True
+        result["final_signal"]= signal
+        result["lot"]         = risk.get("lot")
+        result["risk_pct"]    = risk.get("risk_pct")
+        result["caution_mode"]= risk.get("caution_mode", False)
+        result["entry_zone"]  = analysis.get("entry_zone")
+        result["stop_loss"]   = analysis.get("stop_loss")
+        result["take_profit"] = analysis.get("take_profit")
+        result["rr_ratio"]    = rr
+        result["reasoning"]   = auto_reason
+        result["analysis"]    = analysis
+        result["stages"]["supervisor"] = {"approve": True, "reasoning": auto_reason, "auto": True}
+        return result
+
+    # ── Stage 7: Supervisor Final Decision — สำหรับ setup ที่ไม่ชัด ──
     verdict = _supervisor_judge(analysis, bias, news, risk, vote_score, result["vote_details"])
     result["stages"]["supervisor"] = verdict
 
@@ -175,6 +214,8 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
 Vote รวม {vote_score}/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง (ไม่ต้องนับเสียงข้างมาก)
 
 {perf}
+⚠️ Performance ข้างบนเป็นแค่ context — ห้ามนำ WR% หรือ sample size มาตั้งเกณฑ์ confidence ขั้นต่ำ
+   การ APPROVE/REJECT ดูจากเงื่อนไข OB/setup/RR เท่านั้น ไม่ใช่จาก WR ประวัติ
 
 ═══ Agent Votes & Reasoning ═══
 🔍 Chart Analyst [{chart_vote_str}]
@@ -194,44 +235,55 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 ⚖️ Risk Manager: Lot={risk.get('lot')} | Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
 
 ═══ วิธีตัดสิน ═══
-อ่าน reasoning แต่ละ agent แล้วประเมิน:
 
-1. Agent ที่โหวต YES — เหตุผลมีน้ำหนักแค่ไหน? setup ชัดจริงมั้ย?
-2. Agent ที่โหวต NO — เหตุผลของเขา "ขัดแย้งกับ thesis จริง" หรือแค่ "ระมัดระวัง"?
-   - NO เพราะ counter-trend แต่ Bias บอกว่าถึง HTF demand/supply zone แล้ว → น้ำหนักลดลง
-   - NO เพราะข่าว High Impact ใกล้ → น้ำหนักสูง ต้องฟัง
-3. Chart Analyst เป็น agent หลัก — ถ้าเขา YES และ setup ชัด (Sweep→CHoCH→OB ครบ) → น้ำหนักสูงสุด
-4. ถ้า vote 1/3 แต่เหตุผลของ agent ที่ YES แข็งมาก และ NO มาจากความระมัดระวังทั่วไป → APPROVE ได้
-5. ถ้า vote 2/3 แต่ agent ที่ YES ให้เหตุผลอ่อน หรือ NO มีเหตุผลชัดเจนมาก → REJECT ได้
+── กฎเหล็ก (ห้ามฝ่าฝืน) ──
+✅ APPROVE ทันทีถ้า:
+   • setup_type = BULL_OB_SWEEP_REJECT → sweep+reject เกิดแล้ว = confirmation ชัดที่สุด
+   • setup_type = BULL_OB_ENTRY + Chart YES + ราคาอยู่ใน OB + RR ≥ 1.5
+     → นี่คือ pyramid ไม้ 1 เล็กๆ ก่อน ไม่ต้องรอ confirmation เพิ่ม
+     → "counter-trend" ไม่ใช่เหตุผล reject สำหรับ BULL_OB setup เพราะ swing มีในทุก trend
+   • setup_type = TREND_OB + Chart YES → trend-aligned entry approve ได้เลย
+
+❌ REJECT ได้แค่ถ้า:
+   • มีข่าว High Impact ใน 30 นาที (ฟัง News Scout)
+   • Risk Manager VETO (loss streak / daily limit)
+   • Chart Analyst NO หรือ confidence < 30%
+   • OB ถูก mitigated แล้ว (Chart ระบุ)
+   • RR < 1.5
+
+── ชั่งน้ำหนัก ──
+1. Chart Analyst = agent หลัก น้ำหนักสูงสุด
+2. Bias NO เพราะ "counter-trend" → น้ำหนักต่ำ ถ้า setup เป็น BULL_OB ประเภทใดก็ตาม
+3. Bias NO เพราะข่าว/HTF structure พัง → น้ำหนักสูง
+4. News NO เพราะข่าว High Impact → น้ำหนักสูงที่สุด ต้องฟัง
 
 ตอบ JSON เท่านั้น:
 {{
   "approve": true/false,
   "confidence": 0-100,
-  "key_agent": "chart/bias/news — agent ที่มีน้ำหนักมากสุดในการตัดสิน",
+  "key_agent": "chart/bias/news — agent ที่มีน้ำหนักมากสุด",
+  "reject_reason_detail": {{
+    "chart": "เหตุผลจาก Chart vote",
+    "bias": "เหตุผลจาก Bias vote",
+    "news": "เหตุผลจาก News vote",
+    "supervisor": "เหตุผลสุดท้ายที่ supervisor ตัดสิน"
+  }},
+  "what_to_watch": "ถ้า reject — บอกว่าต้องรออะไรก่อนถึงจะ approve ได้ เช่น 'รอ sweep + rejection candle ที่ OB 4060'",
   "reasoning": "2-3 ประโยค ภาษาไทย — ระบุว่าชั่งน้ำหนักอะไร ทำไมถึง approve/reject"
 }}"""
 
     response = client.messages.create(
         model=MODEL_SMART,
-        max_tokens=600,
+        max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
 
-    text = response.content[0].text.strip()
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    try:
-        result = json.loads(text)
-        # ensure confidence เป็น int เสมอ
-        result["confidence"] = int(result.get("confidence", 0))
-        return result
-    except Exception as e:
-        print(f"⚠️  Supervisor parse error: {e} | raw: {text[:200]}")
-        return {"approve": vote_score >= 2, "confidence": 0, "reasoning": "Auto-approve by vote score"}
+    result = safe_json_parse(
+        response.content[0].text,
+        fallback={"approve": vote_score >= 2, "confidence": 0, "reasoning": "JSON parse error — auto by vote score"}
+    )
+    result["confidence"] = int(result.get("confidence", 0))
+    return result
 
 
 def analyze_reentry(open_trade: dict, current_price: float, smc_summary: dict) -> dict:
@@ -291,27 +343,64 @@ FVG ใกล้สุด: {nearest_fvg}
         messages=[{"role": "user", "content": prompt}]
     )
 
-    text = response.content[0].text.strip()
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    try:
-        return json.loads(text)
-    except Exception:
-        return {"reenter": False, "confidence": 0, "reasoning": "Parse error", "new_sl": None, "caution": None}
+    return safe_json_parse(
+        response.content[0].text,
+        fallback={"reenter": False, "confidence": 0, "reasoning": "Parse error", "new_sl": None, "caution": None}
+    )
 
 
 def format_alert(result: dict) -> str:
     """แปลง supervisor result เป็น Telegram alert"""
 
     if not result.get("approved"):
+        vote_score  = result.get("vote_score", 0)
+        votes_map   = result.get("votes", {})
+        vote_detail = result.get("vote_details", {})
+        stages      = result.get("stages", {})
+        chart_s     = stages.get("chart", {})
+        bias_s      = stages.get("bias", {})
+        news_s      = stages.get("news", {})
+        risk_s      = stages.get("risk", {})
+        sup_stage   = stages.get("supervisor", {}) or {}
+        watch       = sup_stage.get("what_to_watch", "") if isinstance(sup_stage, dict) else ""
+        sup_r       = result.get("reject_reason", "ไม่ผ่านเงื่อนไข")
+        analysis    = result.get("analysis", {}) or {}
+
+        def vi(v): return "✅" if v == "YES" or v is True else "❌"
+
+        chart_vote = chart_s.get("vote", votes_map.get("chart") and "YES" or "NO")
+        bias_vote  = bias_s.get("vote",  votes_map.get("bias")  and "YES" or "NO")
+        news_vote  = news_s.get("vote",  votes_map.get("news")  and "YES" or "NO")
+
+        chart_r = _md((vote_detail.get("chart") or chart_s.get("vote_reasoning") or "")[:120])
+        bias_r  = _md((vote_detail.get("bias")  or bias_s.get("vote_reasoning")  or "")[:120])
+        news_r  = _md((vote_detail.get("news")  or news_s.get("vote_reasoning")  or "")[:100])
+
+        setup_type = analysis.get("setup_type", "–")
+        conf       = analysis.get("confidence", "–")
+        signal     = analysis.get("signal", "–")
+        watch_line = f"\n👁 *รอดู:* _{_md(watch)}_" if watch else ""
+
+        risk_line = ""
+        if risk_s:
+            veto = "⛔ VETO" if risk_s.get("veto") else "✅ OK"
+            risk_line = f"*[6] Risk:* {veto} | Lot: `{risk_s.get('lot')}` ({risk_s.get('risk_pct')}%)\n"
+
         return (
-            f"🔍 *Scan Complete — No Trade*\n"
+            f"🔍 *Scan — 🔴 REJECTED* `({vote_score}/3)`\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"❌ {result.get('reject_reason', 'ไม่ผ่านเงื่อนไข')}\n"
-            f"Vote: `{result.get('vote_score', 0)}/3`\n"
+            f"💰 ราคา: `{result.get('current_price')}`\n\n"
+            f"*[2] Chart:* {vi(chart_vote)} Signal: `{signal}` Conf: `{conf}%` Setup: `{setup_type}`\n"
+            f"   _{chart_r}_\n\n"
+            f"*[3] Bias:* {vi(bias_vote)} `{bias_s.get('trade_direction','–')}`\n"
+            f"   _{bias_r}_\n\n"
+            f"*[4] News:* {vi(news_vote)} Risk: `{news_s.get('risk_level','–')}`\n"
+            f"   _{news_r}_\n\n"
+            f"*[5] Vote:* `{vote_score}/3`\n"
+            f"{risk_line}"
+            f"*[7] Supervisor:* ❌\n"
+            f"   _{_md(sup_r[:200])}_"
+            f"{watch_line}\n"
             f"⏰ {result.get('timestamp')}"
         )
 
@@ -332,8 +421,8 @@ def format_alert(result: dict) -> str:
         label   = {"chart": "Chart", "bias": "Bias ", "news": "News "}[agent]
         extra   = ""
         if agent == "bias" and bias_stage.get("at_htf_level"):
-            extra = f" 📍_{bias_stage.get('htf_level_detail','HTF level')}_"
-        vote_lines += f"\n  {icon} {label}: _{reason[:60]}_{extra}"
+            extra = f" 📍_{_md(bias_stage.get('htf_level_detail','HTF level'))}_"
+        vote_lines += f"\n  {icon} {label}: _{_md(reason[:60])}_{extra}"
 
     entry = result.get("entry_zone")
     entry_str = f"`{entry[0]} - {entry[1]}`" if entry else "N/A"
@@ -343,27 +432,55 @@ def format_alert(result: dict) -> str:
     rev_stars  = analysis.get("reversal_stars") or ""
     rev_score  = analysis.get("reversal_score", 0)
 
-    if "REVERSAL" in str(setup_type):
-        setup_line = f"🔄 Setup: *REVERSAL* {rev_stars} (score {rev_score}/10)\n"
+    if setup_type == "BULL_OB_SWEEP_REJECT":
+        setup_line = f"🔥 Setup: *BULL OB SWEEP+REJECT* {rev_stars} — สัญญาณแข็งที่สุด\n"
+    elif setup_type == "BULL_OB_ENTRY":
+        setup_line = f"📍 Setup: *BULL OB ENTRY* (pyramid) {rev_stars}\n"
+    elif "SWING_OB" in str(setup_type):
+        setup_line = f"🔀 Setup: *SWING OB* {rev_stars} (score {rev_score}/10)\n"
     elif setup_type:
         setup_line = f"📐 Setup: `{setup_type}`\n"
     else:
         setup_line = ""
 
+    # ── Entry zone with buffer ────────────────────────────────
+    sl    = result.get("stop_loss")
+    tp    = result.get("take_profit")
+    rr    = result.get("rr_ratio")
+    price = result.get("current_price")
+    lot   = result.get("lot")
+
+    # แสดง entry zone พร้อม buffer ±2 pips
+    if entry and len(entry) == 2:
+        buf = 2.0
+        ez_lo = round(entry[0] - buf, 2)
+        ez_hi = round(entry[1] + buf, 2)
+        entry_str = f"`{ez_lo} – {ez_hi}`"
+    else:
+        entry_str = "N/A"
+
+    # แสดง TP เป็น reference target (EA POS Guard จัดการ exit จริง)
+    tp_ext = analysis.get("tp_extended")
+    tp_lines = f"  🎯 Target 1: `{tp}` _(EA จัดการ)_\n"
+    if tp_ext:
+        tp_lines += f"  🎯 Target 2 (Bear OB): `{tp_ext}`\n"
+    pyramid_plan = analysis.get("pyramid_plan")
+    pyramid_line = f"\n📐 *Pyramid:* _{_md(str(pyramid_plan))}_\n" if pyramid_plan else ""
+
     return (
         f"🔔 *SETUP APPROVED — {signal}*\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"{caution}"
-        f"{emoji} Signal: *{signal}*\n"
-        f"🗳 Vote: `{vote_bar}` {vote}/3{vote_lines}\n"
-        f"{setup_line}"
-        f"💰 ราคา: `{result.get('current_price')}`\n"
-        f"📍 Entry: {entry_str}\n"
-        f"🛑 SL: `{result.get('stop_loss')}`\n"
-        f"🎯 TP: `{result.get('take_profit')}`\n"
-        f"⚖️ RR: `1:{result.get('rr_ratio')}`\n"
-        f"📦 Lot: `{result.get('lot')}` ({result.get('risk_pct')}% risk)\n"
+        f"{emoji} *{signal}* | {setup_line.strip()}\n"
+        f"🗳 Vote: `{vote_bar}` {vote}/3{vote_lines}\n\n"
+        f"━━━ จุดเข้า ━━━\n"
+        f"{'🟢 BUY' if signal=='BUY' else '🔴 SELL'} zone: {entry_str}\n"
+        f"{tp_lines}"
+        f"  🛑 SL: `{sl}`\n"
+        f"  ⚖️ RR: `1:{rr}` | Lot: `{lot}` ({result.get('risk_pct')}%)\n"
+        f"{pyramid_line}"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"📝 {result.get('reasoning', '')}\n"
+        f"💰 ราคาปัจจุบัน: `{price}`\n"
+        f"📝 _{_md(result.get('reasoning', ''))}_\n"
         f"⏰ {result.get('timestamp')}"
     )
