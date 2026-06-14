@@ -281,7 +281,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
     "news": "เหตุผลจาก News vote",
     "supervisor": "เหตุผลสุดท้ายที่ supervisor ตัดสิน"
   }},
-  "what_to_watch": "ถ้า reject — บอกว่าต้องรออะไรก่อนถึงจะ approve ได้ เช่น 'รอ sweep + rejection candle ที่ OB 4060'",
+  "what_to_watch": "⚠️ REQUIRED ถ้า approve=false — ระบุให้ชัดว่าต้องรออะไรและที่ราคาเท่าไร เช่น 'รอ pullback ถึง Bull OB 3180–3182 แล้วดู rejection candle' หรือ 'รอ sweep low ที่ 3165 ก่อน แล้วค่อย BUY' หรือ 'รอ H4 CHoCH กลับเป็น bull ก่อน' — ต้องมีราคาอ้างอิงเสมอ ห้าม null เมื่อ reject",
   "reasoning": "2-3 ประโยค ภาษาไทย — ระบุว่าชั่งน้ำหนักอะไร ทำไมถึง approve/reject"
 }}"""
 
