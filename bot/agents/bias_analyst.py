@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents.smc_engine import SMCEngine, summarize
+from agents.json_utils import safe_json_parse
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc = SMCEngine(swing_length=5)
@@ -19,30 +20,85 @@ _cache: dict = {"result": None, "timestamp": None}
 CACHE_MINUTES = 60
 
 
+def _get_mt5_htf(tf_mt5, count: int):
+    """ดึง OHLCV จาก MT5 สำหรับ higher timeframe"""
+    try:
+        from agents import mt5_executor
+        from config.settings import MT5_SYMBOL
+        import MetaTrader5 as mt5
+        ok, _ = mt5_executor._connect()
+        if not ok:
+            return None
+        rates = mt5.copy_rates_from_pos(MT5_SYMBOL, tf_mt5, 0, count)
+        mt5_executor.disconnect()
+        if rates is None or len(rates) == 0:
+            return None
+        import pandas as pd
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df = df.set_index('time')
+        df = df.rename(columns={'tick_volume': 'volume'})[['open', 'high', 'low', 'close', 'volume']]
+        return df.dropna()
+    except Exception:
+        return None
+
+
 def get_htf_data() -> dict:
-    """ดึงข้อมูล H1, H4, Daily แล้วรัน SMC Engine แต่ละ timeframe"""
-    ticker = yf.Ticker("GC=F")
+    """ดึงข้อมูล H1, H4, Daily — MT5 ก่อน (real-time), fallback yfinance"""
     result = {}
 
-    timeframes = {
+    # MT5 timeframe map
+    try:
+        import MetaTrader5 as mt5
+        mt5_map = {
+            "H1":    (mt5.TIMEFRAME_H1,  200),
+            "H4":    (mt5.TIMEFRAME_H4,  200),
+            "Daily": (mt5.TIMEFRAME_D1,  200),
+        }
+    except Exception:
+        mt5_map = {}
+
+    yf_map = {
         "H1":     ("5d",   "1h"),
         "H4":     ("30d",  "4h"),
         "Daily":  ("90d",  "1d"),
         "Weekly": ("730d", "1wk"),
     }
 
-    for tf_name, (period, interval) in timeframes.items():
-        try:
-            df = ticker.history(period=period, interval=interval)
-            if df.empty:
-                continue
-            df.columns = [c.lower() for c in df.columns]
-            df = df[['open', 'high', 'low', 'close', 'volume']].dropna()
+    ticker = yf.Ticker("GC=F")
 
+    for tf_name in ["H1", "H4", "Daily", "Weekly"]:
+        df = None
+
+        # ลอง MT5 ก่อน (ยกเว้น Weekly)
+        if tf_name in mt5_map:
+            tf_mt5, count = mt5_map[tf_name]
+            df = _get_mt5_htf(tf_mt5, count)
+            if df is not None:
+                print(f"[bias] {tf_name} ← MT5 ({len(df)} bars)")
+
+        # fallback yfinance
+        if df is None and tf_name in yf_map:
+            try:
+                period, interval = yf_map[tf_name]
+                df = ticker.history(period=period, interval=interval)
+                if not df.empty:
+                    df.columns = [c.lower() for c in df.columns]
+                    df = df[['open', 'high', 'low', 'close', 'volume']].dropna()
+                    print(f"[bias] {tf_name} ← yfinance ({len(df)} bars)")
+                else:
+                    df = None
+            except Exception:
+                df = None
+
+        if df is None:
+            result[tf_name] = {"error": "no data"}
+            continue
+
+        try:
             smc_result = smc.analyze(df)
             current_price = round(df['close'].iloc[-1], 2)
-            summary = summarize(smc_result, current_price)  # ไม่ส่ง df — ไม่ต้องการ adv signals ที่นี่
-
+            summary = summarize(smc_result, current_price)
             result[tf_name] = {
                 "bias":          summary["bias"],
                 "last_bos":      summary["last_bos"],
@@ -125,6 +181,23 @@ def _fast_bias(htf_data: dict, signal_direction: str | None = None) -> dict | No
             "claude_called": False,
         }
     if bear_count == 2 and biases.get("Daily") == "bearish":
+        h1_is_bull = biases.get("H1") == "bullish"
+        h4_is_bear = biases.get("H4") == "bearish"
+        if h1_is_bull and h4_is_bear:
+            # H4 BEAR + H1 BULL → H1 พลิก momentum กำลังเปลี่ยน → ไม่แนะนำ SELL
+            td   = "BOTH"
+            vote = _vote_from_direction(td, signal_direction)
+            return {
+                "overall_bias": "bearish", "bias_strength": "weak",
+                "daily_bias": biases["Daily"], "h4_bias": biases["H4"], "h1_bias": biases["H1"],
+                "aligned": False, "trade_direction": td,
+                "key_levels": [],
+                "vote": vote,
+                "vote_reasoning": "H4 BEAR แต่ H1 พลิก BULL — momentum เริ่มเปลี่ยน ระวัง SELL / follow H1 ปลอดภัยกว่า",
+                "reasoning": "H4 BEAR + H1 BULL = mixed แบบอันตราย H1 ที่ fresh กว่าบอกว่าอาจกลับตัว → ไม่แนะนำ SELL aggressive",
+                "h1_conflict_warning": True,
+                "claude_called": False,
+            }
         td = "SELL_ONLY"
         vote = _vote_from_direction(td, signal_direction)
         return {
@@ -200,23 +273,42 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
 ① อ่าน macro trend จากภาพใหญ่ (Weekly > Daily > H4 > H1)
    — ตอนนี้อยู่ใน trend ไหน? Bear run มานานแค่ไหน? ราคามาไกลแค่ไหนแล้ว?
 
-② ตรวจสอบ Demand/Supply Zone ของ HTF
+② ⚠️ เช็ค H1 vs H4 conflict ก่อน (สำคัญมาก)
+   H1 เป็น timeframe ที่ fresh กว่า H4 — ถ้า H1 พลิกทิศ แสดงว่า momentum กำลังเปลี่ยน
+
+   กรณี H4 BEAR + H1 BULL (mixed):
+   → H1 กำลังบอกว่า short-term momentum เริ่มกลับ
+   → ⛔ อย่า follow H4 BEAR แบบ aggressive — เสี่ยงสูงที่จะ sell ตอน market กลับตัว
+   → ✅ ให้ follow H1 BULL แทน (safer) หรืออย่างน้อยลด lot SELL ลงมาก
+   → trade_direction = BOTH หรือ BUY_ONLY (ขึ้นกับ Daily/Weekly)
+   → bias_strength = weak สำหรับ SELL direction
+
+   กรณี H4 BULL + H1 BEAR (mixed):
+   → H1 กำลัง pullback ใน uptrend — ยังไม่กลับทิศ
+   → SELL ได้ถ้าอยู่ที่ Supply zone แต่ระวัง
+   → trade_direction = BOTH (ระวัง)
+
+   กรณี H4 + H1 ตรงกัน (strong trend):
+   → follow trend ได้เต็มที่
+
+③ ตรวจสอบ Demand/Supply Zone ของ HTF
    — มี OB, EQH/EQL, หรือ Key Level สำคัญของ H4/Daily/Weekly ที่ราคากำลังถึงหรือไม่?
    — ถ้าราคาเข้าสู่ Daily/Weekly Demand zone (ใน downtrend) → โอกาส rebound มีสูง
    — ถ้าราคาเข้าสู่ Daily/Weekly Supply zone (ใน uptrend) → โอกาส pullback มีสูง
 
-③ ประเมิน Signal ที่เสนอ
+④ ประเมิน Signal ที่เสนอ
    สถานการณ์ที่ vote YES ได้:
-   A) signal ตรงกับ macro trend (เช่น SELL ใน downtrend) → ปกติ
-   B) signal สวนทาง แต่ราคาถึง HTF Demand/Supply zone ที่สำคัญ → bounce/rebound trade ได้ (ระบุให้ชัด)
+   A) signal ตรงกับ macro trend + H1 และ H4 ตรงกัน → YES เต็มที่
+   B) H4 BEAR แต่ H1 BULL + signal เป็น BUY → YES (follow H1 ที่ fresh กว่า)
+   C) signal สวนทาง แต่ราคาถึง HTF Demand/Supply zone สำคัญ → YES ได้
 
    สถานการณ์ที่ vote NO:
-   C) signal สวนทาง และราคายังไม่ถึง HTF level ใดเลย → รอก่อน
-   D) trend แข็งมาก ไม่มี level ที่น่าสนใจ → ไม่เอา
+   D) H4 BEAR + H1 BULL แต่ signal เป็น SELL → NO (H1 บอกว่ากำลังกลับ อย่า SELL)
+   E) signal สวนทาง และราคายังไม่ถึง HTF level ใดเลย → NO
 
 ══════ เกณฑ์ vote ══════
-YES — ถ้า A หรือ B (ระบุว่าเป็น case ไหน + level ที่ราคาถึง)
-NO  — ถ้า C หรือ D (ระบุว่ายังขาดอะไร)
+YES — ถ้า A, B หรือ C (ระบุว่าเป็น case ไหน + H1/H4 conflict หรือไม่)
+NO  — ถ้า D หรือ E (ระบุชัดว่า H1/H4 ขัดยังไง)
 
 ตอบ JSON เท่านั้น:
 {{
@@ -242,22 +334,17 @@ NO  — ถ้า C หรือ D (ระบุว่ายังขาดอ�
         messages=[{"role": "user", "content": prompt}]
     )
 
-    text = response.content[0].text.strip()
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    try:
-        result = json.loads(text)
-    except Exception:
-        result = {
+    result = safe_json_parse(
+        response.content[0].text,
+        fallback={
             "overall_bias": "neutral", "bias_strength": "weak",
+            "vote": "NO", "vote_reasoning": "JSON parse error",
             "aligned": False, "trade_direction": "BOTH",
             "case": "D", "at_htf_level": False, "htf_level_detail": None,
             "weekly_bias": "neutral", "key_levels": [],
             "reasoning": "Parse error — ระวังด้วย"
         }
+    )
 
     result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     result["raw_htf"] = htf_data

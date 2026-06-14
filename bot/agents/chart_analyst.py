@@ -11,8 +11,8 @@ from agents.json_utils import safe_json_parse
 _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-smc    = SMCEngine(swing_length=5)   # M5 entry engine
-smc_m15 = SMCEngine(swing_length=2)  # M15 OB engine — swing_length=2 ตรงกับ EA (OB_SWING_STR=2)
+smc    = SMCEngine(swing_length=5)   # M5 OB engine — swing_length=5 ตรงกับ TV indicator "50 5 5"
+smc_m15 = SMCEngine(swing_length=5)  # M15 OB engine
 
 def _get_mt5_price() -> float | None:
     """ดึงราคา ask/bid ล่าสุดจาก MT5 ถ้าเชื่อมอยู่"""
@@ -132,15 +132,17 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         return False  # Off-hours — ไม่เทรด (bypass ด้วย force_session=True)
 
     # ── ชั้น 2: ราคาอยู่ใน OB → ผ่านทันที (OB-first logic) ──────
-    bull_ob = smc_summary.get("active_bull_ob") or {}
-    bear_ob = smc_summary.get("active_bear_ob") or {}
+    # ใช้ M15 OB เป็น primary (significant zones) + M5 เป็น fallback
+    m15_data = smc_summary.get("m15") or {}
+    bull_ob = m15_data.get("active_bull_ob") or smc_summary.get("active_bull_ob") or {}
+    bear_ob = m15_data.get("active_bear_ob") or smc_summary.get("active_bear_ob") or {}
     if bull_ob.get("in_ob") or bear_ob.get("in_ob"):
-        print(f"[has_signal] ✅ IN_OB — bull_in={bull_ob.get('in_ob')} bear_in={bear_ob.get('in_ob')}")
-        return True  # ราคาอยู่ใน OB zone — highest priority signal
+        print(f"[has_signal] ✅ IN_OB (M15) — bull_in={bull_ob.get('in_ob')} bear_in={bear_ob.get('in_ob')}")
+        return True
 
     # ── ชั้น 3: TREND setup (priority รอง) ───────────────────────
     has_sweep     = smc_summary.get("last_sweep") is not None
-    has_ob        = smc_summary.get("active_ob") is not None or bool(bull_ob) or bool(bear_ob)
+    has_ob        = bool(bull_ob) or bool(bear_ob) or smc_summary.get("active_ob") is not None
     has_structure = (smc_summary.get("last_bos") is not None or
                      smc_summary.get("last_choch") is not None)
     bias = smc_summary.get("bias", "neutral")
@@ -259,7 +261,24 @@ def analyze(smc_summary: dict = None) -> dict:
     momentum_bear = adv.get("momentum_bear", False)
 
     # คำนวณระยะห่าง OB จริงๆ ก่อนสร้าง prompt
-    price_now = smc_summary.get("price") or smc_summary.get("current_price") or 0
+    price_now = float(smc_summary.get("price") or smc_summary.get("current_price") or 0)
+
+    # Swing levels คำนวณโดย code (ไม่ใช่ LLM) — ใช้เป็น TP hint
+    nearest_sh      = smc_summary.get("nearest_swing_high")
+    nearest_sl_code = smc_summary.get("nearest_swing_low")
+    sh_above        = smc_summary.get("swing_highs_above", [])
+    sl_below        = smc_summary.get("swing_lows_below", [])
+    _sh_pts  = round((nearest_sh - price_now) * 10, 0) if nearest_sh else None
+    _sl_pts  = round((price_now - nearest_sl_code) * 10, 0) if nearest_sl_code else None
+    swing_hint = (
+        f"🎯 Swing Levels (คำนวณโดย code — ใช้เป็น TP hint):\n"
+        f"  Nearest Swing High (above): {nearest_sh or 'N/A'}"
+        + (f" ({int(_sh_pts):,} จุด)" if _sh_pts else "") + "\n"
+        f"  Nearest Swing Low  (below): {nearest_sl_code or 'N/A'}"
+        + (f" ({int(_sl_pts):,} จุด)" if _sl_pts else "") + "\n"
+        f"  Swing Highs above (top 3): {sh_above or 'N/A'}\n"
+        f"  Swing Lows  below (top 3): {sl_below or 'N/A'}"
+    )
     _bear_ob   = smc_summary.get("active_bear_ob") or {}
     _bull_ob   = smc_summary.get("active_bull_ob") or {}
     dist_to_bear_ob = round(abs(price_now - _bear_ob.get("bottom", price_now + 9999)) * 10, 1) if _bear_ob else 9999
@@ -370,6 +389,8 @@ MARKET DATA
   Bull zone: {_fmt_conf(bull_confluence)}
   Bear zone: {_fmt_conf(bear_confluence)}
 
+{swing_hint}
+
 {rev_block if rev_signal else ''}
 
 ════════════════════════════════════════════
@@ -423,7 +444,9 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
 ราคาลงมาสู่ demand → โอกาส swing ขึ้น
 
   ⚠️ concept: ทุก trend มี swing ขึ้น-ลงอยู่เสมอ เราเล่น swing นั้น
-  TP = next swing high ใกล้ที่สุด (ถ้าไปถึง Bear OB ด้วยได้ = bonus)
+  TP = ใช้ "Nearest Swing High (above)" จาก Swing Levels ด้านบนเป็นหลัก
+       ถ้า Bear OB อยู่ระหว่าง entry กับ swing high → ใช้ Bear OB bottom เป็น TP แทน (conservative)
+       ถ้า swing high ไกลกว่า Bear OB มาก (>500 จุด) → ใช้ swing high เป็น tp_extended
 
   🔥 B1 — BULL_OB_SWEEP_REJECT (สัญญาณดีที่สุดใน counter-trend):
     มี Sweep ต่ำกว่า OB + rejection แรง (wick ยาว / engulfing / strong close)

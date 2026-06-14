@@ -23,10 +23,12 @@ LONDON_SESSION_START = os.getenv("LONDON_SESSION_START", "14:00")
 LONDON_SESSION_END = os.getenv("LONDON_SESSION_END", "23:00")
 NEW_YORK_SESSION_START = os.getenv("NEW_YORK_SESSION_START", "19:00")
 NEW_YORK_SESSION_END = os.getenv("NEW_YORK_SESSION_END", "04:00")
+NEWS_ENABLED       = os.getenv("NEWS_ENABLED", "false").lower() == "true"
 NEWS_BLOCK_MINUTES = int(os.getenv("NEWS_BLOCK_MINUTES", 30))
 
 # MT5 Auto-Execute
 MT5_ENABLED          = os.getenv("MT5_ENABLED", "false").lower() == "true"
+MT5_PATH             = os.getenv("MT5_PATH", "")   # path to terminal64.exe (ถ้ามีหลาย MT5)
 MT5_LOGIN            = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD         = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER           = os.getenv("MT5_SERVER", "")

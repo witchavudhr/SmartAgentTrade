@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartAgentTrade — War Room</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d0d14;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+.app{width:680px;border:0.5px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;background:#111118}
+.row1{display:flex;height:340px}
+.vr{position:relative;flex:1;overflow:hidden;border-right:0.5px solid rgba(255,255,255,.1)}
+.bg{position:absolute;inset:0;background:#0E0903}
+.bg::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.01) 0 1px,transparent 1px 48px),repeating-linear-gradient(0deg,rgba(255,255,255,.01) 0 1px,transparent 1px 48px)}
+.wall{position:absolute;top:0;left:0;right:0;height:58px;background:#150A03;border-bottom:2px solid #291505}
+.wall::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.015) 0 1px,transparent 1px 60px),repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 1px,transparent 1px 30px)}
+.ban{position:absolute;top:3px;left:50%;transform:translateX(-50%);display:flex;gap:9px;align-items:flex-start;z-index:5}
+.ban-p{width:3px;height:50px;background:#7B4E28}
+.ban-f{background:#6B0000;width:56px;height:55px;clip-path:polygon(0 0,100% 0,100% 75%,50% 100%,0 75%);display:flex;align-items:center;justify-content:center}
+.tr{position:absolute;width:12px;z-index:4}
+.tf{width:9px;height:14px;margin:0 auto;position:relative;animation:flk .42s alternate infinite ease-in-out}
+@keyframes flk{0%{transform:scaleX(1)}100%{transform:scaleX(.55) scaleY(.75)}}
+.tf::before{content:'';position:absolute;inset:0;background:#FF6D00;border-radius:50% 50% 25% 25%}
+.tf::after{content:'';position:absolute;top:2px;left:1px;right:1px;bottom:2px;background:#FFE082;border-radius:50%}
+.ts{width:4px;height:19px;background:#5D3A1A;margin:0 auto}
+.tg{position:absolute;top:-7px;left:50%;transform:translateX(-50%);width:42px;height:42px;background:radial-gradient(circle,rgba(255,140,10,.18) 0%,transparent 70%)}
+.kn{position:absolute;width:38px;z-index:12;cursor:pointer;transition:left 1.4s cubic-bezier(.3,.6,.4,.95),top 1.4s cubic-bezier(.3,.6,.4,.95)}
+.ki{display:block}
+.kn.mv .ki{animation:wb .28s steps(2) infinite}
+@keyframes wb{0%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+.kn.fl .ki{transform:scaleX(-1)}
+.kn.mv.fl .ki{animation:wbf .28s steps(2) infinite}
+@keyframes wbf{0%{transform:scaleX(-1) translateY(0)}50%{transform:scaleX(-1) translateY(-4px)}}
+.bbl{position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:rgba(255,248,215,.97);color:#1A0E00;font-size:9px;line-height:1.45;padding:3px 8px;border-radius:5px;white-space:nowrap;border:0.5px solid rgba(160,100,20,.3);opacity:0;transition:opacity .3s;pointer-events:none;z-index:20;max-width:170px;white-space:normal;text-align:center}
+.bbl::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:rgba(255,248,215,.97)}
+.bbl.on{opacity:1}
+.ntg{position:absolute;top:calc(100% + 2px);left:50%;transform:translateX(-50%);font-size:8px;color:rgba(255,200,80,.65);white-space:nowrap;text-shadow:0 1px 4px rgba(0,0,0,.95);pointer-events:none}
+.vbn{position:absolute;top:48%;left:50%;transform:translate(-50%,-50%);background:rgba(6,3,0,.96);border:1px solid #D4A017;border-radius:8px;padding:11px 20px;text-align:center;z-index:40;color:#FFD54F;font-size:11px;font-weight:500;pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap}
+.vbn.on{opacity:1}
+.log{width:182px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden}
+.lh{padding:7px 9px;border-bottom:0.5px solid rgba(255,255,255,.08);font-size:10px;font-weight:500;color:#9ca3af;background:#18181f;display:flex;justify-content:space-between;flex-shrink:0}
+.lb{flex:1;overflow-y:auto;padding:5px 6px}
+.li{padding:3px 5px;margin-bottom:3px;border-left:2px solid;border-radius:0 3px 3px 0}
+.li-ok{background:rgba(59,109,17,.18);border-color:#4ade80}
+.li-no{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}
+.li-bl{background:rgba(133,79,11,.2);border-color:#fbbf24}
+.lt{font-size:8.5px;color:#6b7280;font-family:monospace}
+.ltx{font-size:9.5px;font-weight:500;line-height:1.3;color:#e5e7eb}
+.ls{font-size:8.5px;color:#9ca3af;line-height:1.3}
+.abar{display:flex;align-items:center;justify-content:space-between;padding:7px 14px;border-top:0.5px solid rgba(255,255,255,.08);border-bottom:0.5px solid rgba(255,255,255,.08);background:#18181f}
+.scb{padding:4px 13px;background:#C9A800;color:#0E0800;border:none;border-radius:4px;font-size:9.5px;font-weight:500;cursor:pointer}
+.scb:hover:not(:disabled){background:#E0C000}
+.scb:disabled{opacity:.35;cursor:default}
+.row2{display:grid;grid-template-columns:1fr 1fr;border-bottom:0.5px solid rgba(255,255,255,.08)}
+.mc{display:flex;flex-direction:column;min-width:0}
+.mc:first-child{border-right:0.5px solid rgba(255,255,255,.08)}
+.ph2{padding:6px 10px;border-bottom:0.5px solid rgba(255,255,255,.08);font-size:10px;font-weight:500;color:#9ca3af;background:#18181f;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+.srb{padding:8px 10px;overflow-y:auto;flex:1}
+.sc2{border:0.5px solid rgba(255,255,255,.1);border-radius:8px;padding:7px 9px;margin-bottom:5px;background:#1c1c25}
+.sd{font-size:14px;font-weight:500;color:#4ade80;display:flex;align-items:center;gap:5px}
+.lvs{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:5px}
+.lv{background:#18181f;border-radius:3px;padding:3px;text-align:center;border:0.5px solid rgba(255,255,255,.07)}
+.ll{font-size:8.5px;color:#6b7280}
+.lv2{font-size:9.5px;font-weight:500;font-family:monospace;color:#e5e7eb}
+.vch{display:flex;flex-wrap:wrap;gap:2px;margin-top:5px}
+.vc{flex:1;min-width:40px;padding:3px;text-align:center;border-radius:3px;font-size:8.5px;font-weight:500;background:rgba(74,222,128,.12);color:#4ade80;border:0.5px solid rgba(74,222,128,.3)}
+.msgs{flex:1;overflow-y:auto;padding:7px;display:flex;flex-direction:column;gap:4px;height:130px}
+.mu{align-self:flex-end;background:#1e3a6e;color:#93c5fd;padding:4px 8px;border-radius:7px 7px 2px 7px;font-size:10px;max-width:90%;line-height:1.4}
+.mb{align-self:flex-start;background:#1c1c25;border:0.5px solid rgba(255,255,255,.1);padding:4px 8px;border-radius:7px 7px 7px 2px;font-size:10px;max-width:95%;line-height:1.5;color:#d1d5db}
+.qcs{padding:0 8px 4px;display:flex;gap:3px;flex-wrap:wrap;flex-shrink:0}
+.qc{font-size:9px;padding:2px 7px;border:0.5px solid rgba(255,255,255,.12);border-radius:99px;cursor:pointer;color:#9ca3af;background:#18181f}
+.qc:hover{background:#22222e}
+.cir{padding:5px 7px;border-top:0.5px solid rgba(255,255,255,.08);display:flex;gap:4px;flex-shrink:0}
+.cir input{flex:1;padding:4px 7px;font-size:10px;border:0.5px solid rgba(255,255,255,.15);border-radius:4px;outline:none;color:#e5e7eb;background:#18181f}
+.cir input:focus{border-color:#3b82f6}
+.sbtn{padding:4px 10px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer}
+.row3{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:0.5px solid rgba(255,255,255,.08)}
+.s3{padding:7px 10px;border-right:0.5px solid rgba(255,255,255,.08);background:#18181f}
+.s3:last-child{border-right:none}
+.s3l{font-size:9px;color:#6b7280}
+.s3v{font-size:15px;font-weight:500;margin-top:1px;color:#f3f4f6}
+.s3s{font-size:8.5px;color:#6b7280;margin-top:1px}
+.row4{display:flex;align-items:flex-end;gap:3px;height:32px;padding:3px 10px 0;background:#18181f}
+.bx{flex:1;border-radius:2px 2px 0 0}
+.bw{background:#4ade80}.bl{background:#f87171}.bo{background:#fbbf24}
+.foot{padding:3px 10px 5px;background:#18181f;display:flex;justify-content:space-between}
+.ft{font-size:9px;color:#6b7280}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="row1">
+<div class="vr" id="vr">
+<div class="bg"></div>
+<div class="wall"></div>
+<div class="ban">
+  <div class="ban-p"></div>
+  <div class="ban-f"><svg width="30" height="30" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9 17,13 19,20 12,16 5,20 7,13 2,9 9,9" fill="#D4A017"/></svg></div>
+  <div class="ban-p"></div>
+</div>
+<div class="tr" style="left:32px;top:22px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+<div class="tr" style="right:32px;top:22px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+<div class="tr" style="left:32px;bottom:10px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+<div class="tr" style="right:32px;bottom:10px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+<svg style="position:absolute;left:39px;top:26px;z-index:3" width="420" height="306" viewBox="0 0 220 160">
+  <ellipse cx="110" cy="92" rx="112" ry="77" fill="rgba(0,0,0,.45)"/>
+  <ellipse cx="110" cy="82" rx="110" ry="74" fill="#3A1E08"/>
+  <ellipse cx="110" cy="82" rx="110" ry="74" fill="none" stroke="#5A3010" stroke-width="8"/>
+  <ellipse cx="110" cy="82" rx="98" ry="62" fill="#472A0C"/>
+  <ellipse cx="110" cy="82" rx="84" ry="50" fill="#57361A"/>
+  <ellipse cx="110" cy="82" rx="68" ry="38" fill="none" stroke="#4A2D10" stroke-width=".8" opacity=".5"/>
+  <ellipse cx="110" cy="82" rx="50" ry="27" fill="none" stroke="#4A2D10" stroke-width=".6" opacity=".4"/>
+  <circle cx="110" cy="82" r="30" fill="none" stroke="#B8900A" stroke-width="1.6" opacity=".55"/>
+  <polygon points="110,53 117,72 137,72 122,84 128,103 110,91 92,103 98,84 83,72 103,72" fill="none" stroke="#C4980E" stroke-width="1.6" opacity=".65"/>
+  <rect x="94" y="0" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+  <rect x="200" y="52" width="11" height="32" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+  <rect x="171" y="140" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+  <rect x="17" y="140" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+  <rect x="9" y="52" width="11" height="32" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+  <g transform="translate(110,82) rotate(-90)"><circle cx="-8" cy="0" r="3" fill="#D4A017"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#7B4920"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#D4A017"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#C8D4E0"/><polygon points="50,-1 50,1 56,0" fill="#D8E4F0"/></g>
+  <g transform="translate(110,82) rotate(-18)"><circle cx="-8" cy="0" r="3" fill="#6030C0"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#0D0020"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#6030C0"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#6A6A90"/><polygon points="50,-1 50,1 56,0" fill="#8080B0"/></g>
+  <g transform="translate(110,82) rotate(54)"><circle cx="-8" cy="0" r="3" fill="#9C27B0"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#380048"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#9C27B0"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#BCCCD8"/><polygon points="50,-1 50,1 56,0" fill="#CCDDE8"/></g>
+  <g transform="translate(110,82) rotate(126)"><circle cx="-8" cy="0" r="3" fill="#7B2A0A"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#3A1500"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#C62020"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#9A9A9A"/><polygon points="50,-1 50,1 56,0" fill="#B0B0B0"/></g>
+  <g transform="translate(110,82) rotate(198)"><circle cx="-8" cy="0" r="3" fill="#F57F17"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#6A3600"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#F9A825"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#D4C040"/><polygon points="50,-1 50,1 56,0" fill="#E0D050"/></g>
+  <rect x="128" y="66" width="4" height="10" rx="1" fill="#EDE0C4"/><ellipse cx="130" cy="64.5" rx="3" ry="3.8" fill="#FF8F00" opacity=".8"/>
+  <rect x="90" y="68" width="4" height="9" rx="1" fill="#EDE0C4"/><ellipse cx="92" cy="66.5" rx="3" ry="3.5" fill="#FF8F00" opacity=".8"/>
+</svg>
+<div class="vbn" id="vbn"></div>
+</div>
+<div class="log">
+  <div class="lh"><span>Scan log</span><span style="font-size:9px;color:#9ca3af">9</span></div>
+  <div class="lb" id="lcol"></div>
+</div>
+</div>
+<div class="abar">
+  <span id="sbl" style="font-size:10px;color:#6b7280">Knights on patrol...</span>
+  <button class="scb" id="scb" onclick="tScan()">⚡ Scan now</button>
+</div>
+<div class="row2">
+<div class="mc">
+  <div class="ph2"><span>Latest signal</span><span style="color:#4ade80;font-size:9px">+65p open</span></div>
+  <div class="srb">
+    <div class="sc2">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div class="sd">▲ BUY XAUUSD</div>
+        <span style="font-size:9px;background:#f9fafb;border:0.5px solid #e5e7eb;padding:1px 6px;border-radius:99px;color:#6b7280">SWING_OB ★★</span>
+      </div>
+      <div style="font-size:9.5px;color:#6b7280;margin-bottom:5px">Bull OB after liquidity sweep · TP = next swing high only</div>
+      <div class="lvs">
+        <div class="lv"><div class="ll">Entry</div><div class="lv2">3312</div></div>
+        <div class="lv"><div class="ll">SL</div><div class="lv2" style="color:#dc2626">3302</div></div>
+        <div class="lv"><div class="ll">TP</div><div class="lv2" style="color:#15803d">3344</div></div>
+        <div class="lv"><div class="ll">Lot</div><div class="lv2">0.01</div></div>
+      </div>
+      <div style="margin-top:4px;font-size:9px;color:#9ca3af">RR 1:2.3 · 16:30 · <span style="color:#15803d;font-weight:500">+$6.50</span></div>
+    </div>
+    <div class="vch">
+      <div class="vc">✓ Chart</div><div class="vc">✓ Bias</div><div class="vc">✓ News</div><div class="vc">✓ Risk</div>
+      <div class="vc" style="flex-basis:100%">👑 King Arthur: APPROVED</div>
+    </div>
+    <div style="margin-top:6px;padding:5px 8px;background:#f0fdf4;border-radius:8px;font-size:9.5px;color:#15803d">
+      ✔ Bull OB + HTF demand zone + no news window
+    </div>
+  </div>
+</div>
+<div class="mc">
+  <div class="ph2"><span>Ask agents</span><span style="font-size:9px;color:#9ca3af">Sonnet 4.6</span></div>
+  <div class="qcs">
+    <div class="qc" onclick="fc('OB zone อยู่ที่ไหน?')">OB zone?</div>
+    <div class="qc" onclick="fc('ควร close ไหม?')">Close?</div>
+    <div class="qc" onclick="fc('bias วันนี้?')">Bias?</div>
+  </div>
+  <div class="msgs" id="msgs">
+    <div class="mb">สวัสดีครับ — London session · BUY open +65p</div>
+    <div class="mu">OB zone อยู่ที่ไหน?</div>
+    <div class="mb">Bull OB M5: <strong>3308–3315</strong> ซ้อนทับ M15 demand 3305–3318</div>
+  </div>
+  <div class="cir">
+    <input type="text" id="cin" placeholder="ถาม XAUUSD..." onkeydown="if(event.key==='Enter')sc()">
+    <button class="sbtn" onclick="sc()">Send</button>
+  </div>
+</div>
+</div>
+<div class="row3">
+  <div class="s3"><div class="s3l">Today P&L</div><div class="s3v" style="color:#15803d">+$47.20</div><div class="s3s">+$6.50 open</div></div>
+  <div class="s3"><div class="s3l">Win rate</div><div class="s3v">67%</div><div class="s3s">4 of 6 closed</div></div>
+  <div class="s3"><div class="s3l">W / L</div><div class="s3v"><span style="color:#15803d">3</span> / <span style="color:#991b1b">2</span></div><div class="s3s">+1 open</div></div>
+  <div class="s3"><div class="s3l">Best trade</div><div class="s3v" style="color:#15803d">+$20.00</div><div class="s3s">TREND_OB 15:00</div></div>
+</div>
+<div class="row4" id="bars"></div>
+<div class="foot"><span class="ft">Trade history · Jun 12</span><span class="ft" id="clk"></span></div>
+</div>
+
+<script>
+const C={
+arthur:'<svg width="38" height="60" viewBox="0 0 38 60"><polygon points="5,15 8,8 12,13 16,6 19,11 22,6 26,13 30,8 33,15" fill="#D4A017"/><rect x="10" y="13" width="18" height="4" rx="1" fill="#B8860B"/><ellipse cx="19" cy="25" rx="10" ry="11" fill="#F0C090"/><circle cx="15" cy="24" r="1.5" fill="#2C1A08"/><circle cx="23" cy="24" r="1.5" fill="#2C1A08"/><circle cx="14.5" cy="23.5" r=".5" fill="#fff"/><circle cx="22.5" cy="23.5" r=".5" fill="#fff"/><path d="M15 30 Q19 33 23 30" fill="none" stroke="#9B6040" stroke-width="1.1" stroke-linecap="round"/><rect x="11" y="36" width="16" height="5" rx="2" fill="#D4A017"/><rect x="9" y="39" width="20" height="13" rx="3" fill="#1565C0"/><rect x="17" y="39" width="4" height="13" fill="#D4A017"/><rect x="11" y="45" width="16" height="2.5" fill="#D4A017"/><rect x="5" y="38" width="9" height="5" rx="2" fill="#D4A017"/><rect x="24" y="38" width="9" height="5" rx="2" fill="#D4A017"/><rect x="11" y="52" width="7" height="7" rx="2" fill="#0D47A1"/><rect x="20" y="52" width="7" height="7" rx="2" fill="#0D47A1"/><rect x="9" y="56" width="9" height="4" rx="2" fill="#050A20"/><rect x="20" y="56" width="9" height="4" rx="2" fill="#050A20"/></svg>',
+dark:'<svg width="38" height="60" viewBox="0 0 38 60"><path d="M9 21 Q11 8 19 8 Q27 8 29 21Z" fill="#1A1A3E"/><ellipse cx="19" cy="25" rx="10" ry="11" fill="#2C2C54"/><rect x="12" y="20" width="14" height="8" rx="2" fill="#050514"/><line x1="13" y1="23" x2="25" y2="23" stroke="#7C4DFF" stroke-width="1.2" opacity=".9"/><polygon points="17,16 19,10 21,16" fill="#3A3A6E"/><polygon points="9,18 6,9 12,16" fill="#3A3A6E"/><polygon points="29,18 32,9 26,16" fill="#3A3A6E"/><rect x="9" y="36" width="20" height="14" rx="3" fill="#1A1A3E"/><rect x="3" y="35" width="10" height="6" rx="3" fill="#7C4DFF"/><rect x="25" y="35" width="10" height="6" rx="3" fill="#7C4DFF"/><rect x="11" y="50" width="7" height="8" rx="2" fill="#111130"/><rect x="20" y="50" width="7" height="8" rx="2" fill="#111130"/><rect x="9" y="55" width="9" height="4" rx="2" fill="#050514"/><rect x="20" y="55" width="9" height="4" rx="2" fill="#050514"/></svg>',
+purple:'<svg width="38" height="60" viewBox="0 0 38 60"><ellipse cx="19" cy="24" rx="11" ry="12" fill="#6A1B9A"/><rect x="11" y="19" width="16" height="9" rx="2" fill="#0D001A"/><circle cx="14.5" cy="21" r="1.7" fill="#CE93D8" opacity=".9"/><circle cx="23.5" cy="21" r="1.7" fill="#CE93D8" opacity=".9"/><path d="M19 9 Q13 5 14 12" stroke="#E91E63" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M19 9 Q25 4 24 11" stroke="#FF5722" stroke-width="2" fill="none" stroke-linecap="round"/><rect x="9" y="36" width="20" height="14" rx="3" fill="#7B1FA2"/><rect x="3" y="35" width="10" height="7" rx="3" fill="#9C27B0"/><rect x="25" y="35" width="10" height="7" rx="3" fill="#9C27B0"/><rect x="11" y="50" width="7" height="8" rx="2" fill="#4A148C"/><rect x="20" y="50" width="7" height="8" rx="2" fill="#4A148C"/><rect x="9" y="55" width="9" height="4" rx="2" fill="#1A0030"/><rect x="20" y="55" width="9" height="4" rx="2" fill="#1A0030"/></svg>',
+barb:'<svg width="38" height="60" viewBox="0 0 38 60"><path d="M8 21 Q6 9 10 5 Q14 2 17 8" fill="#C62828"/><path d="M30 21 Q32 9 28 5 Q24 2 21 8" fill="#B71C1C"/><path d="M13 9 Q19 4 25 9" fill="#D32F2F"/><ellipse cx="19" cy="25" rx="10" ry="11" fill="#D4926A"/><circle cx="15" cy="24" r="1.8" fill="#1A1A1A"/><circle cx="23" cy="24" r="1.8" fill="#1A1A1A"/><path d="M8 37 Q19 32 30 37 L30 43 Q19 39 8 43Z" fill="#6D4C41"/><rect x="10" y="41" width="18" height="11" rx="3" fill="#5D4037"/><rect x="4" y="37" width="9" height="6" rx="3" fill="#4E342E"/><rect x="25" y="37" width="9" height="6" rx="3" fill="#4E342E"/><rect x="11" y="52" width="7" height="7" rx="2" fill="#4E342E"/><rect x="20" y="52" width="7" height="7" rx="2" fill="#4E342E"/><rect x="9" y="56" width="9" height="4" rx="2" fill="#2C1A10"/><rect x="20" y="56" width="9" height="4" rx="2" fill="#2C1A10"/></svg>',
+gold:'<svg width="38" height="60" viewBox="0 0 38 60"><ellipse cx="19" cy="23" rx="11" ry="12" fill="#F9A825"/><rect x="12" y="18" width="14" height="8" rx="2" fill="#0D0800"/><rect x="16" y="9" width="6" height="10" rx="2" fill="#F57F17"/><path d="M19 5 Q14 2 15 9" stroke="#FFB300" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M19 5 Q24 2 23 9" stroke="#FF9800" stroke-width="2" fill="none" stroke-linecap="round"/><rect x="9" y="35" width="20" height="14" rx="3" fill="#F9A825"/><rect x="17" y="35" width="4" height="14" fill="#FFD54F"/><rect x="11" y="42" width="16" height="3" fill="#FFD54F"/><rect x="4" y="35" width="9" height="6" rx="3" fill="#F57F17"/><rect x="25" y="35" width="9" height="6" rx="3" fill="#F57F17"/><rect x="11" y="49" width="7" height="9" rx="2" fill="#F57F17"/><rect x="20" y="49" width="7" height="9" rx="2" fill="#F57F17"/><rect x="9" y="55" width="9" height="4" rx="2" fill="#BF360C"/><rect x="20" y="55" width="9" height="4" rx="2" fill="#BF360C"/></svg>'
+};
+const AGENTS=[
+  {id:'a0',char:'arthur',name:'King Arthur',seat:{l:229,t:2},patrol:[{l:222,t:4},{l:240,t:3},{l:218,t:12}],idle:['Watching the realm...','Awaiting intelligence...'],gather:'Knights, to the table!',analyze:'Weighing all votes...',vote:'APPROVED — BUY!'},
+  {id:'a1',char:'dark',name:'Chart Analyst',seat:{l:408,t:130},patrol:[{l:448,t:58},{l:454,t:122},{l:449,t:65}],idle:['M5 OB forming...','BOS confirmed...'],gather:'Bull OB at 3308!',analyze:'Scanning OB + BOS...',vote:'YES — Swing OB ★★'},
+  {id:'a2',char:'purple',name:'Bias Analyst',seat:{l:347,t:263},patrol:[{l:438,t:267},{l:453,t:296},{l:440,t:274}],idle:['H4 in demand...','Daily bias bullish...'],gather:'HTF demand zone!',analyze:'H1 / H4 / Daily...',vote:'YES — Case B bullish'},
+  {id:'a3',char:'barb',name:'News Scout',seat:{l:53,t:263},patrol:[{l:4,t:267},{l:18,t:296},{l:6,t:274}],idle:['Calendar quiet...','No impact 4h...'],gather:'No high impact!',analyze:'Calendar check...',vote:'YES — low risk'},
+  {id:'a4',char:'gold',name:'Risk Manager',seat:{l:30,t:130},patrol:[{l:3,t:58},{l:6,t:122},{l:4,t:65}],idle:['2% rule holding...','RR calc ready...'],gather:'RR 2.3 passes!',analyze:'Lot size + VETO...',vote:'OK — 0.01L approved'}
+];
+const LOGS=[
+  {t:'16:30',c:'ok',tx:'BUY SWING_OB ★★',s:'APPROVED · 3/3'},
+  {t:'16:00',c:'no',tx:'REJECTED',s:'No OB proximity'},
+  {t:'15:45',c:'no',tx:'REJECTED',s:'No swing setup'},
+  {t:'15:00',c:'ok',tx:'BUY TREND_OB ★★★',s:'APPROVED · RR1:2.4'},
+  {t:'14:00',c:'bl',tx:'BLOCKED',s:'NFP in 28min'},
+  {t:'13:30',c:'ok',tx:'SELL TREND_OB ★★',s:'APPROVED · 2/3'},
+  {t:'12:00',c:'no',tx:'REJECTED',s:'RR 1.2 < 1.5'},
+  {t:'10:45',c:'ok',tx:'BUY TREND_OB ★★',s:'APPROVED · 3/3'},
+  {t:'09:15',c:'ok',tx:'SELL SWING_OB ★',s:'APPROVED · CHoCH'},
+];
+const TR=[{p:15,r:'w'},{p:12,r:'w'},{p:-13,r:'l'},{p:12,r:'w'},{p:-5,r:'l'},{p:20,r:'w'},{p:6.5,r:'o'}];
+const vr=document.getElementById('vr');
+AGENTS.forEach(function(a){
+  var d=document.createElement('div');d.className='kn';d.id=a.id;
+  d.style.left=a.patrol[0].l+'px';d.style.top=a.patrol[0].t+'px';
+  d.innerHTML='<div class="ki">'+C[a.char]+'</div><div class="bbl" id="b'+a.id+'"></div><div class="ntg">'+a.name+'</div>';
+  d.onclick=function(){sb(a.id,a.idle[Math.floor(Math.random()*a.idle.length)],2800)};
+  vr.insertBefore(d,vr.querySelector('.vbn'));
+});
+document.getElementById('lcol').innerHTML=LOGS.map(function(l){
+  var cl=l.c==='ok'?'li-ok':l.c==='bl'?'li-bl':'li-no';
+  return '<div class="li '+cl+'"><div class="lt">'+l.t+'</div><div class="ltx">'+l.tx+'</div><div class="ls">'+l.s+'</div></div>';
+}).join('');
+var mx=Math.max.apply(null,TR.map(function(t){return Math.abs(t.p)}));
+document.getElementById('bars').innerHTML=TR.map(function(t){
+  var h=Math.max(3,Math.round(Math.abs(t.p)/mx*28));
+  var bc=t.r==='w'?'bw':t.r==='l'?'bl':'bo';
+  return '<div style="display:flex;flex-direction:column;align-items:center;flex:1"><div class="bx '+bc+'" style="height:'+h+'px"></div></div>';
+}).join('');
+function sb(id,txt,dur){var b=document.getElementById('b'+id);b.textContent=txt;b.classList.add('on');if(dur)setTimeout(function(){b.classList.remove('on')},dur)}
+function hb(id){document.getElementById('b'+id).classList.remove('on')}
+function mv(a,l,t,m){var el=document.getElementById(a.id),cl=parseFloat(el.style.left)||l;el.classList.toggle('fl',l<cl-15);if(m!==undefined)el.classList.toggle('mv',m);el.style.left=l+'px';el.style.top=t+'px'}
+function ssbl(t){document.getElementById('sbl').textContent=t}
+var state='patrol',pidx=AGENTS.map(function(){return 0}),pt=null,ct=null,csec=30;
+function doPatrol(){
+  if(state!=='patrol')return;
+  AGENTS.forEach(function(a,i){if(Math.random()<.55){pidx[i]=(pidx[i]+1)%a.patrol.length;var w=a.patrol[pidx[i]];mv(a,w.l,w.t,true)}});
+  if(Math.random()<.38){var a=AGENTS[Math.floor(Math.random()*AGENTS.length)];sb(a.id,a.idle[Math.floor(Math.random()*a.idle.length)],2400)}
+}
+function startCD(){csec=30;if(ct)clearInterval(ct);ct=setInterval(function(){if(state!=='patrol'){clearInterval(ct);return}csec--;ssbl('Next scan in '+csec+'s');if(csec<=0){clearInterval(ct);tScan()}},1000)}
+function tScan(){
+  if(state!=='patrol')return;state='gathering';document.getElementById('scb').disabled=true;
+  if(ct)clearInterval(ct);if(pt)clearInterval(pt);
+  ssbl('Knights returning to the round table...');
+  AGENTS.forEach(function(a){mv(a,a.seat.l,a.seat.t,true);sb(a.id,a.gather,1900)});
+  setTimeout(function(){state='scanning';ssbl('Scanning XAUUSD...');AGENTS.forEach(function(a){document.getElementById(a.id).classList.remove('mv');sb(a.id,a.analyze,3000)})},1700);
+  setTimeout(function(){AGENTS.forEach(function(a,i){setTimeout(function(){sb(a.id,a.vote,5000)},i*280)});ssbl('Agents voting...')},4600);
+  setTimeout(function(){var v=document.getElementById('vbn');v.textContent='APPROVED — BUY XAUUSD  |  Entry 3310  |  TP 3344';v.classList.add('on');ssbl('APPROVED — sending alert');setTimeout(function(){v.classList.remove('on')},3400)},7400);
+  setTimeout(function(){AGENTS.forEach(function(a){hb(a.id);mv(a,a.patrol[0].l,a.patrol[0].t,true)});ssbl('Dispersing...');setTimeout(function(){state='patrol';document.getElementById('scb').disabled=false;pt=setInterval(doPatrol,3000);startCD()},1800)},11200);
+}
+pt=setInterval(doPatrol,3000);startCD();
+AGENTS.forEach(function(a,i){setTimeout(function(){sb(a.id,a.idle[0],2400)},i*500+600)});
+function fc(t){document.getElementById('cin').value=t}
+function sc(){var inp=document.getElementById('cin'),t=inp.value.trim();if(!t)return;var box=document.getElementById('msgs');box.innerHTML+='<div class="mu">'+t+'</div>';inp.value='';box.scrollTop=9999}
+var n=new Date(),h=n.getHours(),m=n.getMinutes();document.getElementById('clk').textContent=(h>=8&&h<17?'London':h>=13&&h<22?'New York':'Off-hours')+' '+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+</script>
+</body>
+</html>

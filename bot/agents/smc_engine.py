@@ -111,9 +111,19 @@ class SMCEngine:
         # 3. หา Order Blocks
         obs = self._find_order_blocks(df, structures)
         result.order_blocks = obs
-        result.active_ob      = next((ob for ob in reversed(obs) if not ob.mitigated), None)
-        result.active_bull_ob = next((ob for ob in reversed(obs) if not ob.mitigated and ob.kind == 'bullish'), None)
-        result.active_bear_ob = next((ob for ob in reversed(obs) if not ob.mitigated and ob.kind == 'bearish'), None)
+        # เลือก OB ที่ใกล้ราคาปัจจุบันที่สุด (ไม่ใช่ most recently formed)
+        _price = df['close'].iloc[-1]
+        _bull_all = [ob for ob in obs if not ob.mitigated and ob.kind == 'bullish']
+        _bear_all = [ob for ob in obs if not ob.mitigated and ob.kind == 'bearish']
+        _bull_below = [ob for ob in _bull_all if ob.top <= _price]
+        _bear_above = [ob for ob in _bear_all if ob.bottom >= _price]
+        result.active_bull_ob = (min(_bull_below, key=lambda ob: _price - ob.top)
+                                 if _bull_below else
+                                 min(_bull_all, key=lambda ob: abs(ob.top - _price)) if _bull_all else None)
+        result.active_bear_ob = (min(_bear_above, key=lambda ob: ob.bottom - _price)
+                                 if _bear_above else
+                                 min(_bear_all, key=lambda ob: abs(ob.bottom - _price)) if _bear_all else None)
+        result.active_ob = result.active_bull_ob or result.active_bear_ob
 
         # 4. หา Fair Value Gaps
         result.fvgs = self._find_fvg(df)
@@ -438,17 +448,71 @@ def get_session() -> dict:
     else:
         name, emoji = "Off-Hours", "⚫"
 
+    market_closed, holiday_name = is_market_holiday()
+    is_late_ny = (t >= 0.0 and t < 4.0)  # 00:00–04:00 Thai — เหลือแค่ NY liquidity ต่ำ
+
     return {
         "session": name,
         "emoji": emoji,
-        "tradeable": is_london or is_ny or is_tokyo,  # London + NY + Tokyo
+        "tradeable": (is_london or is_ny or is_tokyo) and not market_closed,
+        "market_closed": market_closed,
+        "holiday_name": holiday_name,
         "is_london": is_london,
         "is_ny": is_ny,
         "is_overlap": is_overlap,
         "is_tokyo": is_tokyo,
         "is_sydney": is_sydney,
+        "is_late_ny": is_late_ny,
         "time_thai": now.strftime("%H:%M"),
     }
+
+
+def is_market_holiday() -> tuple[bool, str]:
+    """
+    เช็คว่าตลาด Gold (CME/COMEX) ปิดวันนี้มั้ย
+    ปิด: วันหยุดสหรัฐ (CME Gold) + สหราชอาณาจักร (London) + วันหยุดสากล
+    คืน: (is_closed, holiday_name)
+    """
+    import holidays as hol
+    from datetime import date
+
+    today = date.today()
+
+    # Weekend
+    if today.weekday() >= 5:  # 5=Sat, 6=Sun
+        return True, "Weekend"
+
+    # CME Gold holidays (US)
+    us_holidays = hol.UnitedStates(years=today.year, subdiv=None)
+    # เฉพาะที่ตลาด Gold ปิดจริง
+    cme_gold_holidays = {
+        "New Year's Day",
+        "Martin Luther King Jr. Day",
+        "Presidents' Day",
+        "Good Friday",
+        "Memorial Day",
+        "Juneteenth National Independence Day",
+        "Independence Day",
+        "Labor Day",
+        "Thanksgiving",
+        "Christmas Day",
+    }
+    if today in us_holidays:
+        hname = us_holidays[today]
+        # เช็คว่าเป็น holiday ที่ทำให้ตลาด Gold ปิดจริง
+        if any(h in hname for h in cme_gold_holidays):
+            return True, f"🇺🇸 {hname}"
+
+    # UK Bank Holidays (London session)
+    uk_holidays = hol.UnitedKingdom(years=today.year)
+    if today in uk_holidays:
+        hname = uk_holidays[today]
+        # London ปิด แต่ NY ยังเปิด — แค่ warn ไม่ block
+        # (block เฉพาะ Good Friday ที่ทั้ง US+UK ปิด)
+        if "Good Friday" in hname or "Christmas" in hname or "New Year" in hname:
+            return True, f"🇬🇧 {hname}"
+
+    return False, ""
 
 
 # ─── Advanced Signals (port from SMC By Beam) ─────────────────────
@@ -1234,6 +1298,30 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         "total_structures":  len(result.structures),
         "total_sweeps":      len(result.sweeps),
     }
+
+    # nearest swing high (above price) and swing low (below price) — ใช้เป็น TP hint
+    if result.swing_highs:
+        above_highs = sorted(
+            [s.price for s in result.swing_highs if s.price > current_price],
+            key=lambda p: p - current_price
+        )
+        summary["nearest_swing_high"] = round(above_highs[0], 2) if above_highs else None
+        # top 3 เผื่อ LLM เลือก
+        summary["swing_highs_above"] = [round(p, 2) for p in above_highs[:3]]
+    else:
+        summary["nearest_swing_high"] = None
+        summary["swing_highs_above"]  = []
+
+    if result.swing_lows:
+        below_lows = sorted(
+            [s.price for s in result.swing_lows if s.price < current_price],
+            key=lambda p: current_price - p
+        )
+        summary["nearest_swing_low"] = round(below_lows[0], 2) if below_lows else None
+        summary["swing_lows_below"]  = [round(p, 2) for p in below_lows[:3]]
+    else:
+        summary["nearest_swing_low"] = None
+        summary["swing_lows_below"]  = []
 
     # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:

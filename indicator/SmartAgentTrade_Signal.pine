@@ -1,0 +1,617 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © SmartAgentTrade — แปลง conditions จาก bot Python ทั้งหมด
+// Strategy: SMC Swing Entry — เล่น swing ใน OB zone
+// ไม่ใช่ reversal — เล่น swing ขึ้นหรือลง TP = next swing high/low เท่านั้น
+
+//@version=5
+indicator("SmartAgentTrade — SMC Swing Signal", shorttitle="SAT Signal", overlay=true, max_boxes_count=50, max_lines_count=200, max_labels_count=100)
+
+// ══════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════
+grp_swing = "Swing Points"
+swing_len   = input.int(5, "Swing Length (bars each side)", minval=1, maxval=20, group=grp_swing)
+ob_swing    = input.int(2, "OB Swing Length (M15 OB)", minval=1, maxval=10, group=grp_swing)
+
+grp_ob = "Order Blocks"
+show_bull_ob = input.bool(true, "Show Bullish OB", group=grp_ob)
+show_bear_ob = input.bool(true, "Show Bearish OB", group=grp_ob)
+ob_lookback  = input.int(150, "OB Lookback (bars)", minval=30, maxval=500, group=grp_ob)
+max_ob       = input.int(5, "Max OB per side", minval=1, maxval=10, group=grp_ob)
+
+grp_fvg = "Fair Value Gap"
+show_fvg     = input.bool(true, "Show FVG", group=grp_fvg)
+fvg_min_pips = input.float(2.0, "Min FVG size (pips)", minval=0, group=grp_fvg)
+
+grp_struct = "Structure"
+show_bos   = input.bool(true, "Show BOS", group=grp_struct)
+show_choch = input.bool(true, "Show CHoCH", group=grp_struct)
+
+grp_sweep = "Liquidity Sweep"
+show_sweep = input.bool(true, "Show Liquidity Sweep", group=grp_sweep)
+sweep_look = input.int(20, "Sweep lookback (bars after swing)", minval=5, maxval=50, group=grp_sweep)
+
+grp_eql = "Equal H/L"
+show_eql     = input.bool(true, "Show EQH/EQL", group=grp_eql)
+eql_thresh   = input.float(0.1, "EQH/EQL threshold (%)", minval=0.01, maxval=1.0, step=0.01, group=grp_eql)
+
+grp_htf = "HTF Bias (data-driven)"
+htf_h1_bars  = input.int(240,  "H1 window (bars on M5 = 12×20)", group=grp_htf)
+htf_h4_bars  = input.int(960,  "H4 window (bars on M5 = 48×20)", group=grp_htf)
+show_htf_mid = input.bool(false, "Show HTF midpoint lines", group=grp_htf)
+
+grp_sig = "Signal Filters"
+atr_period   = input.int(14, "ATR Period", group=grp_sig)
+mom_atr_mult = input.float(2.5, "Momentum block (ATR×)", minval=1.0, maxval=5.0, step=0.1, group=grp_sig)
+choch_max_age = input.int(5, "CHoCH max age (bars)", group=grp_sig)
+sweep_max_age = input.int(3, "Sweep max age (bars)", group=grp_sig)
+min_body_ratio = input.float(0.5, "Min body/range for confirm candle", minval=0.1, maxval=0.9, step=0.05, group=grp_sig)
+
+grp_session = "Session Filter"
+show_session = input.bool(true, "Show session background", group=grp_session)
+filter_session = input.bool(true, "Filter: trade London+NY only", group=grp_session)
+
+grp_col = "Colors"
+bull_col = input.color(color.new(#00E676, 0),  "Bullish color", group=grp_col)
+bear_col = input.color(color.new(#FF1744, 0),  "Bearish color", group=grp_col)
+ob_bull_col = input.color(color.new(#00E676, 80), "Bull OB fill", group=grp_col)
+ob_bear_col = input.color(color.new(#FF1744, 80), "Bear OB fill", group=grp_col)
+fvg_bull_col = input.color(color.new(#26C6DA, 85), "Bull FVG fill", group=grp_col)
+fvg_bear_col = input.color(color.new(#FF6F00, 85), "Bear FVG fill", group=grp_col)
+
+// ══════════════════════════════════════════════════
+// SESSION DETECTION (Thai UTC+7)
+// ══════════════════════════════════════════════════
+// London: 14:00–23:00 Thai | NY: 19:00–04:00 Thai
+int hour_thai = hour(time, "Asia/Bangkok")
+int min_thai  = minute(time, "Asia/Bangkok")
+float t = hour_thai + min_thai / 60.0
+
+is_london  = t >= 14.0 and t < 23.0
+is_ny      = t >= 19.0 or t < 4.0
+is_overlap = is_london and is_ny
+is_tradeable = is_london or is_ny
+
+if show_session
+    bgcolor(is_overlap ? color.new(#9C27B0, 92) : is_ny ? color.new(#F44336, 94) : is_london ? color.new(#FFC107, 95) : na, title="Session")
+
+// ══════════════════════════════════════════════════
+// ATR
+// ══════════════════════════════════════════════════
+atr = ta.atr(atr_period)
+
+// ══════════════════════════════════════════════════
+// SWING POINTS
+// ══════════════════════════════════════════════════
+// Pivot high/low ด้วย lookback window
+is_swing_high = ta.pivothigh(high, swing_len, swing_len)
+is_swing_low  = ta.pivotlow(low, swing_len, swing_len)
+
+// ── OB Swing (swing_len=2 ตรงกับ EA) ──────────────
+is_ob_sh = ta.pivothigh(high, ob_swing, ob_swing)
+is_ob_sl = ta.pivotlow(low, ob_swing, ob_swing)
+
+// ══════════════════════════════════════════════════
+// STRUCTURE: BOS / CHoCH
+// ══════════════════════════════════════════════════
+var float last_sh = na
+var float last_sl = na
+var string bias = "neutral"
+
+// ติดตาม swing ล่าสุดที่ผ่านมาแล้ว
+if not na(is_swing_high)
+    last_sh := is_swing_high
+if not na(is_swing_low)
+    last_sl := is_swing_low
+
+// Detect break
+var string struct_type = na
+var string struct_dir  = na
+var float  struct_level = na
+var int    struct_bar   = na
+
+// bullish break
+if not na(last_sh) and close > last_sh[1]
+    new_type = bias == "bearish" ? "CHoCH" : "BOS"
+    if show_bos or show_choch
+        if new_type == "BOS" and show_bos
+            label.new(bar_index, high, "BOS ▲", style=label.style_label_down, color=bull_col, textcolor=color.white, size=size.tiny)
+        if new_type == "CHoCH" and show_choch
+            label.new(bar_index, high, "CHoCH ▲", style=label.style_label_down, color=color.new(#00BCD4, 0), textcolor=color.white, size=size.tiny)
+    struct_type  := new_type
+    struct_dir   := "bullish"
+    struct_level := last_sh[1]
+    struct_bar   := bar_index
+    bias := "bullish"
+
+// bearish break
+if not na(last_sl) and close < last_sl[1]
+    new_type = bias == "bullish" ? "CHoCH" : "BOS"
+    if show_bos or show_choch
+        if new_type == "BOS" and show_bos
+            label.new(bar_index, low, "BOS ▼", style=label.style_label_up, color=bear_col, textcolor=color.white, size=size.tiny)
+        if new_type == "CHoCH" and show_choch
+            label.new(bar_index, low, "CHoCH ▼", style=label.style_label_up, color=color.new(#FF9800, 0), textcolor=color.white, size=size.tiny)
+    struct_type  := new_type
+    struct_dir   := "bearish"
+    struct_level := last_sl[1]
+    struct_bar   := bar_index
+    bias := "bearish"
+
+// ══════════════════════════════════════════════════
+// LIQUIDITY SWEEP
+// ══════════════════════════════════════════════════
+var int   last_sweep_bar  = na
+var string last_sweep_kind = na
+
+// Sweep High: wick ทะลุ swing high แต่ close กลับเข้ามา
+if not na(is_ob_sh)
+    sh_level = is_ob_sh
+    // ดูใน sweep_look bars ถัดไป (ใช้ loop แบบ stateful)
+    // ในรอบนี้: เช็คว่า bar ปัจจุบัน wick ทะลุ swing high ล่าสุด แต่ close ต่ำกว่า
+    // วิธีที่ทำได้ใน Pine: เช็ค ta.highest/lowest หลัง swing
+
+// Simplified real-time sweep detection (เทียบกับ swing high/low ของ ob_swing bars)
+var float sh_track = na
+var float sl_track = na
+var int   sh_bar   = na
+var int   sl_bar   = na
+
+if not na(is_ob_sh)
+    sh_track := is_ob_sh
+    sh_bar   := bar_index - ob_swing
+
+if not na(is_ob_sl)
+    sl_track := is_ob_sl
+    sl_bar   := bar_index - ob_swing
+
+// Sweep High: wick เหนือ tracked swing high + close กลับต่ำกว่า
+sweep_high = not na(sh_track) and high > sh_track and close <= sh_track
+// Sweep Low: wick ต่ำกว่า tracked swing low + close กลับสูงกว่า
+sweep_low  = not na(sl_track) and low < sl_track and close >= sl_track
+
+if sweep_high and show_sweep
+    label.new(bar_index, high + atr * 0.3, "🌊 Sweep H", style=label.style_label_down, color=color.new(bear_col, 20), textcolor=color.white, size=size.tiny)
+    last_sweep_bar  := bar_index
+    last_sweep_kind := "sweep_high"
+
+if sweep_low and show_sweep
+    label.new(bar_index, low - atr * 0.3, "🌊 Sweep L", style=label.style_label_up, color=color.new(bull_col, 20), textcolor=color.white, size=size.tiny)
+    last_sweep_bar  := bar_index
+    last_sweep_kind := "sweep_low"
+
+// ══════════════════════════════════════════════════
+// ORDER BLOCKS (port from EA DetectOrderBlocks)
+// ══════════════════════════════════════════════════
+// Bullish OB: Swing High → BOS (close > swing high) → หาแท่งแดงสุดท้าย ระหว่าง swing ถึง BOS
+// Bearish OB: Swing Low  → BOS (close < swing low)  → หาแท่งเขียวสุดท้าย ระหว่าง swing ถึง BOS
+
+var box[] bull_ob_boxes = array.new<box>()
+var box[] bear_ob_boxes = array.new<box>()
+
+// ── Bullish OB ────────────────────────────────────
+// เมื่อเพิ่งเกิด Bullish BOS (close > swing high) ให้ย้อนหาแท่งแดงสุดท้าย
+if not na(is_ob_sh) and barstate.isconfirmed
+    sh_price = is_ob_sh
+    sh_idx   = bar_index - ob_swing
+    // หา bearish candle ล่าสุดระหว่าง sh_idx+1 ถึง bar_index-1
+    ob_idx = -1
+    ob_o   = 0.0
+    ob_h   = 0.0
+    ob_l   = 0.0
+    for k = sh_idx + 1 to bar_index - 1
+        if close[bar_index - k] < open[bar_index - k]  // bearish candle
+            ob_idx := k
+            ob_o   := open[bar_index - k]
+            ob_h   := high[bar_index - k]
+            ob_l   := low[bar_index - k]
+    if ob_idx == -1
+        ob_idx := sh_idx
+        ob_o   := open[bar_index - sh_idx]
+        ob_h   := high[bar_index - sh_idx]
+        ob_l   := low[bar_index - sh_idx]
+    if show_bull_ob and array.size(bull_ob_boxes) < max_ob
+        b = box.new(ob_idx, ob_h, bar_index + 20, ob_l, border_color=bull_col, bgcolor=ob_bull_col, border_width=1)
+        array.push(bull_ob_boxes, b)
+
+// ── Bearish OB ────────────────────────────────────
+if not na(is_ob_sl) and barstate.isconfirmed
+    sl_price = is_ob_sl
+    sl_idx   = bar_index - ob_swing
+    ob_idx = -1
+    ob_o   = 0.0
+    ob_h   = 0.0
+    ob_l   = 0.0
+    for k = sl_idx + 1 to bar_index - 1
+        if close[bar_index - k] > open[bar_index - k]  // bullish candle
+            ob_idx := k
+            ob_o   := open[bar_index - k]
+            ob_h   := high[bar_index - k]
+            ob_l   := low[bar_index - k]
+    if ob_idx == -1
+        ob_idx := sl_idx
+        ob_o   := open[bar_index - sl_idx]
+        ob_h   := high[bar_index - sl_idx]
+        ob_l   := low[bar_index - sl_idx]
+    if show_bear_ob and array.size(bear_ob_boxes) < max_ob
+        b = box.new(ob_idx, ob_h, bar_index + 20, ob_l, border_color=bear_col, bgcolor=ob_bear_col, border_width=1)
+        array.push(bear_ob_boxes, b)
+
+// ── Extend / Mitigate OB boxes ────────────────────
+// Mitigation: ต้อง CLOSE ทะลุ zone (wick ไม่นับ เหมือน EA)
+if barstate.isconfirmed
+    // Extend all active boxes to current bar
+    for i = 0 to array.size(bull_ob_boxes) - 1
+        b = array.get(bull_ob_boxes, i)
+        if not na(b)
+            box.set_right(b, bar_index + 20)
+            // Mitigated if close below bottom
+            if close < box.get_bottom(b)
+                box.set_border_color(b, color.new(bull_col, 60))
+                box.set_bgcolor(b, color.new(bull_col, 95))
+    for i = 0 to array.size(bear_ob_boxes) - 1
+        b = array.get(bear_ob_boxes, i)
+        if not na(b)
+            box.set_right(b, bar_index + 20)
+            if close > box.get_top(b)
+                box.set_border_color(b, color.new(bear_col, 60))
+                box.set_bgcolor(b, color.new(bear_col, 95))
+
+// ══════════════════════════════════════════════════
+// FAIR VALUE GAPS
+// ══════════════════════════════════════════════════
+// Bullish FVG: low[0] > high[2]  (gap ระหว่างแท่ง i และ i-2)
+// Bearish FVG: high[0] < low[2]
+fvg_min = fvg_min_pips * syminfo.mintick * 10
+
+bull_fvg = low > high[2] and (low - high[2]) > fvg_min
+bear_fvg = high < low[2] and (low[2] - high) > fvg_min
+
+var box[] fvg_bull_boxes = array.new<box>()
+var box[] fvg_bear_boxes = array.new<box>()
+
+if bull_fvg and show_fvg and barstate.isconfirmed
+    b = box.new(bar_index - 2, low, bar_index + 30, high[2], border_color=color.new(#26C6DA, 40), bgcolor=fvg_bull_col, border_width=1)
+    array.push(fvg_bull_boxes, b)
+
+if bear_fvg and show_fvg and barstate.isconfirmed
+    b = box.new(bar_index - 2, low[2], bar_index + 30, high, border_color=color.new(#FF6F00, 40), bgcolor=fvg_bear_col, border_width=1)
+    array.push(fvg_bear_boxes, b)
+
+// Extend FVG boxes and check if filled
+if barstate.isconfirmed
+    for i = 0 to array.size(fvg_bull_boxes) - 1
+        b = array.get(fvg_bull_boxes, i)
+        if not na(b)
+            box.set_right(b, bar_index + 30)
+            if low < box.get_bottom(b)  // filled
+                box.set_bgcolor(b, color.new(#26C6DA, 97))
+    for i = 0 to array.size(fvg_bear_boxes) - 1
+        b = array.get(fvg_bear_boxes, i)
+        if not na(b)
+            box.set_right(b, bar_index + 30)
+            if high > box.get_top(b)  // filled
+                box.set_bgcolor(b, color.new(#FF6F00, 97))
+
+// ══════════════════════════════════════════════════
+// EQUAL HIGHS / LOWS (EQH / EQL)
+// ══════════════════════════════════════════════════
+// หา swing high/low ที่ราคาใกล้กัน ≤ eql_thresh%
+eql_threshold = eql_thresh / 100.0
+
+var float prev_sh_price = na
+var float prev_sl_price = na
+
+if not na(is_swing_high)
+    if not na(prev_sh_price)
+        diff = math.abs(is_swing_high - prev_sh_price) / prev_sh_price
+        if diff <= eql_threshold and show_eql
+            line.new(bar_index - swing_len * 2, prev_sh_price, bar_index, is_swing_high,
+                     color=color.new(#FFD600, 60), style=line.style_dashed, width=1)
+            label.new(bar_index, math.max(prev_sh_price, is_swing_high) + atr * 0.2,
+                      "EQH", color=color.new(#FFD600, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    prev_sh_price := is_swing_high
+
+if not na(is_swing_low)
+    if not na(prev_sl_price)
+        diff = math.abs(is_swing_low - prev_sl_price) / prev_sl_price
+        if diff <= eql_threshold and show_eql
+            line.new(bar_index - swing_len * 2, prev_sl_price, bar_index, is_swing_low,
+                     color=color.new(#CE93D8, 60), style=line.style_dashed, width=1)
+            label.new(bar_index, math.min(prev_sl_price, is_swing_low) - atr * 0.2,
+                      "EQL", color=color.new(#CE93D8, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    prev_sl_price := is_swing_low
+
+// ══════════════════════════════════════════════════
+// HTF BIAS (data-driven, ไม่ต้องเรียก Claude)
+// price vs midpoint ของช่วง N bars
+// H1 ≈ htf_h1_bars M5 bars | H4 ≈ htf_h4_bars M5 bars
+// ══════════════════════════════════════════════════
+h1_len = math.min(htf_h1_bars, bar_index + 1)
+h4_len = math.min(htf_h4_bars, bar_index + 1)
+
+h1_mid = (ta.highest(high, h1_len) + ta.lowest(low, h1_len)) / 2
+h4_mid = (ta.highest(high, h4_len) + ta.lowest(low, h4_len)) / 2
+
+h1_bull = close > h1_mid
+h4_bull = close > h4_mid
+
+if show_htf_mid
+    plot(h1_mid, "H1 Mid", color=color.new(#00BCD4, 60), linewidth=1, style=plot.style_line)
+    plot(h4_mid, "H4 Mid", color=color.new(#9C27B0, 60), linewidth=1, style=plot.style_line)
+
+// ══════════════════════════════════════════════════
+// CONFIRMATION CANDLE
+// ══════════════════════════════════════════════════
+body   = math.abs(close - open)
+c_range = high - low
+c_upper = high - math.max(close, open)
+c_lower = math.min(close, open) - low
+c_r = math.max(c_range, syminfo.mintick)
+
+bull_conf_candle = close > open and body / c_r >= min_body_ratio
+bull_wick_candle = close > open and c_upper < c_lower * 0.35
+bear_conf_candle = close < open and body / c_r >= min_body_ratio
+bear_wick_candle = close < open and c_lower < body * 0.35
+
+bull_candle = bull_conf_candle or bull_wick_candle
+bear_candle = bear_conf_candle or bear_wick_candle
+
+// ══════════════════════════════════════════════════
+// SWEEP AGE (ตรวจ sweep ใน 3 bars ที่ผ่านมา)
+// port จาก advanced_signals()
+// ══════════════════════════════════════════════════
+lb = math.min(20, bar_index)
+
+recent_sweep_l = false
+recent_sweep_h = false
+sweep_l_age = 999
+sweep_h_age = 999
+
+for i = 1 to sweep_max_age
+    lo_ref = ta.lowest(low, lb)[i]
+    if low[i] < lo_ref and not recent_sweep_l
+        recent_sweep_l := true
+        sweep_l_age    := i
+
+for i = 1 to sweep_max_age
+    hi_ref = ta.highest(high, lb)[i]
+    if high[i] > hi_ref and not recent_sweep_h
+        recent_sweep_h := true
+        sweep_h_age    := i
+
+// Grab strength (wick % of range)
+bull_wr = close > open ? (close - low)  / c_r : 0.0
+bear_wr = close < open ? (high - close) / c_r : 0.0
+
+bull_grab_strong = recent_sweep_l and close > open and bull_wr > 0.65
+bear_grab_strong = recent_sweep_h and close < open and bear_wr > 0.65
+bull_grab        = recent_sweep_l and close > open and bull_wr > 0.50
+bear_grab        = recent_sweep_h and close < open and bear_wr > 0.50
+
+// ══════════════════════════════════════════════════
+// CHoCH AGE (≤ choch_max_age bars)
+// ══════════════════════════════════════════════════
+var int   choch_bar_idx = na
+var string choch_last_dir = na
+
+// detect CHoCH (already in struct logic above but need per-bar tracking)
+choch_bull = struct_type == "CHoCH" and struct_dir == "bullish" and struct_bar == bar_index
+choch_bear = struct_type == "CHoCH" and struct_dir == "bearish" and struct_bar == bar_index
+
+if choch_bull or choch_bear
+    choch_bar_idx  := bar_index
+    choch_last_dir := choch_bull ? "bullish" : "bearish"
+
+choch_age_bars = not na(choch_bar_idx) ? bar_index - choch_bar_idx : 999
+recent_choch_bull = choch_last_dir == "bullish" and choch_age_bars <= choch_max_age
+recent_choch_bear = choch_last_dir == "bearish" and choch_age_bars <= choch_max_age
+
+bull_choch_grab = recent_choch_bull and recent_sweep_l and close > open and bull_wr > 0.5
+bear_choch_grab = recent_choch_bear and recent_sweep_h and close < open and bear_wr > 0.5
+
+// ══════════════════════════════════════════════════
+// MOMENTUM FILTER (2.5×ATR ใน 5 bars — ป้องกัน news spike)
+// ══════════════════════════════════════════════════
+drop_5   = ta.highest(high, 6)[1] - close
+rally_5  = close - ta.lowest(low, 6)[1]
+momentum_bear = drop_5  > atr * mom_atr_mult
+momentum_bull = rally_5 > atr * mom_atr_mult
+
+// ══════════════════════════════════════════════════
+// PRICE IN OB ZONE (เช็ค overlap กับ OB boxes ล่าสุด)
+// ══════════════════════════════════════════════════
+in_bull_ob = false
+in_bear_ob = false
+
+if array.size(bull_ob_boxes) > 0
+    b = array.get(bull_ob_boxes, array.size(bull_ob_boxes) - 1)
+    if not na(b)
+        ob_top    = box.get_top(b)
+        ob_bottom = box.get_bottom(b)
+        if close >= ob_bottom and close <= ob_top
+            in_bull_ob := true
+
+if array.size(bear_ob_boxes) > 0
+    b = array.get(bear_ob_boxes, array.size(bear_ob_boxes) - 1)
+    if not na(b)
+        ob_top    = box.get_top(b)
+        ob_bottom = box.get_bottom(b)
+        if close >= ob_bottom and close <= ob_top
+            in_bear_ob := true
+
+// ══════════════════════════════════════════════════
+// CONFLUENCE SCORE
+// ══════════════════════════════════════════════════
+struct_sweep_long  = recent_sweep_l and bull_grab
+struct_sweep_short = recent_sweep_h and bear_grab
+
+long_score  = (in_bull_ob         ? 1 : 0)
+            + (h1_bull             ? 1 : 0)
+            + (h4_bull             ? 1 : 0)
+            + (bull_choch_grab     ? 1 : 0)
+            + (struct_sweep_long   ? 2 : 0)
+
+short_score = (in_bear_ob          ? 1 : 0)
+            + (not h1_bull          ? 1 : 0)
+            + (not h4_bull          ? 1 : 0)
+            + (bear_choch_grab      ? 1 : 0)
+            + (struct_sweep_short   ? 2 : 0)
+
+// ══════════════════════════════════════════════════
+// SIGNAL TYPES (A / B / B2 / C)
+// A = with-trend | B = sweep grab | B2 = strong grab | C = CHoCH+sweep
+// ══════════════════════════════════════════════════
+bias_bull = bias == "bullish"
+bias_bear = bias == "bearish"
+
+long_wt  = bias_bull and h1_bull and bull_candle
+long_sw  = bull_grab and (h4_bull or struct_sweep_long) and not momentum_bear
+long_sw2 = bull_grab_strong and not momentum_bear
+long_cs  = bull_choch_grab and not momentum_bear
+long_sig = long_wt or long_sw or long_sw2 or long_cs
+
+short_wt  = bias_bear and not h1_bull and bear_candle
+short_sw  = bear_grab and (not h4_bull or struct_sweep_short) and not momentum_bull
+short_sw2 = bear_grab_strong and not momentum_bull
+short_cs  = bear_choch_grab and not momentum_bull
+short_sig = short_wt or short_sw or short_sw2 or short_cs
+
+// session filter
+long_sig_filtered  = long_sig  and (not filter_session or is_tradeable)
+short_sig_filtered = short_sig and (not filter_session or is_tradeable)
+
+// ══════════════════════════════════════════════════
+// SWING OB ENTRY (concept หลัก — ไม่ใช่ reversal)
+// เล่น swing ใน OB zone ต่อให้ macro trend ขัด
+// ══════════════════════════════════════════════════
+// Bullish Swing Entry:
+//   1. CHoCH bull fresh (≤5 bars)
+//   2. Sweep low ล่าสุด
+//   3. Bull confirm candle
+//   4. ไม่มี momentum ลงแรง
+swing_bull_score = (recent_choch_bull ? 3 : 0)
+                 + (recent_sweep_l    ? 2 : 0)
+                 + (bull_candle       ? 2 : 0)
+                 + (in_bull_ob        ? 1 : 0)
+                 + (h1_bull           ? 1 : 0)
+                 + (not momentum_bear ? 1 : 0)
+
+swing_bear_score = (recent_choch_bear ? 3 : 0)
+                 + (recent_sweep_h    ? 2 : 0)
+                 + (bear_candle       ? 2 : 0)
+                 + (in_bear_ob        ? 1 : 0)
+                 + (not h1_bull       ? 1 : 0)
+                 + (not momentum_bull ? 1 : 0)
+
+swing_bull_sig = swing_bull_score >= 5 and not momentum_bear
+swing_bear_sig = swing_bear_score >= 5 and not momentum_bull
+
+// Swing entry signal (filtered by session)
+swing_bull_filt = swing_bull_sig and (not filter_session or is_tradeable)
+swing_bear_filt = swing_bear_sig and (not filter_session or is_tradeable)
+
+// ══════════════════════════════════════════════════
+// SIGNAL LABELS
+// ══════════════════════════════════════════════════
+// Signal type label
+sig_label(is_c, is_b2, is_b, is_wt) =>
+    is_c ? "C" : is_b2 ? "B2" : is_b ? "B" : "A"
+
+if long_sig_filtered
+    type_str = sig_label(long_cs, long_sw2, long_sw, long_wt)
+    stars    = long_score >= 3 ? "★★★" : long_score == 2 ? "★★" : "★"
+    lbl_txt  = "▲ LONG [" + type_str + "] " + stars
+    label.new(bar_index, low - atr * 0.5, lbl_txt, style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.small)
+
+if short_sig_filtered
+    type_str = sig_label(short_cs, short_sw2, short_sw, short_wt)
+    stars    = short_score >= 3 ? "★★★" : short_score == 2 ? "★★" : "★"
+    lbl_txt  = "▼ SHORT [" + type_str + "] " + stars
+    label.new(bar_index, high + atr * 0.5, lbl_txt, style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.small)
+
+// Swing Entry labels (ต่างจาก trend signal — เป็น counter-swing)
+if swing_bull_filt and not long_sig_filtered
+    stars = swing_bull_score >= 7 ? "★★★" : swing_bull_score >= 5 ? "★★" : "★"
+    label.new(bar_index, low - atr * 0.8, "🔀 SWING BUY " + stars + " (" + str.tostring(swing_bull_score) + "/10)",
+              style=label.style_label_up, color=color.new(#00BCD4, 10), textcolor=color.white, size=size.small)
+
+if swing_bear_filt and not short_sig_filtered
+    stars = swing_bear_score >= 7 ? "★★★" : swing_bear_score >= 5 ? "★★" : "★"
+    label.new(bar_index, high + atr * 0.8, "🔀 SWING SELL " + stars + " (" + str.tostring(swing_bear_score) + "/10)",
+              style=label.style_label_down, color=color.new(#FF9800, 10), textcolor=color.white, size=size.small)
+
+// ══════════════════════════════════════════════════
+// SWING POINTS MARKERS
+// ══════════════════════════════════════════════════
+plotshape(not na(is_swing_high), title="Swing High", location=location.abovebar, style=shape.triangledown,
+          color=color.new(bear_col, 30), size=size.tiny, offset=-swing_len)
+plotshape(not na(is_swing_low), title="Swing Low", location=location.belowbar, style=shape.triangleup,
+          color=color.new(bull_col, 30), size=size.tiny, offset=-swing_len)
+
+// ══════════════════════════════════════════════════
+// MOMENTUM ALERT MARKERS
+// ══════════════════════════════════════════════════
+plotshape(momentum_bear, title="Momentum Bear", location=location.abovebar,
+          style=shape.xcross, color=color.new(bear_col, 40), size=size.tiny)
+plotshape(momentum_bull, title="Momentum Bull", location=location.belowbar,
+          style=shape.xcross, color=color.new(bull_col, 40), size=size.tiny)
+
+// ══════════════════════════════════════════════════
+// TABLE — Dashboard
+// ══════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 10, border_width=1, bgcolor=color.new(#1A1A2E, 10))
+
+if barstate.islast
+    sess_name  = is_overlap ? "LN+NY" : is_ny ? "New York" : is_london ? "London" : "Off-Hours"
+    sess_color = is_overlap ? #9C27B0 : is_ny ? #F44336 : is_london ? #FFC107 : #757575
+    bias_color = bias == "bullish" ? #00E676 : bias == "bearish" ? #FF1744 : #757575
+    h1_color   = h1_bull ? #00E676 : #FF1744
+    h4_color   = h4_bull ? #00E676 : #FF1744
+
+    table.cell(dash, 0, 0, "SAT Signal", text_color=color.white, bgcolor=#1A237E, text_size=size.small)
+    table.cell(dash, 1, 0, "v2.0", text_color=color.white, bgcolor=#1A237E, text_size=size.small)
+
+    table.cell(dash, 0, 1, "Session", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 1, sess_name, text_color=color.white, bgcolor=color.new(sess_color, 40), text_size=size.tiny)
+
+    table.cell(dash, 0, 2, "Bias (M5)", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 2, str.upper(bias), text_color=color.white, bgcolor=color.new(bias_color, 40), text_size=size.tiny)
+
+    table.cell(dash, 0, 3, "H1 Bias", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 3, h1_bull ? "▲ BULL" : "▼ BEAR", text_color=color.white, bgcolor=color.new(h1_color, 50), text_size=size.tiny)
+
+    table.cell(dash, 0, 4, "H4 Bias", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 4, h4_bull ? "▲ BULL" : "▼ BEAR", text_color=color.white, bgcolor=color.new(h4_color, 50), text_size=size.tiny)
+
+    table.cell(dash, 0, 5, "In Bull OB", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 5, in_bull_ob ? "✓ YES" : "–", text_color=color.white, bgcolor=in_bull_ob ? color.new(#00E676, 40) : color.new(#333333, 0), text_size=size.tiny)
+
+    table.cell(dash, 0, 6, "In Bear OB", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 6, in_bear_ob ? "✓ YES" : "–", text_color=color.white, bgcolor=in_bear_ob ? color.new(#FF1744, 40) : color.new(#333333, 0), text_size=size.tiny)
+
+    table.cell(dash, 0, 7, "Momentum", text_color=#BDBDBD, text_size=size.tiny)
+    mom_txt = momentum_bear ? "⚠ BEAR SPIKE" : momentum_bull ? "⚠ BULL SPIKE" : "✓ Clear"
+    mom_col = (momentum_bear or momentum_bull) ? #FF6F00 : #00C853
+    table.cell(dash, 1, 7, mom_txt, text_color=color.white, bgcolor=color.new(mom_col, 40), text_size=size.tiny)
+
+    sig_txt = long_sig_filtered ? "▲ LONG" : short_sig_filtered ? "▼ SHORT" : swing_bull_filt ? "🔀 SWING↑" : swing_bear_filt ? "🔀 SWING↓" : "– WAIT"
+    sig_col = long_sig_filtered ? #00E676 : short_sig_filtered ? #FF1744 : (swing_bull_filt or swing_bear_filt) ? #00BCD4 : #616161
+    table.cell(dash, 0, 8, "Signal", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 8, sig_txt, text_color=color.white, bgcolor=color.new(sig_col, 40), text_size=size.small)
+
+    score_txt = long_sig_filtered ? str.tostring(long_score) + "/6" : short_sig_filtered ? str.tostring(short_score) + "/6" : swing_bull_filt ? str.tostring(swing_bull_score) + "/10" : swing_bear_filt ? str.tostring(swing_bear_score) + "/10" : "–"
+    table.cell(dash, 0, 9, "Score", text_color=#BDBDBD, text_size=size.tiny)
+    table.cell(dash, 1, 9, score_txt, text_color=color.white, text_size=size.tiny)
+
+// ══════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════
+alertcondition(long_sig_filtered,  title="LONG Signal (A/B/B2/C)", message="SAT: LONG Signal [{{ticker}} {{interval}}] — Price: {{close}}")
+alertcondition(short_sig_filtered, title="SHORT Signal (A/B/B2/C)", message="SAT: SHORT Signal [{{ticker}} {{interval}}] — Price: {{close}}")
+alertcondition(swing_bull_filt,    title="SWING BUY (OB Entry)",    message="SAT: SWING BUY [{{ticker}} {{interval}}] — เล่น swing ขึ้นจาก OB — Price: {{close}}")
+alertcondition(swing_bear_filt,    title="SWING SELL (OB Entry)",   message="SAT: SWING SELL [{{ticker}} {{interval}}] — เล่น swing ลงจาก OB — Price: {{close}}")
+alertcondition(sweep_low,          title="Liquidity Sweep Low",     message="SAT: Sweep Low detected [{{ticker}}] — Price: {{close}}")
+alertcondition(sweep_high,         title="Liquidity Sweep High",    message="SAT: Sweep High detected [{{ticker}}] — Price: {{close}}")
+alertcondition(choch_bull,         title="CHoCH Bullish",           message="SAT: CHoCH BULL [{{ticker}}] — swing เปลี่ยนทิศขึ้น — Price: {{close}}")
+alertcondition(choch_bear,         title="CHoCH Bearish",           message="SAT: CHoCH BEAR [{{ticker}}] — swing เปลี่ยนทิศลง — Price: {{close}}")

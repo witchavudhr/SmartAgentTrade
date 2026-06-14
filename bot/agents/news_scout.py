@@ -7,8 +7,16 @@ News Scout — เช็ค Economic Calendar
 import requests
 import anthropic
 import json
+import os
 from datetime import datetime, timedelta
-from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, NEWS_BLOCK_MINUTES
+from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, NEWS_BLOCK_MINUTES, NEWS_ENABLED
+from agents.json_utils import safe_json_parse
+
+FMP_API_KEY     = os.getenv("FMP_API_KEY", "")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+
+# บล็อกหลังข่าวออกแล้วด้วย (ราคายังผันผวน)
+NEWS_BLOCK_AFTER_MINUTES = 30
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -35,49 +43,59 @@ HIGH_IMPACT_EVENTS = [
 
 
 def fetch_calendar() -> list:
-    """ดึง economic calendar จาก ForexFactory (scraping) หรือ fallback API"""
+    """
+    ดึง economic calendar — ลองตามลำดับ:
+    1. FMP API (ถ้ามี FMP_API_KEY)
+    2. Finnhub API (ถ้ามี FINNHUB_API_KEY)
+    3. ไม่มีข่าว (empty list) — ไม่ใช้ mock ที่ทำให้ block logic เสีย
+    """
     today = datetime.now().strftime("%Y-%m-%d")
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    try:
-        # ใช้ FMP API (Financial Modeling Prep) — free tier 250 calls/day
-        url = f"https://financialmodelingprep.com/api/v3/economic_calendar"
-        params = {
-            "from": today,
-            "to": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
-            "apikey": "demo"  # ใส่ key จริงใน .env ทีหลัง
-        }
-        resp = requests.get(url, params=params, timeout=10)
+    # ── 1. FMP API ──────────────────────────────────────────
+    if FMP_API_KEY:
+        try:
+            resp = requests.get(
+                "https://financialmodelingprep.com/api/v3/economic_calendar",
+                params={"from": today, "to": tomorrow, "apikey": FMP_API_KEY},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    return data
+        except Exception:
+            pass
 
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list):
-                return data
+    # ── 2. Finnhub economic calendar ────────────────────────
+    if FINNHUB_API_KEY:
+        try:
+            resp = requests.get(
+                "https://finnhub.io/api/v1/calendar/economic",
+                params={"from": today, "to": tomorrow, "token": FINNHUB_API_KEY},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                events = data.get("economicCalendar", [])
+                normalized = []
+                for e in events:
+                    normalized.append({
+                        "event":   e.get("event", ""),
+                        "date":    e.get("time", ""),
+                        "country": e.get("country", ""),
+                        "impact":  "High" if e.get("impact", 0) >= 3 else "Medium" if e.get("impact", 0) >= 2 else "Low",
+                        "actual":  e.get("actual"),
+                        "estimate": e.get("estimate"),
+                        "previous": e.get("prev"),
+                    })
+                if normalized:
+                    return normalized
+        except Exception:
+            pass
 
-    except Exception:
-        pass
-
-    # Fallback: mock data สำหรับทดสอบ
-    now = datetime.now()
-    return [
-        {
-            "event": "Core CPI (MoM)",
-            "date": (now + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
-            "country": "US",
-            "impact": "High",
-            "actual": None,
-            "estimate": "0.3%",
-            "previous": "0.4%"
-        },
-        {
-            "event": "FOMC Meeting Minutes",
-            "date": (now + timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S"),
-            "country": "US",
-            "impact": "High",
-            "actual": None,
-            "estimate": None,
-            "previous": None
-        }
-    ]
+    # ── 3. No data — คืน empty (ดีกว่า mock ที่ทำ block logic เสีย) ──
+    return []
 
 
 def filter_gold_events(events: list) -> list:
@@ -98,7 +116,11 @@ def filter_gold_events(events: list) -> list:
 
 
 def get_upcoming_news(minutes_ahead: int = 120) -> list:
-    """หาข่าวที่จะเกิดใน X นาทีข้างหน้า"""
+    """
+    หาข่าวในช่วง block window:
+    - ก่อนข่าว: 0 ถึง minutes_ahead
+    - หลังข่าวออก: ยัง block อีก NEWS_BLOCK_AFTER_MINUTES นาที (ราคายังผันผวน)
+    """
     events = fetch_calendar()
     gold_events = filter_gold_events(events)
 
@@ -111,8 +133,12 @@ def get_upcoming_news(minutes_ahead: int = 120) -> list:
             event_time = datetime.strptime(event_time_str[:19], "%Y-%m-%d %H:%M:%S")
             minutes_until = (event_time - now).total_seconds() / 60
 
-            if 0 <= minutes_until <= minutes_ahead:
+            # ก่อนข่าว: รอ minutes_ahead นาที
+            # หลังข่าว: block ต่ออีก NEWS_BLOCK_AFTER_MINUTES นาที
+            in_block_window = -NEWS_BLOCK_AFTER_MINUTES <= minutes_until <= minutes_ahead
+            if in_block_window:
                 event["minutes_until"] = round(minutes_until)
+                event["is_past"] = minutes_until < 0
                 upcoming.append(event)
         except Exception:
             continue
@@ -124,14 +150,22 @@ def should_block_trade() -> tuple[bool, str]:
     """
     เช็คว่าควรบล็อก trade มั้ย
     Returns: (should_block, reason)
+    Block window: NEWS_BLOCK_MINUTES ก่อนข่าว + NEWS_BLOCK_AFTER_MINUTES หลังข่าว
     """
+    if not NEWS_ENABLED:
+        return False, ""
+
     upcoming = get_upcoming_news(minutes_ahead=NEWS_BLOCK_MINUTES)
 
     if upcoming:
         event = upcoming[0]
-        mins = event.get("minutes_until", 0)
-        name = event.get("event", "Unknown")
-        return True, f"⚠️ ข่าว **{name}** ในอีก {mins} นาที"
+        mins  = event.get("minutes_until", 0)
+        name  = event.get("event", "Unknown")
+        if event.get("is_past"):
+            passed = abs(mins)
+            remaining = NEWS_BLOCK_AFTER_MINUTES - passed
+            return True, f"⚠️ ข่าว **{name}** ออกไปแล้ว {passed} นาที — รอ {remaining} นาทีก่อนกลับมาเทรด"
+        return True, f"⚠️ ข่าว **{name}** ในอีก {mins} นาที — block {NEWS_BLOCK_MINUTES} นาทีก่อนข่าว"
 
     return False, ""
 
@@ -189,16 +223,9 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
             messages=[{"role": "user", "content": prompt}]
         )
 
-        text = response.content[0].text.strip()
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-
-        try:
-            result = json.loads(text)
-        except json.JSONDecodeError:
-            result = {
+        result = safe_json_parse(
+            response.content[0].text,
+            fallback={
                 "vote": "NO" if blocked else "YES",
                 "vote_reasoning": "มีข่าว High Impact — ระวังด้วย" if blocked else "ข่าวยังห่างพอ",
                 "risk_level": "medium",
@@ -206,8 +233,9 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
                 "block_until": None,
                 "key_event": upcoming[0].get("event") if upcoming else None,
                 "gold_impact": "volatile",
-                "reasoning": "มีข่าว High Impact — ระวังด้วย"
+                "reasoning": "JSON parse error — ใช้ fallback"
             }
+        )
     else:
         # ไม่มีข่าว → vote YES ทันที ไม่ต้องเรียก Claude
         result = {

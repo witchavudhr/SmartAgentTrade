@@ -48,6 +48,14 @@ def init_db():
     """)
 
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS meta (
+            key        TEXT PRIMARY KEY,
+            value      TEXT,
+            updated_at TEXT
+        )
+    """)
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp    TEXT NOT NULL,
@@ -364,6 +372,88 @@ def get_all_trades(action_filter: str = None, limit: int = 200) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
+def get_recent_loss_context(limit: int = 5) -> str:
+    """
+    ดึง loss ล่าสุด + เหตุผล (จาก notes field) สำหรับ inject เข้า supervisor prompt
+    เป็น feedback loop: supervisor รู้ว่า loss ครั้งก่อนเกิดเพราะอะไร
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT id, timestamp, signal, setup_type, session, confidence,
+               actual_entry, actual_exit, pnl_pips, notes, reasoning
+        FROM trades
+        WHERE action='confirmed' AND outcome='loss'
+        ORDER BY id DESC LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+
+    if not rows:
+        return ""
+
+    lines = [f"📉 *Loss ล่าสุด {len(rows)} ครั้ง — Supervisor ต้องอ่านก่อนตัดสินใจ:*"]
+    for r in rows:
+        tid, ts, sig, setup, sess, conf, entry, exit_, pips, notes, reasoning = r
+        pips_str = f"{pips:+.1f}p" if pips else "?"
+        note_str = f" | Why: {notes}" if notes else ""
+        lines.append(
+            f"  #{tid} [{ts[5:16]}] {sig} {setup or ''} conf={conf}% sess={sess or '?'}"
+            f" → {pips_str}{note_str}"
+        )
+
+    return "\n".join(lines)
+
+
+def save_loss_digest(digest: str):
+    """บันทึก loss lesson digest ลง meta cache."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO meta (key, value, updated_at) VALUES ('loss_digest', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+    """, (digest, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+
+def get_loss_lesson_digest() -> str:
+    """
+    ดึง digest ที่ Sonnet สรุปไว้แล้ว (cache) สำหรับ inject เข้า supervisor prompt
+    ถ้ายังไม่มี cache → ใช้ get_recent_loss_context() แบบ raw แทนชั่วคราว
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key='loss_digest'"
+    ).fetchone()
+    conn.close()
+    if row and row[0]:
+        return row[0]
+    return get_recent_loss_context(limit=3)
+
+
+def get_raw_losses_for_digest(limit: int = 10) -> list[dict]:
+    """ดึง loss ล่าสุดสำหรับ generate digest ใหม่."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT id, timestamp, signal, setup_type, session, confidence,
+               actual_entry, actual_exit, pnl_pips, notes
+        FROM trades
+        WHERE action='confirmed' AND outcome='loss'
+        ORDER BY id DESC LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0], "timestamp": r[1], "signal": r[2],
+            "setup_type": r[3], "session": r[4], "confidence": r[5],
+            "entry": r[6], "exit": r[7], "pnl_pips": r[8], "notes": r[9],
+        }
+        for r in rows
+    ]
+
+
 def get_summary() -> dict:
     init_db()
     conn = sqlite3.connect(DB_PATH)
@@ -482,23 +572,36 @@ def format_today_summary() -> str:
     if s["total"] == 0:
         return f"📅 *สรุปวันนี้ {s['date']}*\n━━━━━━━━━━━━━━━━━\nไม่มี trade วันนี้"
 
+    total_closed = s["wins"] + s["losses"]
     bar = "🟢" if s["total_pips"] >= 0 else "🔴"
-    wr_str = f"{s['win_rate']}%" if (s['wins'] + s['losses']) > 0 else "-"
+    wr_str = f"{s['win_rate']}%" if total_closed > 0 else "-"
 
     lines = [
         f"📅 *สรุปวันนี้ {s['date']}*",
         "━━━━━━━━━━━━━━━━━",
-        f"{bar} W`{s['wins']}` / L`{s['losses']}` | WR: `{wr_str}` | P&L: `{fmt_pts(s['total_pips'], sign=True)} จุด`",
+        f"📊 เทรดทั้งหมด: `{s['total']}` ไม้  (ปิดแล้ว `{total_closed}` | รอ `{s['pending']}`)",
+        f"{bar} W`{s['wins']}` / L`{s['losses']}` | WR: `{wr_str}`",
+        f"💰 P&L รวม: `{fmt_pts(s['total_pips'], sign=True)} จุด`",
         "",
         "*รายการเทรดวันนี้:*",
     ]
     for t in s["trades"]:
-        icon = "✅" if t["outcome"] == "win" else "❌" if t["outcome"] == "loss" else "⏳"
-        pips = f"{fmt_pts(t['pnl_pips'], sign=True)} จุด" if t["pnl_pips"] is not None else "pending"
-        lines.append(f"  {icon} `{t['time']}` {t['signal']} {t['stars'] or ''} `{pips}`")
+        if t["outcome"] == "win":
+            icon = "✅"
+            pips = f"+{fmt_pts(t['pnl_pips'])} จุด"
+        elif t["outcome"] == "loss":
+            icon = "❌"
+            pips = f"{fmt_pts(t['pnl_pips'], sign=True)} จุด"
+        elif t["outcome"] == "be":
+            icon = "➖"
+            pips = "0 จุด (BE)"
+        else:
+            icon = "⏳"
+            pips = "รอปิด"
+        lines.append(f"  {icon} `{t['time']}` {t['signal']} {t['stars'] or ''} — `{pips}`")
 
     if s["pending"] > 0:
-        lines.append(f"\n⏳ {s['pending']} trade ยังไม่บันทึกผล — ใช้ `/outcome`")
+        lines.append(f"\n_⏳ {s['pending']} ไม้ยังไม่ปิด — `/closetrade [ราคา]` เพื่อบันทึกผล_")
 
     return "\n".join(lines)
 

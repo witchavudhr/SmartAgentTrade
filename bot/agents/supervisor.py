@@ -23,7 +23,7 @@ def _md(text: str) -> str:
 from datetime import datetime
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
-from agents.trade_log import get_performance_summary
+from agents.trade_log import get_performance_summary, get_loss_lesson_digest
 from agents.json_utils import safe_json_parse
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -209,6 +209,17 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
     htf_detail     = bias.get('htf_level_detail', '')
 
     perf = get_performance_summary(days=30)
+    loss_ctx = get_loss_lesson_digest()
+
+    # Late NY session context
+    from agents.smc_engine import get_session
+    sess_now = get_session()
+    is_late_ny = sess_now.get("is_late_ny", False)
+    late_ny_warning = (
+        "\n⚠️ *LATE NY SESSION (00:00–04:00 Thai)* — liquidity ต่ำ spread กว้าง\n"
+        "   → ต้องการ confidence ≥ 75% + setup ชัดมาก (SWEEP_REJECT เท่านั้น)\n"
+        "   → ถ้า setup เป็น BULL_OB_ENTRY หรือ TREND_OB ให้ REJECT ก่อน รอ session ปกติ\n"
+    ) if is_late_ny else ""
 
     prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้าย APPROVE หรือ REJECT trade นี้
 Vote รวม {vote_score}/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง (ไม่ต้องนับเสียงข้างมาก)
@@ -216,6 +227,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 {perf}
 ⚠️ Performance ข้างบนเป็นแค่ context — ห้ามนำ WR% หรือ sample size มาตั้งเกณฑ์ confidence ขั้นต่ำ
    การ APPROVE/REJECT ดูจากเงื่อนไข OB/setup/RR เท่านั้น ไม่ใช่จาก WR ประวัติ
+{late_ny_warning}
+{loss_ctx}
 
 ═══ Agent Votes & Reasoning ═══
 🔍 Chart Analyst [{chart_vote_str}]
@@ -459,11 +472,27 @@ def format_alert(result: dict) -> str:
     else:
         entry_str = "N/A"
 
+    # คำนวณ entry mid สำหรับหาระยะ SL/TP
+    entry_mid = (entry[0] + entry[1]) / 2 if entry and len(entry) == 2 else (price or 0)
+
+    def _pts(price_a, price_b):
+        """ระยะห่างระหว่างสองราคา → จุด (×10)"""
+        if price_a and price_b:
+            return round(abs(float(price_a) - float(price_b)) * 10, 0)
+        return None
+
+    sl_pts  = _pts(entry_mid, sl)
+    tp_pts  = _pts(entry_mid, tp)
+    sl_line = f"  🛑 SL: `{sl}`" + (f"  _({int(sl_pts):,} จุด)_" if sl_pts else "") + "\n"
+
     # แสดง TP เป็น reference target (EA POS Guard จัดการ exit จริง)
     tp_ext = analysis.get("tp_extended")
-    tp_lines = f"  🎯 Target 1: `{tp}` _(EA จัดการ)_\n"
+    tp1_line = f"  🎯 TP: `{tp}`" + (f"  _({int(tp_pts):,} จุด)_" if tp_pts else "") + "  _(EA จัดการ)_\n"
+    tp_lines = tp1_line
     if tp_ext:
-        tp_lines += f"  🎯 Target 2 (Bear OB): `{tp_ext}`\n"
+        tp_ext_pts = _pts(entry_mid, tp_ext)
+        tp_lines += f"  🎯 TP2: `{tp_ext}`" + (f"  _({int(tp_ext_pts):,} จุด)_" if tp_ext_pts else "") + "\n"
+
     pyramid_plan = analysis.get("pyramid_plan")
     pyramid_line = f"\n📐 *Pyramid:* _{_md(str(pyramid_plan))}_\n" if pyramid_plan else ""
 
@@ -476,7 +505,7 @@ def format_alert(result: dict) -> str:
         f"━━━ จุดเข้า ━━━\n"
         f"{'🟢 BUY' if signal=='BUY' else '🔴 SELL'} zone: {entry_str}\n"
         f"{tp_lines}"
-        f"  🛑 SL: `{sl}`\n"
+        f"{sl_line}"
         f"  ⚖️ RR: `1:{rr}` | Lot: `{lot}` ({result.get('risk_pct')}%)\n"
         f"{pyramid_line}"
         f"━━━━━━━━━━━━━━━━━\n"

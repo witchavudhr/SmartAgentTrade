@@ -466,10 +466,114 @@ async def handle_question(update: Update, question: str):
 
 # ── Auto-execute helper ────────────────────────────────
 
+def _pyramid_lot(existing_lot: float) -> float:
+    """ไม้ pyramid ต้องใหญ่กว่าไม้แรก: ×1.5 (ปัดเป็น 0.01)"""
+    lot2 = round(max(0.01, (existing_lot or 0.01) * 1.5), 2)
+    from config.settings import MAX_LOT
+    return min(lot2, MAX_LOT)
+
+
+def _price_is_better(new_price: float, ex_price: float, direction: str) -> bool:
+    """BUY: ราคาใหม่ต้องต่ำกว่า (cheaper) | SELL: ราคาใหม่ต้องสูงกว่า (higher)"""
+    if direction == "BUY":
+        return new_price < ex_price
+    return new_price > ex_price
+
+
+async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
+    """
+    Pyramid auto-confirm — confidence > 70%
+    Execute MT5 ทันที + แจ้ง Telegram (ไม่รอกดปุ่ม)
+    ราคาไม้ 2 ต้องดีกว่าไม้ 1 | ล็อตใหญ่กว่าไม้ 1 (×1.5)
+    """
+    signal    = result.get("analysis", {})
+    direction = signal.get("signal", "?")
+    entry_raw = signal.get("entry_zone") or signal.get("entry")
+    sl_price  = signal.get("stop_loss") or signal.get("sl")
+    tp_price  = signal.get("take_profit") or signal.get("tp")
+    confidence = int(signal.get("confidence") or 0)
+
+    entry_price = (
+        (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
+        else float(entry_raw) if entry_raw else None
+    )
+
+    ex_tid   = existing_trade.get("trade_id", "?")
+    ex_dir   = existing_trade.get("direction", "?")
+    ex_entry = float(existing_trade.get("entry") or 0)
+    ex_lot   = float(existing_trade.get("lot") or 0.01)
+
+    # ตรวจราคา — ไม้ 2 ต้องดีกว่าไม้ 1
+    if entry_price and ex_entry and not _price_is_better(entry_price, ex_entry, direction):
+        diff = abs(entry_price - ex_entry)
+        await send_fn(
+            f"⚠️ *Pyramid ข้าม — ราคาไม่ดีกว่าไม้แรก*\n"
+            f"ไม้ 1: `{ex_entry}` | ไม้ 2: `{entry_price}` (ห่าง `{diff:.2f}`)\n"
+            f"_{'BUY ต้องเข้าต่ำกว่าไม้แรก' if direction == 'BUY' else 'SELL ต้องเข้าสูงกว่าไม้แรก'}_",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ล็อตไม้ 2 ใหญ่กว่าไม้ 1
+    lot_val = _pyramid_lot(ex_lot)
+
+    trade_id = log_trade(signal, "confirmed")
+    state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    if entry_price and sl_price and direction in ("BUY", "SELL"):
+        open_trade = {
+            "entry":            entry_price,
+            "original_sl":      float(sl_price),
+            "current_sl":       float(sl_price),
+            "tp":               float(tp_price) if tp_price else None,
+            "direction":        direction,
+            "lot":              lot_val,
+            "trade_id":         trade_id,
+            "peak_price":       entry_price,
+            "opened_at":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reentry_analyzed": False,
+        }
+        state_manager.set_field(bot_state, "open_trade", open_trade)
+
+    mt5_tag = ""
+    if mt5_executor.is_available() and entry_price and sl_price and direction in ("BUY", "SELL"):
+        ex = mt5_executor.open_trade(
+            direction=direction,
+            lot=lot_val,
+            sl=float(sl_price),
+            tp=0.0,
+            comment=f"SAT-{trade_id}-PYR",
+        )
+        if "ticket" in ex:
+            mt5_tag = f"\n✅ *MT5:* Ticket `{ex['ticket']}` @ `{ex['price']}`"
+            ot_upd = bot_state.get("open_trade", {})
+            ot_upd["mt5_ticket"] = ex["ticket"]
+            state_manager.set_field(bot_state, "open_trade", ot_upd)
+        else:
+            mt5_tag = f"\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`"
+    else:
+        mt5_tag = "\n📋 _MT5 ไม่ได้เชื่อม — เปิด trade เองใน MT5_"
+
+    dir_icon = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
+    await send_fn(
+        f"🔺 *Pyramid Auto-Confirmed — Trade #{trade_id}*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"⚡ confidence {confidence}% > 70% → execute อัตโนมัติ\n"
+        f"เพิ่มไม้ {dir_icon} เข้าไม้เดิม #{ex_tid}\n\n"
+        f"Entry: `{entry_raw}`\n"
+        f"SL: `{sl_price}`  TP: `{tp_price}`\n"
+        f"Lot: `{lot_val}`"
+        + mt5_tag +
+        f"\n\n`/closetrade` เมื่อปิด position",
+        parse_mode="Markdown",
+    )
+
+
 async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
     """
     Advisory mode — มี open trade ค้างอยู่
     แสดง signal ใหม่ + confidence score + ปุ่มให้กดเองถ้าอยากเปิดเพิ่ม
+    ไม้ 2 ต้องราคาดีกว่า + lot ใหญ่กว่าไม้ 1
     """
     signal    = result.get("analysis", {})
     direction = signal.get("signal", "?")
@@ -478,10 +582,14 @@ async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
     tp        = signal.get("take_profit") or signal.get("tp")
     rr        = signal.get("rr_ratio", "?")
 
-    # Confidence score — ใช้จาก supervisor ถ้ามี, fallback vote_score
+    entry_price = (
+        (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
+        else float(entry_raw) if entry_raw else None
+    )
+
+    # Confidence score
     sup_conf  = result.get("supervisor_confidence") or (
-        result.get("analysis", {}).get("confidence") or
-        round((result.get("vote_score", 0) / 3) * 100)
+        signal.get("confidence") or round((result.get("vote_score", 0) / 3) * 100)
     )
     if isinstance(sup_conf, str) and sup_conf.endswith("%"):
         sup_conf = int(sup_conf.rstrip("%"))
@@ -490,15 +598,27 @@ async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
 
     # ไม้ที่ค้างอยู่
     ex_dir    = existing_trade.get("direction", "?")
-    ex_entry  = existing_trade.get("entry", "?")
+    ex_entry  = float(existing_trade.get("entry") or 0)
+    ex_lot    = float(existing_trade.get("lot") or 0.01)
     ex_tid    = existing_trade.get("trade_id", "?")
 
-    # สี direction
+    # คำนวณ lot ไม้ 2 (ใหญ่กว่าไม้ 1)
+    lot2 = _pyramid_lot(ex_lot)
+    signal["lot"] = lot2  # override lot เป็น lot2
+
+    # ตรวจราคา
+    price_ok = True
+    price_warn = ""
+    if entry_price and ex_entry and direction in ("BUY", "SELL"):
+        price_ok = _price_is_better(entry_price, ex_entry, direction)
+        if not price_ok:
+            price_warn = f"\n⚠️ _ราคาไม่ดีกว่าไม้แรก — ไม้ 1: `{ex_entry}` ไม้ 2: `{entry_price}`_"
+
     dir_icon  = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
     same_dir  = direction == ex_dir
-    dir_note  = "↗ ทิศเดียวกัน (scale-in?)" if same_dir else "↔ ทิศตรงข้าม (hedge?)"
+    dir_note  = "↗ Pyramid ทิศเดียวกัน" if same_dir else "↔ ทิศตรงข้าม (hedge)"
 
-    # เก็บ signal ไว้สำหรับ callback กด "เปิดเพิ่ม"
+    # เก็บ signal ไว้สำหรับ callback
     bot_state["pending_signal"] = signal
     state_manager.save(bot_state)
 
@@ -508,15 +628,17 @@ async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
     ]])
 
     await send_fn(
-        f"📡 *Setup ใหม่พบ — Advisory*\n"
+        f"📡 *Setup ใหม่ — Pyramid Alert*\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ มีไม้ค้าง: `{ex_dir}` #{ex_tid} @ `{ex_entry}`\n"
+        f"ไม้ 1: `{ex_dir}` #{ex_tid} @ `{ex_entry}` (lot `{ex_lot}`)\n"
         f"_({dir_note})_\n\n"
-        f"*Signal:* {dir_icon}\n"
+        f"*ไม้ 2:* {dir_icon}\n"
         f"Entry: `{entry_raw}`\n"
-        f"SL: `{sl}` | TP: `{tp}` | RR: `{rr}`\n\n"
-        f"🎯 *Confidence: {conf_bar}*\n\n"
-        f"กดเปิดเพิ่มเอง หรือข้ามได้เลย",
+        f"SL: `{sl}` | TP: `{tp}` | RR: `{rr}`\n"
+        f"Lot ไม้ 2: `{lot2}` (×1.5 จากไม้ 1)"
+        + price_warn +
+        f"\n\n🎯 *Confidence: {conf_bar}*\n\n"
+        f"กดเปิดเพิ่ม หรือข้าม",
         parse_mode="Markdown",
         reply_markup=keyboard,
     )
@@ -537,45 +659,71 @@ async def _handle_scan_result(result: dict, send_fn):
     from agents.smc_engine import get_session
 
     if result.get("approved"):
-        # ── เช็คว่ามี open trade ค้างอยู่หรือไม่ ─────────────────
-        existing_trade = bot_state.get("open_trade")
-        if existing_trade:
-            # Cross-check กับ MT5 จริง — ถ้า ticket ปิดไปแล้ว clear state อัตโนมัติ
-            stale = False
-            ticket = existing_trade.get("mt5_ticket")
-            if ticket:
-                try:
-                    positions = mt5_executor.get_open_positions()
-                    tickets_open = {p["ticket"] for p in positions}
-                    if ticket not in tickets_open:
-                        stale = True
-                except Exception:
-                    pass
-            else:
-                # ไม่มี ticket (paper trade หรือ manual) — เช็คจาก MT5 positions ทั่วไป
-                try:
-                    positions = mt5_executor.get_open_positions()
-                    if not positions:
-                        stale = True
-                except Exception:
-                    pass
+        # ── เช็ค MT5 โดยตรง — source of truth ──────────────────
+        mt5_positions = []
+        if mt5_executor.is_available():
+            try:
+                mt5_positions = mt5_executor.get_open_positions()
+            except Exception:
+                pass
 
-            if stale:
+        # sync state ให้ตรงกับ MT5 เสมอ
+        existing_trade = bot_state.get("open_trade")
+        if existing_trade and mt5_executor.is_available():
+            ticket = existing_trade.get("mt5_ticket")
+            open_tickets = {p["ticket"] for p in mt5_positions}
+            if ticket and ticket not in open_tickets:
                 state_manager.set_field(bot_state, "open_trade", None)
                 existing_trade = None
-                print(f"[notifier] 🧹 open_trade state cleared — MT5 position already closed")
+                print(f"[notifier] 🧹 open_trade state cleared — MT5 position closed")
+            elif not ticket and not mt5_positions:
+                state_manager.set_field(bot_state, "open_trade", None)
+                existing_trade = None
+
+        # ถ้า MT5 มีไม้แต่ state ไม่รู้ → restore
+        if mt5_positions and not existing_trade:
+            pos = mt5_positions[0]
+            existing_trade = {
+                "direction":   pos["direction"],
+                "trade_id":    f"MT5-{pos['ticket']}",
+                "mt5_ticket":  pos["ticket"],
+                "entry":       pos["entry"],
+                "lot":         sum(p["lot"] for p in mt5_positions),
+            }
+            state_manager.set_field(bot_state, "open_trade", existing_trade)
+            print(f"[notifier] 🔄 Restored open_trade from MT5: {pos['direction']} ticket={pos['ticket']}")
 
         if existing_trade:
             ex_dir = existing_trade.get("direction", "?")
             ex_tid = existing_trade.get("trade_id", "?")
-            await _safe_send(
-                send_fn,
-                f"🔒 *มีไม้ค้างอยู่ — ข้าม setup นี้*\n"
-                f"Trade #{ex_tid} ({ex_dir}) ยังเปิดอยู่\n"
-                f"_ปิดก่อนด้วย `/closetrade` แล้วค่อย scan ใหม่_",
-                parse_mode="Markdown"
-            )
-            return
+            new_dir = result.get("analysis", {}).get("signal", "")
+
+            if new_dir == ex_dir:
+                # inject lot + session ก่อนทุก path
+                _sig = result.get("analysis", {})
+                _sig["lot"]      = result.get("lot")
+                _sig["risk_pct"] = result.get("risk_pct")
+                _sig["session"]  = get_session().get("session")
+                result["analysis"] = _sig
+
+                confidence = int(_sig.get("confidence") or 0)
+                if confidence > 70:
+                    # Auto-confirm pyramid ทันที
+                    print(f"[notifier] 🔺 Auto-pyramid — confidence={confidence}% > 70%")
+                    await _execute_pyramid_auto(result, existing_trade, send_fn)
+                else:
+                    print(f"[notifier] 🔺 Advisory pyramid — confidence={confidence}% ≤ 70%")
+                    await _send_advisory_alert(result, existing_trade, send_fn)
+                return
+            else:
+                await _safe_send(
+                    send_fn,
+                    f"🔒 *มีไม้ {ex_dir} ค้างอยู่ — ห้ามเปิด {new_dir} สวน*\n"
+                    f"Trade #{ex_tid} ยังเปิดอยู่\n"
+                    f"_ปิดก่อนด้วย `/closetrade` แล้วค่อย scan ใหม่_",
+                    parse_mode="Markdown"
+                )
+                return
         signal = result.get("analysis", {})
         signal["lot"]      = result.get("lot")
         signal["risk_pct"] = result.get("risk_pct")
@@ -784,6 +932,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sl_price = signal.get("stop_loss") or signal.get("sl")
         tp_price = signal.get("take_profit") or signal.get("tp")
         direction = signal.get("signal")
+        mt5_tag = ""
         if entry_price and sl_price and direction in ("BUY", "SELL"):
             open_trade = {
                 "entry":           entry_price,
@@ -799,6 +948,26 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             }
             state_manager.set_field(bot_state, "open_trade", open_trade)
 
+            # ── MT5 Execute ──────────────────────────────────────
+            if mt5_executor.is_available():
+                lot_val = float(signal.get("lot") or 0.01)
+                ex = mt5_executor.open_trade(
+                    direction=direction,
+                    lot=lot_val,
+                    sl=float(sl_price),
+                    tp=0.0,
+                    comment=f"SAT-{trade_id}",
+                )
+                if "ticket" in ex:
+                    mt5_tag = f"\n✅ *MT5:* Ticket `{ex['ticket']}` @ `{ex['price']}`"
+                    ot_upd = bot_state.get("open_trade", {})
+                    ot_upd["mt5_ticket"] = ex["ticket"]
+                    state_manager.set_field(bot_state, "open_trade", ot_upd)
+                else:
+                    mt5_tag = f"\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
+            else:
+                mt5_tag = "\n\n📋 _MT5_ENABLED=false — กรุณาเปิด trade เองใน MT5_"
+
         await query.edit_message_text(
             f"✅ *Confirmed — Trade #{trade_id}*\n"
             f"━━━━━━━━━━━━━━━━━\n"
@@ -806,8 +975,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Entry: `{entry_raw}`\n"
             f"SL: `{signal.get('stop_loss') or signal.get('sl')}`  "
             f"TP: `{signal.get('take_profit') or signal.get('tp')}`\n"
-            f"Lot: `{signal.get('lot', '-')}`\n\n"
-            f"📡 Trailing monitor เริ่มทำงานแล้ว (trail 1000p)\n"
+            f"Lot: `{signal.get('lot', '-')}`"
+            + mt5_tag +
+            f"\n\n📡 Trailing monitor เริ่มทำงานแล้ว (trail 1000p)\n"
             f"🍀 โชคดี! หลังเทรดเสร็จ:\n"
             f"`/outcome {trade_id} win 150 3310`\n"
             f"`/closetrade {entry_price}` — ปิด monitor",
@@ -1040,20 +1210,114 @@ REENTRY_MIN_PROFIT = 200   # ต้องเคย profit อย่างน้�
 REENTRY_NEAR_ENTRY = 50    # ราคาอยู่ห่างจาก entry ≤ 50p ถือว่า "กลับมาแล้ว"
 
 
+async def _refresh_loss_digest():
+    """เรียก Sonnet สรุป pattern จาก loss ล่าสุด 10 เทรด → save digest cache."""
+    try:
+        import anthropic
+        from config.settings import CLAUDE_API_KEY
+        from agents.trade_log import get_raw_losses_for_digest, save_loss_digest
+
+        losses = get_raw_losses_for_digest(limit=10)
+        if not losses:
+            return
+
+        lines = []
+        for t in losses:
+            pips = f"{t['pnl_pips']:+.1f}p" if t["pnl_pips"] else "?"
+            why  = f" | Why: {t['notes']}" if t.get("notes") else ""
+            lines.append(
+                f"#{t['id']} {t['signal']} {t['setup_type'] or ''} "
+                f"conf={t['confidence']}% sess={t['session'] or '?'} "
+                f"→ {pips}{why}"
+            )
+
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=300,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Loss trades ล่าสุดของ XAUUSD bot:\n" + "\n".join(lines) + "\n\n"
+                    "สรุปเป็น 3 bullet points (ภาษาไทย) ว่า Supervisor ควรระวังอะไร "
+                    "เพื่อหลีกเลี่ยง loss pattern แบบนี้ในครั้งต่อไป "
+                    "ให้กระชับ actionable เช่น setup ไหนควร reject, session ไหนอันตราย, "
+                    "confidence threshold ที่ควรยก ขึ้นต้นแต่ละ bullet ด้วย •"
+                )
+            }]
+        )
+        digest = "⚠️ *บทเรียนจาก loss ล่าสุด — Supervisor ระวัง:*\n" + resp.content[0].text.strip()
+        save_loss_digest(digest)
+        print(f"[loss_digest] refreshed — {len(losses)} trades analyzed")
+    except Exception as e:
+        print(f"[loss_digest] refresh error: {e}")
+
+
+async def _analyze_loss_reason(ot: dict, entry: float, exit_price: float,
+                               pnl_pips: float, duration_min) -> str | None:
+    """Call Haiku to analyze why this trade lost — returns 1-sentence reason."""
+    try:
+        import anthropic, sqlite3
+        from config.settings import CLAUDE_API_KEY
+        from agents.trade_log import DB_PATH, init_db
+
+        direction  = ot.get("direction", "?")
+        dur_str    = f"{duration_min} นาที" if duration_min else "ไม่ทราบ"
+
+        # pull extra context from DB
+        setup_type = session = sl = tp = reasoning = confidence = None
+        trade_id = ot.get("trade_id")
+        if trade_id:
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute(
+                "SELECT setup_type, session, sl, tp, reasoning, confidence "
+                "FROM trades WHERE id=?", (int(trade_id),)
+            ).fetchone()
+            conn.close()
+            if row:
+                setup_type, session, sl, tp, reasoning, confidence = row
+
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        prompt = (
+            f"Trade นี้ขาดทุน {abs(pnl_pips):.1f} pips\n"
+            f"Direction: {direction} | Setup: {setup_type or '?'} | Session: {session or '?'}\n"
+            f"Entry: {entry} | Exit: {exit_price} | SL: {sl or '?'} | TP: {tp or '?'}\n"
+            f"Confidence เดิม: {confidence or '?'}% | Duration: {dur_str}\n"
+            f"Reasoning เดิม: {(reasoning or '')[:300] or 'ไม่มี'}\n\n"
+            "วิเคราะห์ใน 1 ประโยค (ภาษาไทย) ว่าทำไมเทรดนี้ถึงขาดทุน "
+            "เช่น entry ผิดจุด, bias ผิด, ข่าว, SL ใกล้เกินไป, หรือ market structure เปลี่ยน"
+        )
+
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        reason = resp.content[0].text.strip()
+        print(f"[loss_analysis] trade#{trade_id}: {reason}")
+        return reason
+    except Exception as e:
+        print(f"[loss_analysis] error: {e}")
+        return None
+
+
 async def cmd_closetrade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    /closetrade [exit_price] — ปิด open trade monitor
+    /closetrade [exit_price] — ปิด MT5 position + monitor
     ตัวอย่าง: /closetrade 4350
     """
+    from agents.json_utils import fmt_pts
+
     ot = bot_state.get("open_trade")
     if not ot:
         await update.message.reply_text("ℹ️ ไม่มี trade ที่กำลัง monitor อยู่")
         return
 
-    exit_price = None
+    exit_price_arg = None
     if ctx.args:
         try:
-            exit_price = float(ctx.args[0])
+            exit_price_arg = float(ctx.args[0])
         except ValueError:
             pass
 
@@ -1061,20 +1325,69 @@ async def cmd_closetrade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry      = ot.get("entry", 0)
     peak       = ot.get("peak_price", entry)
     trade_id   = ot.get("trade_id")
-    pnl_str    = ""
-    if exit_price:
-        pnl = (exit_price - entry) if direction == "BUY" else (entry - exit_price)
-        pnl_str = f"\nP&L ประมาณ: `{pnl:+.1f}p`"
+    ticket     = ot.get("mt5_ticket")
+
+    # ── ปิด MT5 position จริง ──────────────────────────────────────
+    mt5_tag = ""
+    actual_exit = exit_price_arg
+    if mt5_executor.is_available() and ticket:
+        ex = mt5_executor.close_trade(int(ticket))
+        if "close_price" in ex:
+            actual_exit = ex["close_price"]
+            mt5_tag = f"\n✅ *MT5 ปิดแล้ว* — Ticket `{ticket}` @ `{actual_exit}`"
+        else:
+            mt5_tag = f"\n⚠️ MT5 ปิดไม่สำเร็จ: `{ex.get('error','?')}`\n_ปิดเองใน MT5 ด้วย_"
+    elif mt5_executor.is_available() and not ticket:
+        # ไม่มี ticket — ลอง close ทุก position
+        positions = mt5_executor.get_open_positions()
+        for p in positions:
+            mt5_executor.close_trade(p["ticket"])
+        mt5_tag = f"\n✅ ปิดทุก MT5 position ({len(positions)} ไม้)"
+        if positions:
+            actual_exit = positions[0].get("entry")
+
+    # ── คำนวณ P&L ──────────────────────────────────────────────────
+    pnl_str = ""
+    outcome = None
+    if actual_exit and entry:
+        pnl_raw = (actual_exit - entry) if direction == "BUY" else (entry - actual_exit)
+        pnl_pips = round(pnl_raw * 10, 1)
+        outcome = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+        icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
+        pnl_str = f"\n{icon} *P&L: `{fmt_pts(pnl_pips, sign=True)} จุด`* (`{pnl_pips:+.1f} pips`)"
+
+        # auto-update outcome ใน DB
+        if trade_id:
+            from agents.trade_log import update_outcome
+            from datetime import datetime
+            opened_at = ot.get("opened_at")
+            duration = None
+            if opened_at:
+                try:
+                    dt_open = datetime.strptime(opened_at, "%Y-%m-%d %H:%M:%S")
+                    duration = int((datetime.now() - dt_open).total_seconds() / 60)
+                except Exception:
+                    pass
+
+            loss_notes = None
+            if outcome == "loss":
+                loss_notes = await _analyze_loss_reason(ot, entry, actual_exit, pnl_pips, duration)
+
+            update_outcome(int(trade_id), outcome, pnl_pips,
+                           actual_entry=entry, actual_exit=actual_exit,
+                           duration_min=duration, notes=loss_notes)
+
+            if outcome == "loss":
+                await _refresh_loss_digest()
 
     state_manager.set_field(bot_state, "open_trade", None)
 
     await update.message.reply_text(
-        f"🔴 *Trade Monitor ปิดแล้ว*\n"
+        f"🔴 *Trade ปิดแล้ว — #{trade_id}*\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"Trade #{trade_id} | {direction} | Entry: `{entry}`\n"
+        f"{direction} | Entry: `{entry}` → Exit: `{actual_exit or '?'}`\n"
         f"Peak ที่เคยถึง: `{peak}`"
-        + pnl_str
-        + (f"\n\nบันทึกผล: `/outcome {trade_id} win/loss/be [จุด]`" if trade_id else ""),
+        + pnl_str + mt5_tag,
         parse_mode="Markdown"
     )
 
@@ -1325,10 +1638,16 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
     session_label = (ctx.job.data or {}).get("session_label", "🔍 Auto Scan")
 
+    # ── ข้ามถ้าตลาดปิด (วันหยุด / weekend) ──────────────
+    from agents.smc_engine import is_market_holiday
+    mkt_closed, holiday_name = is_market_holiday()
+    if mkt_closed:
+        print(f"[auto_scan] 🚫 ตลาดปิด — {holiday_name}")
+        return
+
     # ── ข้ามถ้ามีข่าว High Impact ──────────────────────
     blocked, block_reason = news_scout.should_block_trade()
     if blocked:
-        # ไม่ส่ง message เพื่อลด noise — แค่ skip เงียบๆ
         return
 
     # แจ้งว่าเริ่ม scan session ไหน
@@ -1349,28 +1668,55 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 # ── Main ───────────────────────────────────────────────
 
 def _startup_clear_stale_trade():
-    """ตอน startup เช็ค open_trade state ว่ายังมี position ใน MT5 จริงไหม
-    ถ้าไม่มี → clear state ป้องกัน false-lock หลัง restart"""
-    existing = bot_state.get("open_trade")
-    if not existing:
-        return
+    """ตอน startup:
+    1. ถ้า bot มี open_trade แต่ MT5 ไม่มีแล้ว → clear state
+    2. ถ้า MT5 มีไม้อยู่แต่ bot ไม่รู้ → restore state จาก MT5
+    """
     try:
         positions = mt5_executor.get_open_positions()
+    except Exception as e:
+        print(f"[startup] ⚠️ Could not connect to MT5: {e}")
+        return
+
+    existing = bot_state.get("open_trade")
+
+    # ── Case 1: bot มี state แต่ MT5 ปิดไปแล้ว ──────────────
+    if existing:
         ticket = existing.get("mt5_ticket")
-        if ticket:
-            open_tickets = {p["ticket"] for p in positions}
-            stale = ticket not in open_tickets
-        else:
-            stale = len(positions) == 0
+        open_tickets = {p["ticket"] for p in positions}
+        stale = (ticket and ticket not in open_tickets) or (not ticket and not positions)
         if stale:
             state_manager.set_field(bot_state, "open_trade", None)
             tid = existing.get("trade_id", "?")
             print(f"[startup] 🧹 Trade #{tid} state cleared — no matching MT5 position")
+            existing = None
         else:
             tid = existing.get("trade_id", "?")
             print(f"[startup] ✅ Trade #{tid} still open in MT5 — keeping state")
-    except Exception as e:
-        print(f"[startup] ⚠️ Could not verify open_trade vs MT5: {e}")
+
+    # ── Case 2: MT5 มีไม้แต่ bot ไม่รู้ → restore ──────────
+    if not existing and positions:
+        # รวม positions ทุกไม้ที่เปิดอยู่
+        pos = positions[0]  # ใช้ไม้แรก (oldest) เป็น reference
+        all_tickets = [p["ticket"] for p in positions]
+        restored = {
+            "entry":        pos["entry"],
+            "direction":    pos["direction"],
+            "original_sl":  pos["sl"],
+            "current_sl":   pos["sl"],
+            "tp":           pos["tp"] or None,
+            "lot":          sum(p["lot"] for p in positions),
+            "mt5_ticket":   pos["ticket"],
+            "mt5_tickets":  all_tickets,
+            "trade_id":     f"MT5-{pos['ticket']}",
+            "peak_price":   pos["entry"],
+            "opened_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "restored":     True,
+            "pyramid_waiting": len(positions) > 1,
+        }
+        state_manager.set_field(bot_state, "open_trade", restored)
+        dirs = set(p["direction"] for p in positions)
+        print(f"[startup] 🔄 Restored {len(positions)} MT5 position(s) → Trade MT5-{pos['ticket']} {dirs} lot={restored['lot']}")
 
 
 def run():
