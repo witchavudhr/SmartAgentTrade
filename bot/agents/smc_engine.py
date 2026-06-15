@@ -1201,6 +1201,87 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
     }
 
 
+# ─── EQL / EQH Sweep Detector ────────────────────────────────────
+
+def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20) -> dict:
+    """
+    ตรวจ EQL_SWEEP_BUY / EQH_SWEEP_SELL — Liquidity Sweep Entry
+
+    EQL_SWEEP_BUY:
+      - มี EQL (equal lows) → ดูด sell-side liquidity อยู่
+      - ใน lookback bars ราคาเคยลงไปต่ำกว่า EQL (sweep)
+      - ตอนนี้ราคากลับขึ้นเหนือ EQL แล้ว
+      - ไม่มี new low หลัง sweep (buyer เริ่มควบคุม)
+
+    EQH_SWEEP_SELL:
+      - มี EQH (equal highs) → ดูด buy-side liquidity อยู่
+      - ใน lookback bars ราคาเคยขึ้นไปสูงกว่า EQH (sweep)
+      - ตอนนี้ราคาลงมาต่ำกว่า EQH แล้ว
+      - ไม่มี new high หลัง sweep (seller เริ่มควบคุม)
+    """
+    if df is None or len(df) < 10:
+        return {"eql_sweep_signal": None, "eqh_sweep_signal": None}
+
+    current_price = df['close'].iloc[-1]
+    lb = min(lookback, len(df) - 1)
+    recent = df.iloc[-lb:]
+
+    eql_sweep_signal = None
+    eqh_sweep_signal = None
+
+    # ── EQL Sweep → BUY ────────────────────────────────────────
+    for eql in sorted(result.equal_lows):
+        swept = recent[recent['low'] < eql]
+        if swept.empty:
+            continue
+        sweep_low  = swept['low'].min()
+        sweep_iloc = recent['low'].values.argmin()  # position in recent slice
+
+        # ราคาปัจจุบันต้องกลับขึ้นมาเหนือ EQL แล้ว
+        if current_price <= eql:
+            continue
+
+        # ไม่ควรมี new low หลังจุด sweep (bars after sweep_iloc in recent)
+        after = recent.iloc[sweep_iloc + 1:]
+        if not after.empty and after['low'].min() < sweep_low:
+            continue  # มี new low — ยังไม่ bounce จริง
+
+        eql_sweep_signal = {
+            "signal":    "EQL_SWEEP_BUY",
+            "eql_level": round(eql, 2),
+            "sweep_low": round(sweep_low, 2),
+            "recovery":  round(current_price - eql, 2),
+        }
+        break
+
+    # ── EQH Sweep → SELL ───────────────────────────────────────
+    for eqh in sorted(result.equal_highs, reverse=True):
+        swept = recent[recent['high'] > eqh]
+        if swept.empty:
+            continue
+        sweep_high  = swept['high'].max()
+        sweep_iloc  = recent['high'].values.argmax()
+
+        # ราคาปัจจุบันต้องลงมาต่ำกว่า EQH แล้ว
+        if current_price >= eqh:
+            continue
+
+        # ไม่ควรมี new high หลังจุด sweep
+        after = recent.iloc[sweep_iloc + 1:]
+        if not after.empty and after['high'].max() > sweep_high:
+            continue  # มี new high — ยังไม่ reject จริง
+
+        eqh_sweep_signal = {
+            "signal":     "EQH_SWEEP_SELL",
+            "eqh_level":  round(eqh, 2),
+            "sweep_high": round(sweep_high, 2),
+            "rejection":  round(eqh - current_price, 2),
+        }
+        break
+
+    return {"eql_sweep_signal": eql_sweep_signal, "eqh_sweep_signal": eqh_sweep_signal}
+
+
 # ─── Format Summary ───────────────────────────────────────────────
 
 def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) -> dict:
@@ -1354,5 +1435,14 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             summary["swing_score"]     = rev.get("swing_score", 0)
         except Exception:
             pass
+
+        # EQL / EQH Liquidity Sweep detection
+        try:
+            eql_eqh = detect_eql_eqh_sweep(df, result)
+            summary["eql_sweep_signal"] = eql_eqh.get("eql_sweep_signal")
+            summary["eqh_sweep_signal"] = eql_eqh.get("eqh_sweep_signal")
+        except Exception:
+            summary["eql_sweep_signal"] = None
+            summary["eqh_sweep_signal"] = None
 
     return summary

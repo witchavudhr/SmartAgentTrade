@@ -164,6 +164,13 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ TYPE_C — signal_type={signal_type}")
         return True
 
+    # ── ชั้น 5: EQL/EQH Liquidity Sweep signal ───────────────
+    eql_sweep = smc_summary.get("eql_sweep_signal")
+    eqh_sweep = smc_summary.get("eqh_sweep_signal")
+    if eql_sweep or eqh_sweep:
+        print(f"[has_signal] ✅ EQL/EQH SWEEP — eql={eql_sweep} eqh={eqh_sweep}")
+        return True
+
     print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob={has_ob} struct={has_structure} bias={bias} score={score}/3 bull_ob={bool(bull_ob)} bear_ob={bool(bear_ob)}")
     return False
 
@@ -318,6 +325,10 @@ Entry Zone: {rev.get('entry_zone')} | SL: {rev.get('stop_loss')} | TP: {rev.get(
 TP = next swing high/low เท่านั้น (ไม่คาด trend กลับ)
 """
 
+    # EQL/EQH sweep signals (computed by smc_engine)
+    eql_sweep = smc_summary.get("eql_sweep_signal")
+    eqh_sweep = smc_summary.get("eqh_sweep_signal")
+
     sweep_l_age = adv.get('sweep_l_age_bars') or 999
     sweep_h_age = adv.get('sweep_h_age_bars') or 999
     choch_age   = adv.get('choch_age_bars')   or 999
@@ -374,6 +385,8 @@ MARKET DATA
   Sweep: {m15.get('last_sweep','–')}
   FVG:   {m15.get('nearest_fvg','–')}
   EQH/EQL: {m15.get('equal_highs','–')} / {m15.get('equal_lows','–')}
+  🔍 EQL Sweep Signal: {eql_sweep or 'ไม่มี'}
+  🔍 EQH Sweep Signal: {eqh_sweep or 'ไม่มี'}
 
 📍 M5 — entry detail:
   M5 Bull OB:  {_fmt_ob(m5_bull_ob)}
@@ -471,6 +484,27 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
     dist_bear_ob > 1,000 จุด → TP ขยายได้
     dist_bear_ob > 2,000 จุด → high conviction swing
 
+── CASE C: EQL/EQH Liquidity Sweep Entry ────────────────
+ไม่ต้องรอ OB — liquidity ถูก sweep ไปแล้ว ราคา bounce/reject ทันที
+
+  🟢 C1 — EQL_SWEEP_BUY (ถ้า eql_sweep_signal ≠ null):
+    EQL swept → ดูด sell-side liquidity → ราคากลับขึ้นมาเหนือ EQL
+    เงื่อนไข: eql_level + sweep_low ชัดเจน + ราคาปัจจุบัน > eql_level
+    Entry: ราคาปัจจุบัน (หรือ limit ที่ eql_level)
+    SL: ต่ำกว่า sweep_low 5-10 จุด
+    TP: nearest_swing_high ที่คำนวณโดย code (ด้านบน)
+    → setup_type = EQL_SWEEP_BUY
+    confidence สูงขึ้นถ้ามี bull confirm candle
+
+  🔴 C2 — EQH_SWEEP_SELL (ถ้า eqh_sweep_signal ≠ null):
+    EQH swept → ดูด buy-side liquidity → ราคา reject ลงมาต่ำกว่า EQH
+    เงื่อนไข: eqh_level + sweep_high ชัดเจน + ราคาปัจจุบัน < eqh_level
+    Entry: ราคาปัจจุบัน (หรือ limit ที่ eqh_level)
+    SL: สูงกว่า sweep_high 5-10 จุด
+    TP: nearest_swing_low ที่คำนวณโดย code (ด้านล่าง)
+    → setup_type = EQH_SWEEP_SELL
+    confidence สูงขึ้นถ้ามี bear confirm candle
+
 ════════════════════════════════════════════
 STEP 3 — ตัดสินใจและโหวต
 ════════════════════════════════════════════
@@ -479,14 +513,16 @@ STEP 3 — ตัดสินใจและโหวต
 2. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
 3. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
 4. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
-5. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
+5. CASE C1 (eql_sweep_signal ≠ null) → YES, setup_type=EQL_SWEEP_BUY
+6. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
+7. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
 ตอบ JSON เท่านั้น:
 {{
   "vote": "YES/NO",
-  "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B + OB zone + เหตุผล",
+  "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "TREND_OB/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "TREND_OB/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/WAIT_FOR_OB/NO_TRADE",
   "trend_aligned": true ถ้า OB ที่ใกล้ตรงกับ macro trend หรือ false,
   "proximity_case": "A หรือ B",
   "pyramid_mode": true หรือ false,
