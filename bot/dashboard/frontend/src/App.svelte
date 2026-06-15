@@ -414,7 +414,7 @@
     <div class="s3">
       <div class="s3l">Best trade</div>
       <div class="s3v" style="color:#15803d">{fmtPnl(stats.best_trade ?? 0)}</div>
-      <div class="s3s">TREND_OB 15:00</div>
+      <div class="s3s">{stats.best_setup || '—'}</div>
     </div>
   </div>
 

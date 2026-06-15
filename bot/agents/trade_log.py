@@ -539,7 +539,7 @@ def get_recent_scans(n: int = 9) -> list[dict]:
 
 
 def get_dashboard_stats() -> dict:
-    """Real stats for dashboard — today P&L + all-time win rate."""
+    """Real stats for dashboard — today P&L + scan history bars."""
     init_db()
     conn = sqlite3.connect(DB_PATH)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -549,33 +549,43 @@ def get_dashboard_stats() -> dict:
         WHERE action='confirmed' AND DATE(timestamp)=?
     """, (today,)).fetchall()
 
-    today_pnl = sum(r[1] or 0 for r in today_trades)
+    recent_scans = conn.execute("""
+        SELECT approved, confidence FROM scan_log
+        ORDER BY id DESC LIMIT 20
+    """).fetchall()
+
+    best_setup_row = conn.execute("""
+        SELECT setup_type FROM scan_log
+        WHERE approved=1 AND DATE(timestamp)=?
+        ORDER BY confidence DESC LIMIT 1
+    """, (today,)).fetchone()
+
+    conn.close()
+
+    today_pnl  = sum(r[1] or 0 for r in today_trades)
     today_wins = sum(1 for r in today_trades if r[0] == "win")
     today_losses = sum(1 for r in today_trades if r[0] == "loss")
-    open_trades = sum(1 for r in today_trades if r[0] == "pending")
+    today_win_pips = [r[1] or 0 for r in today_trades if r[0] == "win"]
 
     summary = get_summary()
 
-    recent_trades = conn.execute("""
-        SELECT pnl_pips, outcome FROM trades
-        WHERE action='confirmed' ORDER BY id DESC LIMIT 10
-    """).fetchall()
-    conn.close()
-
+    # bars: scan history — green=approved, red=rejected, height=confidence
     trades_bar = []
-    for pnl, outcome in reversed(recent_trades):
-        r = "o" if outcome == "pending" else ("w" if outcome == "win" else "l")
-        trades_bar.append({"pnl": round(pnl or 0, 1), "r": r})
+    for approved, confidence in reversed(recent_scans):
+        trades_bar.append({
+            "pnl": round((confidence or 50) / 10, 1),
+            "r": "w" if approved else "l",
+        })
 
-    today_win_pips = [r[1] or 0 for r in today_trades if r[0] == "win"]
     return {
-        "today_pnl": round(today_pnl, 2),
-        "open_pnl": 0.0,
-        "win_rate": round(today_wins / (today_wins + today_losses) * 100, 1) if (today_wins + today_losses) > 0 else summary["win_rate"],
-        "wins": today_wins,
-        "losses": today_losses,
+        "today_pnl":  round(today_pnl, 2),
+        "open_pnl":   0.0,
+        "win_rate":   round(today_wins / (today_wins + today_losses) * 100, 1) if (today_wins + today_losses) > 0 else summary["win_rate"],
+        "wins":       today_wins,
+        "losses":     today_losses,
         "best_trade": round(max(today_win_pips, default=0), 2),
-        "trades": trades_bar,
+        "best_setup": best_setup_row[0] if best_setup_row else "",
+        "trades":     trades_bar,
     }
 
 
