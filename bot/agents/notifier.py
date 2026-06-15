@@ -1724,6 +1724,7 @@ def _build_scan_windows() -> list[tuple]:
     windows += _range(16, 30, 17, 30, ld, "🇬🇧 London Mid")       # London mid
     windows += _range(19,  0, 21,  0, nd, "🇺🇸 NY Session")       # NY open/mid
     windows += _range(22,  0, 23,  0, nd, "🇺🇸 NY Peak")          # NY peak
+    windows += _range(23, 15, 23, 45, nd, "🌙 NY Close")          # NY close 23:15-23:45
     windows += _range(1,   0,  2,  0, nd, "🌙 Late NY")           # late NY
 
     dst_info = f"London DST+{ld}h / NY DST+{nd}h"
