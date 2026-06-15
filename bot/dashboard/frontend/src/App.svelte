@@ -119,63 +119,16 @@
 
   async function triggerScan() {
     if (scanRunning) return;
-    scanRunning = true;
-    clearInterval(patrolTimer);
-    clearInterval(countdownTimer);
-    scanPhase = 'gathering';
-    statusText = 'Knights returning to the round table...';
-
-    // Gather
-    knights.forEach((_, i) => {
-      const seat = AGENTS_DEF[i].seat;
-      moveKnight(i, seat.l, seat.t, true);
-    });
-    // Bubbles staggered
-    const GATHER = ['Knights, to the table!','Bull OB at 3308!','HTF demand zone!','No high impact!','RR 2.3 passes!'];
-    GATHER.forEach((txt, i) => setTimeout(() => showBubble(i, txt, 1900), i * 200));
-
-    await sleep(1700);
-    scanPhase = 'scanning';
-    statusText = 'Scanning XAUUSD...';
-    knights.forEach((_, i) => { knights[i] = { ...knights[i], moving: false }; });
-    knights = [...knights];
-    const ANALYZE = ['Weighing all votes...','Scanning OB + BOS...','H1 / H4 / Daily...','Calendar check...','Lot size + VETO...'];
-    ANALYZE.forEach((txt, i) => setTimeout(() => showBubble(i, txt, 3000), i * 180));
-
-    // Call backend
-    let result;
+    // POST to server — server signals bot via poll, bot runs real supervisor.run()
+    // Animation and result come back via WebSocket (scan_phase + signal messages)
     try {
       const res = await fetch('/api/scan', { method: 'POST' });
-      result = await res.json();
-    } catch(e) {}
-
-    await sleep(2900);
-    scanPhase = 'voting';
-    statusText = 'Agents voting...';
-    const VOTES = ['APPROVED — BUY!','YES — Swing OB ★★','YES — Case B bullish','YES — low risk','OK — 0.01L approved'];
-    VOTES.forEach((txt, i) => setTimeout(() => showBubble(i, txt, 5000), i * 280));
-
-    await sleep(2800);
-    scanPhase = 'approved';
-    vbnText = `APPROVED — ${signal.direction} XAUUSD  |  Entry ${signal.entry}  |  TP ${signal.tp}`;
-    vbnVisible = true;
-    statusText = 'APPROVED — sending alert';
-    setTimeout(() => { vbnVisible = false; }, 3400);
-
-    await sleep(3600);
-    // Disperse
-    statusText = 'Dispersing...';
-    knights.forEach((_, i) => {
-      const p = AGENTS_DEF[i].patrol[0];
-      moveKnight(i, p.l, p.t, true);
-      knights[i] = { ...knights[i], pIdx: 0 };
-    });
-    knights = [...knights];
-    await sleep(1800);
-    scanPhase = 'idle';
-    scanRunning = false;
-    startPatrol();
-    startCountdown();
+      const d = await res.json();
+      if (!d.ok) return; // already running
+    } catch(e) { return; }
+    scanRunning = true;
+    clearInterval(patrolTimer);
+    statusText = 'Sending knights to the field...';
   }
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -187,18 +140,48 @@
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => { connected = true; };
     ws.onclose = () => { connected = false; setTimeout(initWs, 3000); };
+    const AGENT_IDX = { supervisor:0, chart_analyst:1, bias_analyst:2, news_scout:3, risk_manager:4 };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'init') {
-        if (msg.signal)   signal   = msg.signal;
-        if (msg.scan_log) scanLog  = msg.scan_log;
-        if (msg.stats)    stats    = { ...stats, ...msg.stats };
+        if (msg.signal)   signal  = msg.signal;
+        if (msg.scan_log) scanLog = msg.scan_log;
+        if (msg.stats)    stats   = { ...stats, ...msg.stats };
       } else if (msg.type === 'signal') {
         signal = msg.data;
       } else if (msg.type === 'scan_log') {
         scanLog = [msg.data, ...scanLog].slice(0, 9);
       } else if (msg.type === 'stats') {
         stats = { ...stats, ...msg.data };
+      } else if (msg.type === 'scan_phase') {
+        const phase = msg.phase;
+        scanPhase = phase;
+        if (phase === 'gathering') {
+          statusText = 'Knights to the round table...';
+          clearInterval(patrolTimer);
+          scanRunning = true;
+          knights.forEach((_, i) => { const s = AGENTS_DEF[i].seat; moveKnight(i, s.l, s.t, true); });
+        } else if (phase === 'scanning') {
+          statusText = 'Scanning XAUUSD...';
+          knights.forEach((_, i) => { knights[i] = { ...knights[i], moving: false }; });
+          knights = [...knights];
+        } else if (phase === 'approved') {
+          statusText = 'APPROVED — sending alert';
+          vbnText = `APPROVED — ${signal.direction} XAUUSD  |  Entry ${signal.entry}  |  TP ${signal.tp}`;
+          vbnVisible = true;
+          setTimeout(() => { vbnVisible = false; }, 3400);
+        } else if (phase === 'rejected') {
+          statusText = 'No setup found';
+        } else if (phase === 'idle') {
+          statusText = 'Watching the market...';
+          scanRunning = false;
+          knights.forEach((_, i) => { const p = AGENTS_DEF[i].patrol[0]; moveKnight(i, p.l, p.t, true); knights[i] = { ...knights[i], pIdx: 0 }; });
+          knights = [...knights];
+          startPatrol();
+        }
+      } else if (msg.type === 'agent_bubble') {
+        const idx = AGENT_IDX[msg.agent];
+        if (idx !== undefined) showBubble(idx, msg.text, 3000);
       }
     };
   }
