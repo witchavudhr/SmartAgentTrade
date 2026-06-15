@@ -1733,6 +1733,12 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     # ── ข้ามถ้ามีข่าว High Impact ──────────────────────
     blocked, block_reason = news_scout.should_block_trade()
     if blocked:
+        print(f"[auto_scan] 📰 News block — {block_reason}")
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=f"📰 *Skip Scan — ข่าว High Impact*\n_{block_reason}_",
+            parse_mode="Markdown"
+        )
         return
 
     # แจ้งว่าเริ่ม scan session ไหน
