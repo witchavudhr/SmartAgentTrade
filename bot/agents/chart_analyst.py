@@ -345,9 +345,8 @@ TP = next swing high/low เท่านั้น (ไม่คาด trend ก�
     h4_bull     = adv.get('h4_bull', False)
     macro_bias  = "BULL" if (h1_bull and h4_bull) else "BEAR" if (not h1_bull and not h4_bull) else "MIXED"
 
-    # ── M5 + M15 OB Confluence ────────────────────────────────────
+    # ── M5 + M15 OB — เลือก Primary OB ที่ใกล้ราคาที่สุด ────────────
     def _ob_overlap(ob_a: dict | None, ob_b: dict | None) -> dict | None:
-        """คืน overlap zone ถ้า OB สอง timeframe ซ้อนกัน"""
         if not ob_a or not ob_b:
             return None
         lo = max(ob_a['bottom'], ob_b['bottom'])
@@ -355,6 +354,16 @@ TP = next swing high/low เท่านั้น (ไม่คาด trend ก�
         if hi > lo:
             return {"bottom": round(lo, 2), "top": round(hi, 2)}
         return None
+
+    def _ob_dist(ob: dict | None, price: float) -> float:
+        """ระยะห่างจากราคา → OB (0 ถ้าอยู่ใน OB แล้ว)"""
+        if not ob:
+            return 999999
+        if ob.get('in_ob'):
+            return 0
+        top = ob.get('top', price)
+        bot = ob.get('bottom', price)
+        return min(abs(price - top), abs(price - bot))
 
     m5_bull_ob  = smc_summary.get('active_bull_ob')
     m5_bear_ob  = smc_summary.get('active_bear_ob')
@@ -364,11 +373,36 @@ TP = next swing high/low เท่านั้น (ไม่คาด trend ก�
     bull_confluence = _ob_overlap(m5_bull_ob, m15_bull_ob)
     bear_confluence = _ob_overlap(m5_bear_ob, m15_bear_ob)
 
+    # Primary OB = ใกล้ราคาที่สุดระหว่าง M5 กับ M15 (merged zone ถ้า overlap)
+    def _primary_ob(m5_ob, m15_ob, price):
+        overlap = _ob_overlap(m5_ob, m15_ob)
+        if overlap:
+            overlap['tf'] = 'M5+M15'
+            overlap['in_ob'] = (m5_ob or {}).get('in_ob') or (m15_ob or {}).get('in_ob')
+            return overlap
+        d5  = _ob_dist(m5_ob, price)
+        d15 = _ob_dist(m15_ob, price)
+        if d15 <= d5 and m15_ob:
+            ob = dict(m15_ob); ob['tf'] = 'M15'; return ob
+        if m5_ob:
+            ob = dict(m5_ob); ob['tf'] = 'M5'; return ob
+        return None
+
+    primary_bull_ob = _primary_ob(m5_bull_ob, m15_bull_ob, price_now)
+    primary_bear_ob = _primary_ob(m5_bear_ob, m15_bear_ob, price_now)
+
+    # อัพเดต dist_to_* ด้วย primary OB
+    dist_to_bull_ob = round(_ob_dist(primary_bull_ob, price_now) * 10, 1)
+    dist_to_bear_ob = round(_ob_dist(primary_bear_ob, price_now) * 10, 1)
+    near_bull_ob = bool(primary_bull_ob and (dist_to_bull_ob <= 30 or (primary_bull_ob or {}).get('in_ob')))
+    near_bear_ob = bool(primary_bear_ob and (dist_to_bear_ob <= 30 or (primary_bear_ob or {}).get('in_ob')))
+
     def _fmt_ob(ob: dict | None, in_ob_key: bool = False) -> str:
         if not ob:
             return "ไม่มี"
         tag = " ← IN OB ✅" if ob.get('in_ob') else ""
-        return f"{ob['bottom']}–{ob['top']}{tag}"
+        tf  = f" [{ob.get('tf','?')}]" if ob.get('tf') else ""
+        return f"{ob['bottom']}–{ob['top']}{tf}{tag}"
 
     def _fmt_conf(zone: dict | None) -> str:
         if not zone:
@@ -387,7 +421,12 @@ MARKET DATA
   ราคาปัจจุบัน: {smc_summary.get('current_price')}
   Session: {sess.get('emoji','')} {sess.get('session','')} ({sess.get('time_thai','')})
 
-📊 M15 — OB zones หลัก:
+🎯 PRIMARY OB (ใกล้ราคาที่สุด — ใช้เป็น entry zone หลัก):
+  Primary Bull OB: {_fmt_ob(primary_bull_ob)} (ห่าง {dist_to_bull_ob:.0f} จุด)
+  Primary Bear OB: {_fmt_ob(primary_bear_ob)} (ห่าง {dist_to_bear_ob:.0f} จุด)
+  ⚠️ ใช้ Primary OB นี้เป็น entry zone เสมอ — ไม่ใช่ M5 หรือ M15 แยกกัน
+
+📊 M15 — OB zones อ้างอิง:
   M15 Bull OB:  {_fmt_ob(m15_bull_ob)}
   M15 Bear OB:  {_fmt_ob(m15_bear_ob)}
   BOS:   {m15.get('last_bos','–')}  |  CHoCH: {m15.get('last_choch','–')}
@@ -428,14 +467,15 @@ MARKET DATA
 - ถ้าราคาถึง OB ฝั่งตรงข้ามแล้ว → trade ที่ OB ได้เลย (นั่นคือ supply/demand จริงๆ)
 
 ════════════════════════════════════════════
-STEP 1 — หา OB ที่ใกล้ที่สุด (Primary Target)
+STEP 1 — Primary OB (code เลือกให้แล้ว)
 ════════════════════════════════════════════
-คำนวณระยะห่างจากราคาปัจจุบัน:
-  dist_to_bull_ob = ระยะจากราคา → Bull OB top (จุด)
-  dist_to_bear_ob = ระยะจากราคา → Bear OB bottom (จุด)
+Code คำนวณ Primary OB ให้แล้วด้านบน — เลือก OB ที่ใกล้ราคาที่สุดระหว่าง M5 กับ M15
+(ถ้า overlap → merge เป็น zone เดียว, ถ้าไม่ overlap → เอาอันที่ใกล้กว่า)
 
-OB ที่ใกล้กว่า = primary target ของรอบนี้
-→ ไม่ว่า macro จะเป็น BULL หรือ BEAR ก็ตาม ให้วิเคราะห์ OB ที่ใกล้ที่สุดก่อนเสมอ
+  Primary Bull OB: {_fmt_ob(primary_bull_ob)} ห่าง {dist_to_bull_ob:.0f} จุด
+  Primary Bear OB: {_fmt_ob(primary_bear_ob)} ห่าง {dist_to_bear_ob:.0f} จุด
+
+→ ใช้ Primary OB นี้เป็น entry_zone เสมอ ไม่ต้องคำนวณใหม่
 
 ════════════════════════════════════════════
 STEP 2 — วิเคราะห์ Setup ที่ OB นั้น
