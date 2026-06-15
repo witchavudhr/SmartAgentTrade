@@ -1207,6 +1207,169 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
     }
 
 
+# ─── AMD Pattern Detector ────────────────────────────────────────
+
+def detect_amd_pattern(df: pd.DataFrame, result: SMCResult, lookback: int = 40) -> dict:
+    """
+    AMD (Accumulation / Manipulation / Distribution) Pattern
+    Wyckoff: Spring (bullish) / Upthrust (bearish)
+
+    Bullish AMD (Spring):
+      Range sideways → Sweep below EQL (fake breakdown) → CHoCH bull → BOS up → AMD_BUY
+
+    Bearish AMD (Upthrust):
+      Range sideways → Sweep above EQH (fake breakout) → CHoCH bear → BOS down → AMD_SELL
+
+    Score:
+      Range + EQL/EQH present: +1
+      EQL swept (Spring):       +3
+      EQH swept (Upthrust):     +3
+      CHoCH opposite sweep:     +3
+      BOS confirming:           +2
+      HTF aligned:              +1
+    """
+    n = len(df)
+    if n < 20:
+        return {"amd_signal": None, "amd_score": 0, "amd_phase": None, "amd_type": None}
+
+    high_low   = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift()).abs()
+    low_close  = (df['low']  - df['close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1]
+
+    current_price = df['close'].iloc[-1]
+    lb = min(lookback, n - 1)
+    recent_df = df.iloc[-lb:]
+
+    score = 0
+    reasons = []
+    amd_signal = None
+    amd_phase = "none"
+    amd_type = None
+    sweep_level_bull = None
+    sweep_level_bear = None
+
+    range_top    = recent_df['high'].max()
+    range_bottom = recent_df['low'].min()
+
+    # ── 1. Accumulation: Range + EQL/EQH ─────────────────────────
+    has_eqh = len(result.equal_highs) >= 1
+    has_eql = len(result.equal_lows)  >= 1
+    range_height = range_top - range_bottom
+
+    if (has_eqh or has_eql) and range_height < atr * 6:
+        score += 1
+        reasons.append(f"Range {range_bottom:.1f}–{range_top:.1f} EQH={has_eqh} EQL={has_eql}")
+        amd_phase = "accumulation"
+
+    # ── 2. Manipulation: EQL sweep (Spring) ──────────────────────
+    for eql in sorted(result.equal_lows):
+        swept = recent_df[recent_df['low'] < eql]
+        if swept.empty:
+            continue
+        sweep_iloc = int(np.argmin(recent_df['low'].values))
+        after = recent_df.iloc[sweep_iloc + 1:]
+        if after.empty or after['close'].iloc[-1] <= eql:
+            continue
+        sweep_age = len(recent_df) - 1 - sweep_iloc
+        if sweep_age > 20:
+            continue
+        sweep_level_bull = eql
+        score += 3
+        reasons.append(f"Spring: EQL {eql:.1f} swept ({sweep_age}b ago)")
+        amd_type = "Spring"
+        amd_phase = "manipulation"
+        break
+
+    # ── 2. Manipulation: EQH sweep (Upthrust) — ถ้ายังไม่เจอ Spring
+    if sweep_level_bull is None:
+        for eqh in sorted(result.equal_highs, reverse=True):
+            swept = recent_df[recent_df['high'] > eqh]
+            if swept.empty:
+                continue
+            sweep_iloc = int(np.argmax(recent_df['high'].values))
+            after = recent_df.iloc[sweep_iloc + 1:]
+            if after.empty or after['close'].iloc[-1] >= eqh:
+                continue
+            sweep_age = len(recent_df) - 1 - sweep_iloc
+            if sweep_age > 20:
+                continue
+            sweep_level_bear = eqh
+            score += 3
+            reasons.append(f"Upthrust: EQH {eqh:.1f} swept ({sweep_age}b ago)")
+            amd_type = "Upthrust"
+            amd_phase = "manipulation"
+            break
+
+    # ── 3. Distribution: CHoCH + BOS after sweep ──────────────────
+    lc      = result.last_choch
+    last_bos = result.last_bos
+    choch_age = (n - 1 - lc.index) if lc else 999
+
+    if sweep_level_bull and lc and lc.direction == 'bullish' and choch_age <= 12:
+        score += 3
+        reasons.append(f"CHoCH Bull after Spring ({choch_age}b ago)")
+        amd_phase = "distribution"
+        amd_signal = "AMD_BUY"
+        if last_bos and last_bos.direction == 'bullish':
+            bos_age = n - 1 - last_bos.index
+            if bos_age <= 20:
+                score += 2
+                reasons.append(f"BOS Bull ({bos_age}b ago)")
+
+    elif sweep_level_bear and lc and lc.direction == 'bearish' and choch_age <= 12:
+        score += 3
+        reasons.append(f"CHoCH Bear after Upthrust ({choch_age}b ago)")
+        amd_phase = "distribution"
+        amd_signal = "AMD_SELL"
+        if last_bos and last_bos.direction == 'bearish':
+            bos_age = n - 1 - last_bos.index
+            if bos_age <= 20:
+                score += 2
+                reasons.append(f"BOS Bear ({bos_age}b ago)")
+
+    # ── 4. HTF alignment ──────────────────────────────────────────
+    h1_w = min(240, n)
+    h4_w = min(960, n)
+    h1_mid = (df['high'].iloc[-h1_w:].max() + df['low'].iloc[-h1_w:].min()) / 2
+    h4_mid = (df['high'].iloc[-h4_w:].max() + df['low'].iloc[-h4_w:].min()) / 2
+    h1_bull = current_price > h1_mid
+    h4_bull = current_price > h4_mid
+
+    if amd_signal == "AMD_BUY" and (h1_bull or h4_bull):
+        score += 1
+        reasons.append("HTF Bull aligned")
+    elif amd_signal == "AMD_SELL" and (not h1_bull or not h4_bull):
+        score += 1
+        reasons.append("HTF Bear aligned")
+
+    def _stars(s):
+        return "★★★" if s >= 8 else "★★" if s >= 5 else "★"
+
+    if not amd_signal:
+        return {
+            "amd_signal": None,
+            "amd_score":  score,
+            "amd_phase":  amd_phase,
+            "amd_type":   amd_type,
+            "amd_reasons": reasons,
+        }
+
+    return {
+        "amd_signal":       amd_signal,
+        "amd_score":        score,
+        "amd_stars":        _stars(score),
+        "amd_phase":        amd_phase,
+        "amd_type":         amd_type,
+        "amd_reasons":      reasons,
+        "amd_range_top":    round(range_top, 2),
+        "amd_range_bottom": round(range_bottom, 2),
+        "amd_sweep_level":  round(sweep_level_bull or sweep_level_bear, 2),
+        "atr":              round(atr, 2),
+    }
+
+
 # ─── EQL / EQH Sweep Detector ────────────────────────────────────
 
 def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20) -> dict:
@@ -1450,5 +1613,12 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         except Exception:
             summary["eql_sweep_signal"] = None
             summary["eqh_sweep_signal"] = None
+
+        # AMD (Accumulation/Manipulation/Distribution) pattern
+        try:
+            amd = detect_amd_pattern(df, result)
+            summary["amd"] = amd
+        except Exception:
+            summary["amd"] = {"amd_signal": None, "amd_score": 0}
 
     return summary

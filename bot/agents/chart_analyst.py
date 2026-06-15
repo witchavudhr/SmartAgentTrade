@@ -171,6 +171,12 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ EQL/EQH SWEEP — eql={eql_sweep} eqh={eqh_sweep}")
         return True
 
+    # ── ชั้น 6: AMD Pattern (Range→Sweep→CHoCH→BOS) ──────────
+    amd = smc_summary.get("amd", {})
+    if amd.get("amd_signal") and amd.get("amd_score", 0) >= 4:
+        print(f"[has_signal] ✅ AMD — {amd.get('amd_signal')} {amd.get('amd_stars','')} score={amd.get('amd_score')}")
+        return True
+
     print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob={has_ob} struct={has_structure} bias={bias} score={score}/3 bull_ob={bool(bull_ob)} bear_ob={bool(bear_ob)}")
     return False
 
@@ -329,6 +335,9 @@ TP = next swing high/low เท่านั้น (ไม่คาด trend ก�
     eql_sweep = smc_summary.get("eql_sweep_signal")
     eqh_sweep = smc_summary.get("eqh_sweep_signal")
 
+    # AMD pattern (Range → Sweep → CHoCH → BOS)
+    amd = smc_summary.get("amd") or {}
+
     sweep_l_age = adv.get('sweep_l_age_bars') or 999
     sweep_h_age = adv.get('sweep_h_age_bars') or 999
     choch_age   = adv.get('choch_age_bars')   or 999
@@ -387,6 +396,9 @@ MARKET DATA
   EQH/EQL: {m15.get('equal_highs','–')} / {m15.get('equal_lows','–')}
   🔍 EQL Sweep Signal: {eql_sweep or 'ไม่มี'}
   🔍 EQH Sweep Signal: {eqh_sweep or 'ไม่มี'}
+  🎯 AMD Pattern: {amd.get('amd_signal') or 'ไม่มี'} {amd.get('amd_stars','') or ''} (phase={amd.get('amd_phase','?')} type={amd.get('amd_type','?')} score={amd.get('amd_score',0)})
+    Range: {amd.get('amd_range_bottom','?')}–{amd.get('amd_range_top','?')} | Sweep: {amd.get('amd_sweep_level','?')}
+    Reasons: {', '.join(amd.get('amd_reasons',[]) or ['–'])}
 
 📍 M5 — entry detail:
   M5 Bull OB:  {_fmt_ob(m5_bull_ob)}
@@ -505,6 +517,28 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
     → setup_type = EQH_SWEEP_SELL
     confidence สูงขึ้นถ้ามี bear confirm candle
 
+── CASE D: AMD Pattern — Range → Sweep → CHoCH → BOS ───────────
+ท่าเจอบ่อยที่สุด: ออกข้าง (Accumulation) → ดูด liquidity (Manipulation) → พลิกทิศ (Distribution)
+
+  🟢 D1 — AMD_BUY / Spring (ถ้า amd_signal=AMD_BUY):
+    EQL swept → ดูด sell stops → CHoCH Bull → BOS up → คนที่ short โดน squeeze
+    Entry: ราคาปัจจุบัน หรือ pullback มา EQL level (ถ้ายังใกล้)
+    SL: ต่ำกว่า amd_sweep_level 5-10 จุด (ใต้ wick sweep)
+    TP: nearest_swing_high / Bear OB ถ้าไม่ไกลเกิน
+    setup_type = AMD_BUY
+    confidence สูงขึ้นถ้า: CHoCH fresh (≤5 bars) + BOS confirmed + bull candle
+
+  🔴 D2 — AMD_SELL / Upthrust (ถ้า amd_signal=AMD_SELL):
+    EQH swept → ดูด buy stops → CHoCH Bear → BOS down → คนที่ long โดน flush
+    Entry: ราคาปัจจุบัน หรือ pullback มา EQH level
+    SL: สูงกว่า amd_sweep_level 5-10 จุด (เหนือ wick sweep)
+    TP: nearest_swing_low / Bull OB ถ้าไม่ไกลเกิน
+    setup_type = AMD_SELL
+    confidence สูงขึ้นถ้า: CHoCH fresh + BOS confirmed + bear candle
+
+  ⚠️ AMD ★★★ (score≥8) = high conviction — เข้าได้ lot ปกติ
+  ⚠️ AMD ★★  (score 5-7) = moderate — เข้าได้ lot เล็ก หรือรอ confirmation เพิ่ม
+
 ════════════════════════════════════════════
 STEP 3 — ตัดสินใจและโหวต
 ════════════════════════════════════════════
@@ -515,14 +549,16 @@ STEP 3 — ตัดสินใจและโหวต
 4. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
 5. CASE C1 (eql_sweep_signal ≠ null) → YES, setup_type=EQL_SWEEP_BUY
 6. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
-7. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
+7. CASE D1 (amd_signal=AMD_BUY) → YES, setup_type=AMD_BUY
+8. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
+9. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
 ตอบ JSON เท่านั้น:
 {{
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "TREND_OB/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "TREND_OB/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/WAIT_FOR_OB/NO_TRADE",
   "trend_aligned": true ถ้า OB ที่ใกล้ตรงกับ macro trend หรือ false,
   "proximity_case": "A หรือ B",
   "pyramid_mode": true หรือ false,

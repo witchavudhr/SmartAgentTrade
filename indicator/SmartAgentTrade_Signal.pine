@@ -98,9 +98,8 @@ h1_bull = h1_c > h1_mid
 h4_bull = h4_c > h4_mid
 d1_bull = d1_c > d1_mid
 
-if i_show_htf_lines
-    plot(h1_mid, "H1 Mid", color=color.new(#00BCD4, 60), linewidth=1)
-    plot(h4_mid, "H4 Mid", color=color.new(#9C27B0, 60), linewidth=1)
+plot(i_show_htf_lines ? h1_mid : na, "H1 Mid", color=color.new(#00BCD4, 60), linewidth=1)
+plot(i_show_htf_lines ? h4_mid : na, "H4 Mid", color=color.new(#9C27B0, 60), linewidth=1)
 
 // ═══════════════════════════════════════════════════════════════════
 // SWING POINTS
@@ -552,10 +551,7 @@ if barstate.islast
     eql_col = eql_swept ? #00E676 : eqh_swept ? #FF1744 : #616161
     table.cell(dash, 1, 10, eql_txt, text_color=color.white, bgcolor=color.new(eql_col, 50), text_size=size.tiny)
 
-    bot_txt = bot_buy  ? "🤖 BUY "  + bot_buy_type  + " " + long_stars  :
-              bot_sell ? "🤖 SELL " + bot_sell_type + " " + short_stars :
-              long_sig ? "▲ LONG "  + long_stars  :
-              short_sig ? "▼ SHORT " + short_stars : "– WAIT"
+    bot_txt = bot_buy ? "🤖 BUY " + bot_buy_type + " " + long_stars : bot_sell ? "🤖 SELL " + bot_sell_type + " " + short_stars : long_sig ? "▲ LONG " + long_stars : short_sig ? "▼ SHORT " + short_stars : "– WAIT"
     bot_bg  = bot_buy ? #00E5FF : bot_sell ? #FF6D00 : long_sig ? #00C853 : short_sig ? #D50000 : #333333
     bot_tc  = bot_buy ? #000000 : color.white
     table.cell(dash, 0, 11, "Signal", text_color=#BDBDBD, text_size=size.tiny)
