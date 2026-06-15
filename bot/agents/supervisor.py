@@ -143,29 +143,64 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
     setup_type = analysis.get("setup_type", "")
     rr         = float(analysis.get("rr_ratio") or 0)
 
-    # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
-    # เหตุผล: BULL_OB_ENTRY / BULL_OB_SWEEP_REJECT / TREND_OB คือ
-    # setups ที่ผ่านเงื่อนไข OB + RR + Chart YES มาแล้ว ไม่ต้องให้ LLM หาเหตุผล reject เพิ่ม
+    # ── คำนวณ RR จากราคาปัจจุบัน (ป้องกัน theoretical OB entry ทำให้ RR บวมเกินจริง) ──
+    price_now = float(result.get("current_price") or 0)
+    sl_price  = float(analysis.get("stop_loss") or 0)
+    tp_price  = float(analysis.get("take_profit") or 0)
+    actual_rr = rr  # default = theoretical จาก OB midpoint
+
+    if price_now and sl_price and tp_price:
+        risk_pts   = abs(price_now - sl_price)
+        reward_pts = abs(tp_price  - price_now)
+        actual_rr  = round(reward_pts / risk_pts, 2) if risk_pts > 0 else 0
+
+    # ── ตรวจ price vs entry zone — flag limit order ถ้าออกนอก zone ──────────
+    entry_zone_raw  = analysis.get("entry_zone")
+    use_limit_order = False
+    if entry_zone_raw and price_now and len(entry_zone_raw) == 2:
+        ez_lo, ez_hi = float(entry_zone_raw[0]), float(entry_zone_raw[1])
+        ENTRY_TOL = 3.0  # $3 tolerance สำหรับ spread/slippage
+        if signal == "BUY"  and price_now > ez_hi + ENTRY_TOL:
+            use_limit_order = True
+        elif signal == "SELL" and price_now < ez_lo - ENTRY_TOL:
+            use_limit_order = True
+
+    # ── Fast APPROVE: OB setups — rule-based ──────────────────────────────────
+    # เพิ่มเงื่อนไขเข้มขึ้น:
+    #   1. actual_rr คำนวณจากราคาปัจจุบัน ไม่ใช่ theoretical OB entry
+    #   2. ต้องมี vote_score ≥ 2 หรือ bias_vote == "YES"
+    #   3. ถ้า price นอก zone → set use_limit_order=True ให้ notifier ตั้ง LIMIT ORDER แทน
     ob_setups = {"BULL_OB_ENTRY", "BULL_OB_SWEEP_REJECT", "TREND_OB", "TREND_BOS_BREAK"}
-    if setup_type in ob_setups and chart_vote == "YES" and rr >= 1.5 and not blocked:
+    if setup_type in ob_setups and chart_vote == "YES" and actual_rr >= 1.5 and not blocked:
+        # ต้องการ vote ≥ 2/3 หรือ bias YES
+        if vote_score < 2 and bias_vote != "YES":
+            result["reject_reason"] = (
+                f"Vote {vote_score}/3 + Bias NO — ต้องการ ≥2/3 votes หรือ Bias YES สำหรับ auto-approve"
+            )
+            return result
+
         auto_reason = {
             "BULL_OB_SWEEP_REJECT": "Sweep + rejection ที่ Bull OB — สัญญาณแข็งที่สุด auto-approve",
-            "BULL_OB_ENTRY":        f"ราคาอยู่ที่ Bull OB (pyramid ไม้ 1) — RR {rr} auto-approve",
-            "TREND_OB":             f"Trend-aligned OB entry — RR {rr} auto-approve",
-            "TREND_BOS_BREAK":      f"BOS break pyramid — RR {rr} auto-approve",
-        }.get(setup_type, f"{setup_type} auto-approve")
+            "BULL_OB_ENTRY":        f"ราคาอยู่ที่ Bull OB (pyramid ไม้ 1) — RR {actual_rr} auto-approve",
+            "TREND_OB":             f"Trend-aligned OB entry — RR {actual_rr} auto-approve",
+            "TREND_BOS_BREAK":      f"BOS break pyramid — RR {actual_rr} auto-approve",
+        }.get(setup_type, f"{setup_type} auto-approve RR={actual_rr}")
 
-        result["approved"]    = True
-        result["final_signal"]= signal
-        result["lot"]         = risk.get("lot")
-        result["risk_pct"]    = risk.get("risk_pct")
-        result["caution_mode"]= risk.get("caution_mode", False)
-        result["entry_zone"]  = analysis.get("entry_zone")
-        result["stop_loss"]   = analysis.get("stop_loss")
-        result["take_profit"] = analysis.get("take_profit")
-        result["rr_ratio"]    = rr
-        result["reasoning"]   = auto_reason
-        result["analysis"]    = analysis
+        if use_limit_order:
+            auto_reason += f" [LIMIT ORDER — ราคา {price_now} อยู่นอก entry zone]"
+
+        result["approved"]         = True
+        result["final_signal"]     = signal
+        result["use_limit_order"]  = use_limit_order
+        result["lot"]              = risk.get("lot")
+        result["risk_pct"]         = risk.get("risk_pct")
+        result["caution_mode"]     = risk.get("caution_mode", False)
+        result["entry_zone"]       = analysis.get("entry_zone")
+        result["stop_loss"]        = analysis.get("stop_loss")
+        result["take_profit"]      = analysis.get("take_profit")
+        result["rr_ratio"]         = actual_rr
+        result["reasoning"]        = auto_reason
+        result["analysis"]         = analysis
         result["stages"]["supervisor"] = {"approve": True, "reasoning": auto_reason, "auto": True}
         return result
 

@@ -400,7 +400,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   Bear OB ใกล้ + macro BEAR → SELL setup เตรียมได้เลย
   Bull OB ใกล้ + macro BULL → BUY setup เตรียมได้เลย
 
-เงื่อนไข: ราคาอยู่ใน OB หรือ ≤300 จุด จาก OB edge
+เงื่อนไข: ราคาอยู่ใน OB หรือ ≤50 จุด จาก OB edge ($5 max)
   - มี BOS ตาม trend + ราคา pullback มาที่ OB → เข้าได้เลย lot เต็ม
   - ยังไม่ pullback ถึง OB แต่กำลังมา → เตรียม limit order รอที่ OB
   - Sweep ไม่บังคับ (bonus +confidence ถ้ามี)

@@ -147,6 +147,85 @@ def open_trade(
     }
 
 
+def open_limit_order(
+    direction: str,      # "BUY" or "SELL"
+    lot: float,
+    entry_price: float,  # ราคา limit (BUY LIMIT < ตลาด, SELL LIMIT > ตลาด)
+    sl: float,
+    tp: float,
+    comment: str = "SmartAgentTrade-LMT",
+    expiry_hours: float = 4.0,
+) -> dict:
+    """
+    วาง Pending Limit Order ที่ OB zone
+    BUY LIMIT: entry_price < current ask — รอราคาลงมาที่ OB
+    SELL LIMIT: entry_price > current bid — รอราคาขึ้นมาที่ OB
+    คืน {"ticket": int, "price": float, "time": str} หรือ {"error": str}
+    """
+    if not MT5_ENABLED:
+        return {"error": "MT5_ENABLED=false — dry run only"}
+
+    ok, err = _connect()
+    if not ok:
+        return {"error": err}
+
+    import datetime as _dt
+    order_type = mt5.ORDER_TYPE_BUY_LIMIT if direction == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT
+
+    if tp and tp > 0:
+        if direction == "BUY" and tp <= entry_price:
+            disconnect()
+            return {"error": f"Invalid stops: BUY LIMIT TP {tp} ต้องสูงกว่า entry {entry_price}"}
+        if direction == "SELL" and tp >= entry_price:
+            disconnect()
+            return {"error": f"Invalid stops: SELL LIMIT TP {tp} ต้องต่ำกว่า entry {entry_price}"}
+    if sl:
+        if direction == "BUY" and sl >= entry_price:
+            disconnect()
+            return {"error": f"Invalid stops: BUY LIMIT SL {sl} ต้องต่ำกว่า entry {entry_price}"}
+        if direction == "SELL" and sl <= entry_price:
+            disconnect()
+            return {"error": f"Invalid stops: SELL LIMIT SL {sl} ต้องสูงกว่า entry {entry_price}"}
+
+    expiry_ts = int((_dt.datetime.now() + _dt.timedelta(hours=expiry_hours)).timestamp())
+
+    request = {
+        "action":     mt5.TRADE_ACTION_PENDING,
+        "symbol":     MT5_SYMBOL,
+        "volume":     lot,
+        "type":       order_type,
+        "price":      entry_price,
+        "sl":         sl,
+        "tp":         tp,
+        "magic":      MT5_MAGIC,
+        "comment":    comment,
+        "type_time":  mt5.ORDER_TIME_SPECIFIED,
+        "expiration": expiry_ts,
+    }
+
+    result = mt5.order_send(request)
+    disconnect()
+
+    if result is None:
+        return {"error": f"order_send คืน None: {mt5.last_error()}"}
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return {
+            "error":   f"Retcode {result.retcode}: {_retcode_desc(result.retcode)}",
+            "retcode": result.retcode,
+        }
+
+    return {
+        "ticket":       result.order,
+        "price":        entry_price,
+        "volume":       lot,
+        "order_type":   "LIMIT",
+        "expiry_hours": expiry_hours,
+        "time":         time.strftime("%Y-%m-%d %H:%M:%S"),
+        "comment":      comment,
+    }
+
+
 def close_trade(ticket: int, lot: float | None = None) -> dict:
     """
     ปิด position ด้วย ticket number

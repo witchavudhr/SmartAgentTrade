@@ -636,57 +636,100 @@ async def _handle_scan_result(result: dict, send_fn):
         mt5_tag = ""
         current_mkt = result.get("current_price") or 0
 
-        # ตรวจว่า entry zone valid สำหรับ market order
-        # ใช้ OB top/bottom (ไม่ใช่ midpoint) เปรียบกับราคาตลาด
-        # BUY: ราคาต้องไม่สูงกว่า OB_top เกิน $25 (มิฉะนั้น = ยังไม่ pullback ถึง OB)
-        # SELL: ราคาต้องไม่ต่ำกว่า OB_bottom เกิน $25
-        entry_far = False
-        entry_far_msg = ""
+        # ตรวจ price vs OB zone
+        # BUY: ราคาเหนือ OB top + $3 → LIMIT ORDER ที่ OB top แทน market order
+        # SELL: ราคาต่ำกว่า OB bottom - $3 → LIMIT ORDER ที่ OB bottom แทน
+        # ถ้าห่างจาก OB เกิน $30 → บอกให้ user ตั้ง limit เอง (ไม่ auto-execute)
+        ABOVE_OB_TOL   = 3    # $3 spread/slippage tolerance
+        AUTO_LIMIT_MAX = 30   # $30 — ถ้าเกินนี้ = ไกล OB มากเกิน ไม่ auto-place
+        use_auto_limit = False
+        entry_far      = False
+        entry_far_msg  = ""
+        limit_price    = None
+
         if entry_price and current_mkt:
             entry_raw2 = signal.get("entry_zone")
             ob_top    = entry_raw2[1] if isinstance(entry_raw2, list) else entry_price
             ob_bottom = entry_raw2[0] if isinstance(entry_raw2, list) else entry_price
-            FAR_THRESHOLD = 25  # $25 = ห่างจาก OB edge เกินไป (XAUUSD raw price)
 
-            if direction == "BUY" and (current_mkt - ob_top) > FAR_THRESHOLD:
+            if direction == "BUY" and current_mkt > ob_top + ABOVE_OB_TOL:
                 dist_usd = round(current_mkt - ob_top, 2)
-                entry_far = True
-                entry_far_msg = (
-                    f"⏳ *รอ Pullback*\n"
-                    f"ราคาตลาด `{current_mkt}` สูงกว่า OB top `{ob_top}` อยู่ `${dist_usd}`\n"
-                    f"_ตั้ง BUY LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาลงมาถึงก่อน_"
-                )
-            elif direction == "SELL" and (ob_bottom - current_mkt) > FAR_THRESHOLD:
+                if dist_usd <= AUTO_LIMIT_MAX:
+                    use_auto_limit = True
+                    limit_price = ob_top
+                else:
+                    entry_far = True
+                    entry_far_msg = (
+                        f"⏳ *รอ Pullback*\n"
+                        f"ราคาตลาด `{current_mkt}` สูงกว่า OB top `{ob_top}` อยู่ `${dist_usd}`\n"
+                        f"_ตั้ง BUY LIMIT ที่ `{ob_top}` หรือรอราคาลงมาก่อน_"
+                    )
+            elif direction == "SELL" and current_mkt < ob_bottom - ABOVE_OB_TOL:
                 dist_usd = round(ob_bottom - current_mkt, 2)
-                entry_far = True
-                entry_far_msg = (
-                    f"⏳ *รอ Rally*\n"
-                    f"ราคาตลาด `{current_mkt}` ต่ำกว่า OB bottom `{ob_bottom}` อยู่ `${dist_usd}`\n"
-                    f"_ตั้ง SELL LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาขึ้นมาถึงก่อน_"
-                )
+                if dist_usd <= AUTO_LIMIT_MAX:
+                    use_auto_limit = True
+                    limit_price = ob_bottom
+                else:
+                    entry_far = True
+                    entry_far_msg = (
+                        f"⏳ *รอ Rally*\n"
+                        f"ราคาตลาด `{current_mkt}` ต่ำกว่า OB bottom `{ob_bottom}` อยู่ `${dist_usd}`\n"
+                        f"_ตั้ง SELL LIMIT ที่ `{ob_bottom}` หรือรอราคาขึ้นก่อน_"
+                    )
 
         if mt5_executor.is_available() and entry_price and sl_price and direction in ("BUY","SELL") and not entry_far:
             lot_val = signal.get("lot") or 0.01
-            ex = mt5_executor.open_trade(
-                direction = direction,
-                lot       = float(lot_val),
-                sl        = float(sl_price),
-                tp        = 0.0,   # ไม่ตั้ง TP — ให้ EA POS Guard จัดการ exit
-                comment   = f"SAT-{trade_id}",
-            )
-            if "ticket" in ex:
-                mt5_tag = (
-                    f"\n\n✅ *MT5 Executed!*\n"
-                    f"Ticket: `{ex['ticket']}` | Price: `{ex['price']}` | Lot: `{ex['volume']}`\n"
-                    f"_EA POS Guard จัดการ exit — ไม่มี fixed TP_"
+            if use_auto_limit and limit_price:
+                # ราคาอยู่นอก OB zone → วาง LIMIT ORDER ที่ OB edge แทน market order
+                ex = mt5_executor.open_limit_order(
+                    direction   = direction,
+                    lot         = float(lot_val),
+                    entry_price = limit_price,
+                    sl          = float(sl_price),
+                    tp          = 0.0,
+                    comment     = f"SAT-{trade_id}-LMT",
+                    expiry_hours= 4.0,
                 )
-                # เก็บ ticket ใน open_trade สำหรับ auto-close ในอนาคต
-                if bot_state.get("open_trade"):
-                    ot_upd = bot_state["open_trade"]
-                    ot_upd["mt5_ticket"] = ex["ticket"]
-                    state_manager.set_field(bot_state, "open_trade", ot_upd)
+                if "ticket" in ex:
+                    dist_from_mkt = round(abs(current_mkt - limit_price), 2)
+                    mt5_tag = (
+                        f"\n\n⏳ *MT5 Limit Order Placed!*\n"
+                        f"Ticket: `{ex['ticket']}` | Limit @ `{limit_price}` | Lot: `{ex['volume']}`\n"
+                        f"_(ราคาตลาด `{current_mkt}` ห่าง OB `${dist_from_mkt}` — รอ fill)_\n"
+                        f"_หมดอายุใน 4 ชม. | EA POS Guard จัดการ exit หลัง fill_"
+                    )
+                    if bot_state.get("open_trade"):
+                        ot_upd = bot_state["open_trade"]
+                        ot_upd["mt5_ticket"]  = ex["ticket"]
+                        ot_upd["order_type"]  = "LIMIT"
+                        ot_upd["limit_price"] = limit_price
+                        state_manager.set_field(bot_state, "open_trade", ot_upd)
+                else:
+                    mt5_tag = (
+                        f"\n\n⚠️ *MT5 Limit Error:* `{ex.get('error','unknown')}`\n"
+                        f"→ ตั้ง {'BUY' if direction=='BUY' else 'SELL'} LIMIT ที่ `{limit_price}` ด้วยตนเองใน MT5"
+                    )
             else:
-                mt5_tag = f"\n\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
+                # ราคาอยู่ใน OB zone → market order ปกติ
+                ex = mt5_executor.open_trade(
+                    direction = direction,
+                    lot       = float(lot_val),
+                    sl        = float(sl_price),
+                    tp        = 0.0,
+                    comment   = f"SAT-{trade_id}",
+                )
+                if "ticket" in ex:
+                    mt5_tag = (
+                        f"\n\n✅ *MT5 Executed!*\n"
+                        f"Ticket: `{ex['ticket']}` | Price: `{ex['price']}` | Lot: `{ex['volume']}`\n"
+                        f"_EA POS Guard จัดการ exit — ไม่มี fixed TP_"
+                    )
+                    if bot_state.get("open_trade"):
+                        ot_upd = bot_state["open_trade"]
+                        ot_upd["mt5_ticket"] = ex["ticket"]
+                        state_manager.set_field(bot_state, "open_trade", ot_upd)
+                else:
+                    mt5_tag = f"\n\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
         elif entry_far:
             mt5_tag = f"\n\n{entry_far_msg}"
         elif not mt5_executor.is_available():
