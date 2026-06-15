@@ -356,7 +356,7 @@
           {#each Object.entries(signal?.votes ?? {}) as [k, v]}
             <div class="vc" class:vno={!v}>{v ? '✓' : '✗'} {k}</div>
           {/each}
-          <div class="vc" style="flex-basis:100%">
+          <div class="vc" class:vno={!signal?.approved} style="flex-basis:100%">
             👑 King Arthur: {signal?.approved ? 'APPROVED' : 'REJECTED'}
           </div>
         </div>
