@@ -257,6 +257,18 @@ def is_available() -> bool:
     return _MT5_AVAILABLE and MT5_ENABLED
 
 
+def get_current_price(direction: str) -> float | None:
+    """คืนราคาตลาดปัจจุบัน — ask สำหรับ BUY, bid สำหรับ SELL"""
+    ok, _ = _connect()
+    if not ok:
+        return None
+    tick = mt5.symbol_info_tick(MT5_SYMBOL)
+    disconnect()
+    if tick is None:
+        return None
+    return tick.ask if direction == "BUY" else tick.bid
+
+
 def _retcode_desc(code: int) -> str:
     _codes = {
         10004: "Requote",

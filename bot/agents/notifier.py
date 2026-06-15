@@ -509,7 +509,16 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
     tp_price  = signal.get("take_profit") or signal.get("tp")
     confidence = int(signal.get("confidence") or 0)
 
-    entry_price = (
+    # ใช้ราคาตลาดจริงจาก MT5 (ask/bid) แทน midpoint ของ entry_zone
+    # เพราะ MT5 เปิดที่ราคาตลาด ไม่ใช่ราคาที่ analyst แนะนำ
+    mkt_price = None
+    if mt5_executor.is_available() and direction in ("BUY", "SELL"):
+        try:
+            mkt_price = mt5_executor.get_current_price(direction)
+        except Exception:
+            pass
+
+    entry_price = mkt_price or (
         (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
         else float(entry_raw) if entry_raw else None
     )
@@ -536,12 +545,13 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
         )
         return
 
-    # ตรวจราคา — ไม้ใหม่ต้องดีกว่าไม้แรก
+    # ตรวจราคา — ราคาตลาดปัจจุบันต้องดีกว่าไม้แรก
     if entry_price and ex_entry and not _price_is_better(entry_price, ex_entry, direction):
         diff = abs(entry_price - ex_entry)
+        price_src = "ราคาตลาด" if mkt_price else "entry zone midpoint"
         await send_fn(
-            f"⚠️ *Pyramid ข้าม — ราคาไม่ดีกว่าไม้แรก*\n"
-            f"ไม้ 1: `{ex_entry}` | ไม้ 2: `{entry_price}` (ห่าง `{diff:.2f}`)\n"
+            f"⏭ *Pyramid ข้าม — ราคาไม่ดีกว่าไม้แรก*\n"
+            f"ไม้ 1: `{ex_entry}` | {price_src}: `{entry_price}` (ต่างกัน `{diff:.2f}`)\n"
             f"_{'BUY ต้องเข้าต่ำกว่าไม้แรก' if direction == 'BUY' else 'SELL ต้องเข้าสูงกว่าไม้แรก'}_",
             parse_mode="Markdown"
         )
