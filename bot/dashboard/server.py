@@ -116,6 +116,37 @@ async def ws_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # ── REST endpoints ───────────────────────────────────────────────────────────
+@app.get("/api/debug")
+def get_debug():
+    """Debug: ดูว่า server อ่าน DB ได้ไหม และมี trades/scans กี่รายการ"""
+    import sqlite3, os
+    result = {"sys_path": sys.path[:4], "error": None}
+    try:
+        from agents.trade_log import DB_PATH, get_dashboard_stats
+        result["db_path"] = str(DB_PATH)
+        result["db_exists"] = os.path.exists(DB_PATH)
+        if result["db_exists"]:
+            conn = sqlite3.connect(DB_PATH)
+            result["trades_total"] = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+            result["trades_today"] = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE DATE(timestamp)=DATE('now','localtime')"
+            ).fetchone()[0]
+            result["wins_today"] = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE outcome='win' AND DATE(timestamp)=DATE('now','localtime')"
+            ).fetchone()[0]
+            result["scan_log_total"] = conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0]
+            result["scan_log_today"] = conn.execute(
+                "SELECT COUNT(*) FROM scan_log WHERE DATE(timestamp)=DATE('now','localtime')"
+            ).fetchone()[0]
+            result["recent_trades"] = conn.execute(
+                "SELECT id, timestamp, outcome, pnl_pips FROM trades ORDER BY id DESC LIMIT 5"
+            ).fetchall()
+            conn.close()
+        result["stats"] = get_dashboard_stats()
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
 @app.get("/api/state")
 def get_state():
     try:
