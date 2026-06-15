@@ -41,25 +41,27 @@ manager = WsManager()
 # ── App state ────────────────────────────────────────────────────────────────
 scan_phase = "idle"  # idle | gathering | scanning | voting | approved | rejected
 
-def _load_initial_state():
-    """Load real data from trade_log DB on startup."""
-    try:
-        from agents.trade_log import get_recent_scans, get_dashboard_stats
-        return get_recent_scans(9), get_dashboard_stats()
-    except Exception as e:
-        print(f"[server] trade_log load failed: {e}")
-        return [], {"today_pnl": 0, "open_pnl": 0, "win_rate": 0,
-                    "wins": 0, "losses": 0, "best_trade": 0, "trades": []}
-
-scan_log, stats = _load_initial_state()
-
-latest_signal = {
+_EMPTY_SIGNAL = {
     "direction": "—", "setup_type": "—", "stars": "",
     "entry": 0.0, "sl": 0.0, "tp": 0.0, "lot": 0.0, "rr": 0.0,
     "approved": False, "time": "—", "pnl": 0.0,
     "votes": {"chart": False, "bias": False, "news": False, "risk": False},
     "reason": "Waiting for first scan…",
 }
+
+def _load_initial_state():
+    """Load real data from trade_log DB on startup."""
+    try:
+        from agents.trade_log import get_recent_scans, get_dashboard_stats, get_latest_dashboard_signal
+        sig = get_latest_dashboard_signal() or _EMPTY_SIGNAL
+        return get_recent_scans(9), get_dashboard_stats(), sig
+    except Exception as e:
+        print(f"[server] trade_log load failed: {e}")
+        empty_stats = {"today_pnl": 0, "open_pnl": 0, "win_rate": 0,
+                       "wins": 0, "losses": 0, "best_trade": 0, "trades": []}
+        return [], empty_stats, _EMPTY_SIGNAL
+
+scan_log, stats, latest_signal = _load_initial_state()
 scan_running = False
 scan_requested = False  # set by /api/scan, cleared by /api/poll-scan
 

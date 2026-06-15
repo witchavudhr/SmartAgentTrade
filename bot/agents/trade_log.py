@@ -567,15 +567,57 @@ def get_dashboard_stats() -> dict:
         r = "o" if outcome == "pending" else ("w" if outcome == "win" else "l")
         trades_bar.append({"pnl": round(pnl or 0, 1), "r": r})
 
+    today_win_pips = [r[1] or 0 for r in today_trades if r[0] == "win"]
     return {
         "today_pnl": round(today_pnl, 2),
         "open_pnl": 0.0,
-        "win_rate": summary["win_rate"],
-        "wins": summary["wins"],
-        "losses": summary["losses"],
-        "best_trade": round(max((r[0] or 0 for r in today_trades), default=0), 2),
+        "win_rate": round(today_wins / (today_wins + today_losses) * 100, 1) if (today_wins + today_losses) > 0 else summary["win_rate"],
+        "wins": today_wins,
+        "losses": today_losses,
+        "best_trade": round(max(today_win_pips, default=0), 2),
         "trades": trades_bar,
     }
+
+
+def get_latest_dashboard_signal() -> dict | None:
+    """Return latest scan result as dashboard signal dict (for server startup)."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("""
+        SELECT timestamp, signal, setup_type, confidence, vote_score,
+               approved, reject_reason, entry, sl, tp, rr,
+               chart_vote, bias_vote, news_vote
+        FROM scan_log ORDER BY id DESC LIMIT 1
+    """).fetchone()
+    conn.close()
+    if not row is None:
+        ts, signal, setup_type, confidence, vote_score, approved, reject_reason, \
+            entry, sl, tp, rr, chart_v, bias_v, news_v = row
+        confidence = confidence or 0
+        stars = "★★★" if confidence >= 80 else "★★" if confidence >= 60 else "★"
+        direction = signal if signal in ("BUY", "SELL") else "BUY"
+        t = ts[11:16] if ts else "--:--"
+        return {
+            "direction": direction,
+            "setup_type": setup_type or "—",
+            "stars": stars if approved else "",
+            "entry": entry or 0.0,
+            "sl": sl or 0.0,
+            "tp": tp or 0.0,
+            "lot": 0.01,
+            "rr": rr or 0.0,
+            "approved": bool(approved),
+            "time": t,
+            "pnl": 0.0,
+            "votes": {
+                "chart": bool(chart_v),
+                "bias": bool(bias_v),
+                "news": bool(news_v),
+                "risk": True,
+            },
+            "reason": reject_reason or "",
+        }
+    return None
 
 
 def get_daily_breakdown(days: int = 7) -> list[dict]:
