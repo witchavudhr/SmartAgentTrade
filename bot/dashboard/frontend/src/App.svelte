@@ -110,14 +110,8 @@
   }
 
   function startCountdown() {
-    csec = 30;
-    clearInterval(countdownTimer);
-    countdownTimer = setInterval(() => {
-      if (scanPhase !== 'idle') { clearInterval(countdownTimer); return; }
-      csec--;
-      statusText = `Next scan in ${csec}s`;
-      if (csec <= 0) { clearInterval(countdownTimer); triggerScan(); }
-    }, 1000);
+    // Auto-scan disabled — manual only via Scan Now button
+    statusText = 'Watching the market...';
   }
 
   // ── Scan sequence ─────────────────────────────────────────────────────────
