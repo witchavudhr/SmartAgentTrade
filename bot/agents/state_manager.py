@@ -24,7 +24,7 @@ _DEFAULT: dict = {
     "last_scan":        None,
     "pending_signal":   None,
     "pending_trade_id": None,
-    "scan_windows":     [1.0, 3.0, 7.25, 11.0, 13.75, 15.75, 20.25, 22.75],
+    "scan_windows":     [1.0, 3.0, 7.25, 9.0, 11.0, 13.75, 15.75, 20.25, 22.75],
     "open_trade":       None,   # trade ที่กำลัง monitor trailing/reentry
     "updated_at":       None,
 }

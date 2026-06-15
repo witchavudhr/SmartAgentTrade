@@ -11,8 +11,8 @@ from agents.json_utils import safe_json_parse
 _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-smc    = SMCEngine(swing_length=5)   # M5 OB engine — swing_length=5 ตรงกับ TV indicator "50 5 5"
-smc_m15 = SMCEngine(swing_length=5)  # M15 OB engine
+smc     = SMCEngine(swing_length=2)   # M5 OB engine — swing สั้น จับ OB entry zone ใกล้ราคา
+smc_m15 = SMCEngine(swing_length=5)  # M15 OB engine — swing ใหญ่ จับ structural OB
 
 def _get_mt5_price() -> float | None:
     """ดึงราคา ask/bid ล่าสุดจาก MT5 ถ้าเชื่อมอยู่"""
