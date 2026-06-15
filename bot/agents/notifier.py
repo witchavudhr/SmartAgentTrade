@@ -716,6 +716,24 @@ async def _handle_scan_result(result: dict, send_fn):
             ticket = existing_trade.get("mt5_ticket")
             open_tickets = {p["ticket"] for p in mt5_positions}
             if ticket and ticket not in open_tickets:
+                # ปิดจาก MT5 โดยตรง — ดึง close price แล้ว auto-record outcome
+                try:
+                    deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+                    if deal:
+                        close_px = deal["close_price"]
+                        entry_px = existing_trade.get("entry", 0)
+                        direction = existing_trade.get("direction", "BUY")
+                        pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
+                        pnl_pips = round(pnl_raw * 10, 1)
+                        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+                        trade_id = existing_trade.get("trade_id")
+                        if trade_id and str(trade_id).isdigit():
+                            from agents.trade_log import update_outcome
+                            update_outcome(int(trade_id), outcome, pnl_pips, actual_exit=close_px)
+                        icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
+                        print(f"[notifier] {icon} MT5 closed — {outcome} {pnl_pips:+.1f}p trade_id={trade_id}")
+                except Exception as e:
+                    print(f"[notifier] ⚠️ auto-outcome failed: {e}")
                 state_manager.set_field(bot_state, "open_trade", None)
                 existing_trade = None
                 print(f"[notifier] 🧹 open_trade state cleared — MT5 position closed")
@@ -1445,6 +1463,56 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     if not ot:
         return
 
+    # ── Auto-detect MT5 close (ปิดจาก MT5 โดยตรง) ────────────────
+    if mt5_executor.is_available():
+        try:
+            ticket = ot.get("mt5_ticket")
+            positions = mt5_executor.get_open_positions()
+            open_tickets = {p["ticket"] for p in positions}
+            is_closed = ticket and int(ticket) not in open_tickets
+            if not is_closed and not ticket and not positions:
+                is_closed = True
+
+            if is_closed:
+                trade_id  = ot.get("trade_id")
+                entry_px  = ot.get("entry", 0)
+                direction = ot.get("direction", "BUY")
+                pnl_pips  = None
+                outcome   = None
+                close_px  = None
+
+                if ticket:
+                    deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+                    if deal:
+                        close_px = deal["close_price"]
+                        pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
+                        pnl_pips = round(pnl_raw * 10, 1)
+                        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+
+                if outcome and trade_id and str(trade_id).isdigit():
+                    from agents.trade_log import update_outcome
+                    update_outcome(int(trade_id), outcome, pnl_pips, actual_exit=close_px)
+
+                icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
+                state_manager.set_field(bot_state, "open_trade", None)
+                await ctx.bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=(
+                        f"{icon} *MT5 ปิด Trade อัตโนมัติ — #{trade_id}*\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"{direction} | Entry: `{entry_px}` → Exit: `{close_px or '?'}`\n"
+                        f"P&L: `{pnl_pips:+.1f} จุด`\n"
+                        f"บันทึก outcome: `{outcome or 'unknown'}` ใน DB แล้ว"
+                    ) if outcome else (
+                        f"⚠️ *Trade ปิดจาก MT5 แต่ดึง history ไม่ได้*\n"
+                        f"Trade #{trade_id} — ใช้ `/outcome {trade_id} win/loss [จุด]` บันทึกเอง"
+                    ),
+                    parse_mode="Markdown",
+                )
+                return  # ไม่ต้อง monitor ต่อ
+        except Exception as e:
+            print(f"[trade_monitor] auto-close detect error: {e}")
+
     direction = ot.get("direction")
     entry     = ot.get("entry", 0)
     current_sl = ot.get("current_sl", 0)
@@ -1811,6 +1879,39 @@ def _startup_clear_stale_trade():
         print(f"[startup] 🔄 Restored {len(positions)} MT5 position(s) → Trade MT5-{pos['ticket']} {dirs} lot={restored['lot']}")
 
 
+async def _startup_session_scan(ctx: ContextTypes.DEFAULT_TYPE):
+    """รัน scan ทันทีตอน startup ถ้ามี slot ที่ missed ใน 14 นาทีที่ผ่านมา และ last_scan เก่ากว่า 10 นาที"""
+    now = datetime.now()
+
+    # ถ้า scan ไปแล้วใน 10 นาที ไม่ต้อง scan ซ้ำ
+    last = bot_state.get("last_scan")
+    if last:
+        try:
+            last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+            if (now - last_dt).total_seconds() < 600:
+                print(f"[startup_scan] ⏭ last_scan={last} — ยังไม่ถึง 10 นาที ข้าม")
+                return
+        except Exception:
+            pass
+
+    # หา slot ที่ควรจะ fire แต่ bot ยังไม่ได้ scan (missed ใน 14 นาทีที่ผ่านมา)
+    now_mins = now.hour * 60 + now.minute
+    missed_label = None
+    for scan_time, label in _build_scan_windows():
+        slot_mins = scan_time.hour * 60 + scan_time.minute
+        # slot ผ่านไปแล้วไม่เกิน 14 นาที (ก่อน slot ถัดไป 15 นาที)
+        if 0 < now_mins - slot_mins <= 14:
+            missed_label = label
+            break
+
+    if not missed_label:
+        print(f"[startup_scan] ⏭ {now.strftime('%H:%M')} — ไม่มี missed slot ใน 14 นาทีที่ผ่านมา")
+        return
+
+    print(f"[startup_scan] 🚀 missed slot: {missed_label} → scan ทันที")
+    await auto_scan(ctx)
+
+
 def run():
     from config.settings import SCAN_INTERVAL_MINUTES
 
@@ -1876,6 +1977,9 @@ def run():
 
     # ── Startup: clear stale open_trade state ──────────────────────
     _startup_clear_stale_trade()
+
+    # ── Startup scan: ถ้า restart ระหว่าง session และ scan เก่าเกิน 10 นาที ──
+    app.job_queue.run_once(_startup_session_scan, when=5, data={"session_label": "🚀 Startup"})
 
     print("🏢 SmartAgentTrade Bot เริ่มทำงานแล้ว...")
     app.run_polling()

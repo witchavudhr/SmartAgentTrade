@@ -287,12 +287,12 @@ at_extreme_high = high > extreme_high
 // EQUAL HIGHS / LOWS (EQH/EQL) — approximation
 // ═══════════════════════════════════════════════════════════════════
 eqh_threshold = atr * 0.3
-near_eqh = array.size(sh_prices) >= 2 and
+near_eqh = array.size(sh_prices) >= 2 ?
      math.abs(array.get(sh_prices, array.size(sh_prices)-1) -
-              array.get(sh_prices, array.size(sh_prices)-2)) < eqh_threshold
-near_eql = array.size(sl_prices) >= 2 and
+              array.get(sh_prices, array.size(sh_prices)-2)) < eqh_threshold : false
+near_eql = array.size(sl_prices) >= 2 ?
      math.abs(array.get(sl_prices, array.size(sl_prices)-1) -
-              array.get(sl_prices, array.size(sl_prices)-2)) < eqh_threshold
+              array.get(sl_prices, array.size(sl_prices)-2)) < eqh_threshold : false
 
 // EQL level (ค่าเฉลี่ยของ swing low 2 ตัวที่ใกล้กัน)
 eql_level = near_eql and array.size(sl_prices) >= 2 ?
@@ -438,8 +438,12 @@ calc_short_sltp() =>
 long_col  = long_stars  == "★★★" ? #00C853 : long_stars  == "★★" ? color.new(#00C853, 25) : color.new(#00C853, 55)
 short_col = short_stars == "★★★" ? #D50000  : short_stars == "★★" ? color.new(#D50000, 25)  : color.new(#D50000, 55)
 
-plotshape(long_sig,  "Long",  shape.triangleup,   location.belowbar, long_col,  size=long_stars  == "★★★" ? size.large : size.normal, text=long_stars,  textcolor=color.white)
-plotshape(short_sig, "Short", shape.triangledown, location.abovebar, short_col, size=short_stars == "★★★" ? size.large : size.normal, text=short_stars, textcolor=color.white)
+plotshape(long_sig  and long_stars  == "★★★", "Long ★★★", shape.triangleup,   location.belowbar, long_col,  size=size.large,  text="★★★", textcolor=color.white)
+plotshape(long_sig  and long_stars  == "★★",  "Long ★★",  shape.triangleup,   location.belowbar, long_col,  size=size.normal, text="★★",  textcolor=color.white)
+plotshape(long_sig  and long_stars  == "★",   "Long ★",   shape.triangleup,   location.belowbar, long_col,  size=size.small,  text="★",   textcolor=color.white)
+plotshape(short_sig and short_stars == "★★★", "Short ★★★",shape.triangledown, location.abovebar, short_col, size=size.large,  text="★★★", textcolor=color.white)
+plotshape(short_sig and short_stars == "★★",  "Short ★★", shape.triangledown, location.abovebar, short_col, size=size.normal, text="★★",  textcolor=color.white)
+plotshape(short_sig and short_stars == "★",   "Short ★",  shape.triangledown, location.abovebar, short_col, size=size.small,  text="★",   textcolor=color.white)
 
 // SL/TP Lines + Labels
 var line  sl_line  = na

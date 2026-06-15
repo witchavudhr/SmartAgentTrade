@@ -2,5 +2,8 @@
 __pycache__/
 *.pyc
 .env
+*.env
+bot/env.txt
 config/secrets.py
 data/
+.claude/

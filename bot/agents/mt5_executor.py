@@ -251,6 +251,32 @@ def get_open_positions() -> list[dict]:
     ]
 
 
+def get_last_deal_for_ticket(ticket: int) -> dict | None:
+    """ดึง deal ปิดล่าสุดของ ticket จาก MT5 history (ย้อนหลัง 7 วัน)"""
+    ok, _ = _connect()
+    if not ok:
+        return None
+    from datetime import datetime, timedelta
+    date_from = datetime.now() - timedelta(days=7)
+    date_to   = datetime.now() + timedelta(hours=1)
+    deals = mt5.history_deals_get(date_from, date_to) or []
+    disconnect()
+    # หา deal ที่เป็นการปิด position ของ ticket นี้ (entry=1 = close deal)
+    close_deals = [
+        d for d in deals
+        if d.position_id == ticket and d.entry == 1  # 1 = DEAL_ENTRY_OUT
+    ]
+    if not close_deals:
+        return None
+    d = close_deals[-1]  # ล่าสุด
+    return {
+        "close_price": d.price,
+        "profit":      d.profit,
+        "volume":      d.volume,
+        "time":        d.time,
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def is_available() -> bool:

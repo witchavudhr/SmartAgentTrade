@@ -611,15 +611,21 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
 
     # ── In OB ────────────────────────────────────────────────
     # เช็ค OB ทุกตัว (ไม่ใช่แค่ active_ob ตัวเดียว) เพื่อจับ bull/bear OB แยกกัน
+    # ต้องตรวจ direction: Bull OB ต้องเป็น retest (ราคาเคยอยู่เหนือ OB แล้ว pull back ลงมา)
+    #                     Bear OB ต้องเป็น retest (ราคาเคยอยู่ใต้ OB แล้ว pull up ขึ้นมา)
     all_obs = result.order_blocks or []
+    recent_high_5 = df['high'].iloc[-6:-1].max() if len(df) >= 6 else df['high'].max()
+    recent_low_5  = df['low'].iloc[-6:-1].min()  if len(df) >= 6 else df['low'].min()
     in_bull_ob = any(
         ob.kind == 'bullish' and not ob.mitigated
         and ob.bottom <= current_close <= ob.top
+        and recent_high_5 > ob.top          # ราคาเคยเหนือ OB → pull back ลงมา retest
         for ob in all_obs
     )
     in_bear_ob = any(
         ob.kind == 'bearish' and not ob.mitigated
         and ob.bottom <= current_close <= ob.top
+        and recent_low_5 < ob.bottom        # ราคาเคยใต้ OB → pull up ขึ้นมา retest
         for ob in all_obs
     )
 
