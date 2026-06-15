@@ -13,6 +13,22 @@ from pydantic import BaseModel
 app = FastAPI(title="SmartAgentTrade War Room")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+@app.on_event("startup")
+async def start_stats_refresh():
+    asyncio.create_task(_stats_refresh_loop())
+
+async def _stats_refresh_loop():
+    """Refresh stats from DB every 60s and broadcast to all clients."""
+    global stats
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from agents.trade_log import get_dashboard_stats
+            stats = get_dashboard_stats()
+            await manager.broadcast({"type": "stats", "data": stats})
+        except Exception:
+            pass
+
 # ── WebSocket manager ────────────────────────────────────────────────────────
 class WsManager:
     def __init__(self):
@@ -102,7 +118,12 @@ async def ws_endpoint(websocket: WebSocket):
 # ── REST endpoints ───────────────────────────────────────────────────────────
 @app.get("/api/state")
 def get_state():
-    return {"scan_phase": scan_phase, "signal": latest_signal, "log": scan_log[-9:], "stats": stats}
+    try:
+        from agents.trade_log import get_dashboard_stats
+        live_stats = get_dashboard_stats()
+    except Exception:
+        live_stats = stats
+    return {"scan_phase": scan_phase, "signal": latest_signal, "log": scan_log[-9:], "stats": live_stats}
 
 @app.post("/api/scan")
 async def trigger_scan():
