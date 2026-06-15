@@ -1,3 +1,4 @@
+import asyncio
 import anthropic
 import json
 from datetime import datetime
@@ -1651,6 +1652,36 @@ async def daily_close_summary(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Dashboard scan request poller ──────────────────────
+
+async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
+    """Poll dashboard every 5s — if 'Scan Now' was clicked, run real supervisor.run()."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{DASHBOARD_URL}/api/poll-scan")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+        if not data.get("requested"):
+            return
+    except Exception:
+        return
+
+    # Dashboard requested a scan — run supervisor with real MT5 data
+    result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
+    log_scan(result)
+    _push_to_dashboard(result)
+
+    async def send(text, **kw):
+        await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
+
+    await ctx.bot.send_message(
+        chat_id=TELEGRAM_CHAT_ID,
+        text="🖥️ *Dashboard Manual Scan*",
+        parse_mode="Markdown"
+    )
+    await _handle_scan_result(result, send)
+
+
 # ── Auto scan job ──────────────────────────────────────
 
 async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
@@ -1780,6 +1811,9 @@ def run():
             time=scan_time,
             data={"session_label": label}
         )
+
+    # Dashboard scan request poller — ทุก 5 วิ รับ Scan Now จาก UI
+    app.job_queue.run_repeating(poll_dashboard_scan, interval=5, first=10)
 
     # Trade monitor — ทุก 5 นาที ตรวจ trailing + reentry
     app.job_queue.run_repeating(trade_monitor, interval=300, first=60)

@@ -68,6 +68,7 @@ stats = {
     ]
 }
 scan_running = False
+scan_requested = False  # set by /api/scan, cleared by /api/poll-scan
 
 GATHER_MSGS = {
     "supervisor":    "Knights, to the table!",
@@ -115,6 +116,15 @@ async def trigger_scan():
     asyncio.create_task(run_scan())
     return {"ok": True}
 
+@app.get("/api/poll-scan")
+def poll_scan_request():
+    """Bot polls this to check if dashboard requested a manual scan."""
+    global scan_requested
+    if scan_requested:
+        scan_requested = False
+        return {"requested": True}
+    return {"requested": False}
+
 class AskBody(BaseModel):
     question: str
 
@@ -149,11 +159,12 @@ async def ask_agents(body: AskBody):
 
 # ── Scan logic ───────────────────────────────────────────────────────────────
 async def run_scan():
-    global scan_phase, latest_signal, scan_running
+    """Run gather+scanning animation, then signal bot to do the real scan via /api/poll-scan."""
+    global scan_phase, scan_running, scan_requested
     scan_running = True
     agents = ["supervisor", "chart_analyst", "bias_analyst", "news_scout", "risk_manager"]
 
-    # Phase 1 — gather
+    # Phase 1 — gather animation
     scan_phase = "gathering"
     await manager.broadcast({"type": "scan_phase", "phase": "gathering"})
     for a in agents:
@@ -161,46 +172,17 @@ async def run_scan():
         await asyncio.sleep(0.35)
     await asyncio.sleep(1.4)
 
-    # Phase 2 — scan
+    # Phase 2 — scanning animation, then signal bot
     scan_phase = "scanning"
     await manager.broadcast({"type": "scan_phase", "phase": "scanning"})
     for a in agents:
         await manager.broadcast({"type": "agent_bubble", "agent": a, "text": ANALYZE_MSGS[a]})
         await asyncio.sleep(0.3)
 
-    result = await run_bot_agents()
-    await asyncio.sleep(1.2)
-
-    # Phase 3 — vote
-    scan_phase = "voting"
-    await manager.broadcast({"type": "scan_phase", "phase": "voting"})
-    for a, vote_text in result["votes"].items():
-        await manager.broadcast({"type": "agent_bubble", "agent": a, "text": vote_text})
-        await asyncio.sleep(0.4)
-    await asyncio.sleep(1.0)
-
-    # Phase 4 — result
-    approved = result["approved"]
-    scan_phase = "approved" if approved else "rejected"
-    await manager.broadcast({"type": "scan_phase", "phase": scan_phase, "approved": approved})
-
-    sig = result["signal"]
-    latest_signal = sig
-    await manager.broadcast({"type": "signal", "data": sig})
-
-    entry = {
-        "time": datetime.now().strftime("%H:%M"),
-        "result": "ok" if approved else "no",
-        "text": f"{'BUY' if sig['direction']=='BUY' else 'SELL'} {sig['setup_type']} {sig['stars']}" if approved else "REJECTED",
-        "sub": f"APPROVED · {result['vote_count']}/4" if approved else result.get("reason", "No setup"),
-    }
-    scan_log.append(entry)
-    await manager.broadcast({"type": "scan_log", "data": entry})
-
-    await asyncio.sleep(3.5)
-    scan_phase = "idle"
-    await manager.broadcast({"type": "scan_phase", "phase": "idle"})
+    # Signal bot to run real supervisor.run() — result comes back via /api/push
+    scan_requested = True
     scan_running = False
+    # scan_phase stays "scanning" until bot pushes result via /api/push
 
 async def run_bot_agents() -> dict:
     try:
