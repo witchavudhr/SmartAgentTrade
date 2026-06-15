@@ -499,8 +499,7 @@ def _price_is_better(new_price: float, ex_price: float, direction: str) -> bool:
 
 async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
     """
-    Pyramid auto-confirm — confidence > 70%
-    Execute MT5 ทันที + แจ้ง Telegram (ไม่รอกดปุ่ม)
+    Pyramid auto-execute — ราคาดีกว่าไม้แรก = เปิดทันที ไม่รอ approve
     ราคาไม้ 2 ต้องดีกว่าไม้ 1 | ล็อตใหญ่กว่าไม้ 1 (×1.5)
     """
     signal    = result.get("analysis", {})
@@ -723,14 +722,11 @@ async def _handle_scan_result(result: dict, send_fn):
                 _sig["session"]  = get_session().get("session")
                 result["analysis"] = _sig
 
+                # ราคาดีกว่าไม้แรก = auto-execute ทันที ไม่รอ approve
+                # (ราคาไม่ดี = _execute_pyramid_auto จะ skip + แจ้ง Telegram เอง)
                 confidence = int(_sig.get("confidence") or 0)
-                if confidence > 70:
-                    # Auto-confirm pyramid ทันที
-                    print(f"[notifier] 🔺 Auto-pyramid — confidence={confidence}% > 70%")
-                    await _execute_pyramid_auto(result, existing_trade, send_fn)
-                else:
-                    print(f"[notifier] 🔺 Advisory pyramid — confidence={confidence}% ≤ 70%")
-                    await _send_advisory_alert(result, existing_trade, send_fn)
+                print(f"[notifier] 🔺 Auto-pyramid — confidence={confidence}% (no approval needed)")
+                await _execute_pyramid_auto(result, existing_trade, send_fn)
                 return
             else:
                 await _safe_send(
