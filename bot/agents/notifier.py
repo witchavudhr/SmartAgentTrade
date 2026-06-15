@@ -519,7 +519,24 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
     ex_entry = float(existing_trade.get("entry") or 0)
     ex_lot   = float(existing_trade.get("lot") or 0.01)
 
-    # ตรวจราคา — ไม้ 2 ต้องดีกว่าไม้ 1
+    # ── เช็คจำนวนไม้ที่เปิดอยู่ (MT5 เป็น source of truth) ──────
+    MAX_PYRAMID = 3
+    open_count = 0
+    if mt5_executor.is_available():
+        try:
+            open_count = len(mt5_executor.get_open_positions())
+        except Exception:
+            pass
+    if open_count >= MAX_PYRAMID:
+        await send_fn(
+            f"🚫 *Pyramid หยุด — ครบ {MAX_PYRAMID} ไม้แล้ว*\n"
+            f"ตอนนี้มี `{open_count}` positions เปิดอยู่ใน MT5\n"
+            f"_ปิดไม้ก่อนแล้วค่อย pyramid ใหม่_",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ตรวจราคา — ไม้ใหม่ต้องดีกว่าไม้แรก
     if entry_price and ex_entry and not _price_is_better(entry_price, ex_entry, direction):
         diff = abs(entry_price - ex_entry)
         await send_fn(
