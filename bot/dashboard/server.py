@@ -2,7 +2,8 @@ import sys, os, asyncio, json
 from datetime import datetime
 from typing import List, Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))  # Forex/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))        # Forex/bot/
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
