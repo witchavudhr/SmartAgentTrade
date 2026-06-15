@@ -508,6 +508,76 @@ def get_summary() -> dict:
     }
 
 
+def get_recent_scans(n: int = 9) -> list[dict]:
+    """Return last N scan_log entries in dashboard scan_log format."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT timestamp, approved, signal, setup_type, vote_score, reject_reason
+        FROM scan_log
+        ORDER BY id DESC LIMIT ?
+    """, (n,)).fetchall()
+    conn.close()
+    result = []
+    for ts, approved, signal, setup_type, vote_score, reject_reason in reversed(rows):
+        t = ts[11:16] if ts else "--:--"  # "HH:MM" from "YYYY-MM-DD HH:MM:SS"
+        if approved:
+            result.append({
+                "time": t,
+                "result": "ok",
+                "text": f"{signal or 'BUY'} {setup_type or 'OB'}",
+                "sub": f"APPROVED · {vote_score or 0}/3",
+            })
+        else:
+            result.append({
+                "time": t,
+                "result": "no",
+                "text": "REJECTED",
+                "sub": reject_reason or "No setup",
+            })
+    return result
+
+
+def get_dashboard_stats() -> dict:
+    """Real stats for dashboard — today P&L + all-time win rate."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    today_trades = conn.execute("""
+        SELECT outcome, pnl_pips FROM trades
+        WHERE action='confirmed' AND DATE(timestamp)=?
+    """, (today,)).fetchall()
+
+    today_pnl = sum(r[1] or 0 for r in today_trades)
+    today_wins = sum(1 for r in today_trades if r[0] == "win")
+    today_losses = sum(1 for r in today_trades if r[0] == "loss")
+    open_trades = sum(1 for r in today_trades if r[0] == "pending")
+
+    summary = get_summary()
+
+    recent_trades = conn.execute("""
+        SELECT pnl_pips, outcome FROM trades
+        WHERE action='confirmed' ORDER BY id DESC LIMIT 10
+    """).fetchall()
+    conn.close()
+
+    trades_bar = []
+    for pnl, outcome in reversed(recent_trades):
+        r = "o" if outcome == "pending" else ("w" if outcome == "win" else "l")
+        trades_bar.append({"pnl": round(pnl or 0, 1), "r": r})
+
+    return {
+        "today_pnl": round(today_pnl, 2),
+        "open_pnl": 0.0,
+        "win_rate": summary["win_rate"],
+        "wins": summary["wins"],
+        "losses": summary["losses"],
+        "best_trade": round(max((r[0] or 0 for r in today_trades), default=0), 2),
+        "trades": trades_bar,
+    }
+
+
 def get_daily_breakdown(days: int = 7) -> list[dict]:
     """P&L แยกตามวัน ย้อนหลัง N วัน"""
     init_db()

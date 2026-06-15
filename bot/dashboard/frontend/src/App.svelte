@@ -36,36 +36,23 @@
     bubbleOn: false,
   }));
 
-  let scanLog = [
-    {t:'16:30',c:'ok',tx:'BUY SWING_OB ★★',s:'APPROVED · 3/3'},
-    {t:'16:00',c:'no',tx:'REJECTED',s:'No OB proximity'},
-    {t:'15:45',c:'no',tx:'REJECTED',s:'No swing setup'},
-    {t:'15:00',c:'ok',tx:'BUY TREND_OB ★★★',s:'APPROVED · RR1:2.4'},
-    {t:'14:00',c:'bl',tx:'BLOCKED',s:'NFP in 28min'},
-    {t:'13:30',c:'ok',tx:'SELL TREND_OB ★★',s:'APPROVED · 2/3'},
-    {t:'12:00',c:'no',tx:'REJECTED',s:'RR 1.2 < 1.5'},
-    {t:'10:45',c:'ok',tx:'BUY TREND_OB ★★',s:'APPROVED · 3/3'},
-    {t:'09:15',c:'ok',tx:'SELL SWING_OB ★',s:'APPROVED · CHoCH'},
-  ];
+  let scanLog = [];  // populated from server on init (real DB data)
 
   let signal = {
-    direction:'BUY', setup_type:'SWING_OB', stars:'★★',
-    entry:3312, sl:3302, tp:3344, lot:0.01, rr:2.3,
-    pnl:6.50, time:'16:30', approved:true,
-    votes:{chart:true,bias:true,news:true,risk:true},
-    reason:'Bull OB + HTF demand + no news window',
+    direction:'—', setup_type:'—', stars:'',
+    entry:0, sl:0, tp:0, lot:0, rr:0,
+    pnl:0, time:'—', approved:false,
+    votes:{chart:false,bias:false,news:false,risk:false},
+    reason:'Waiting for first scan…',
   };
 
-  let stats = { today_pnl:47.20, open_pnl:6.50, win_rate:67, wins:3, losses:2, best_trade:20.00,
-    trades:[{p:15,r:'w'},{p:12,r:'w'},{p:-13,r:'l'},{p:12,r:'w'},{p:-5,r:'l'},{p:20,r:'w'},{p:6.5,r:'o'}] };
+  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, best_trade:0, trades:[] };
 
   // Ask panel
   let askInput = '';
   let askLoading = false;
   let messages = [
-    { role:'ai', text:'สวัสดีครับ — London session · BUY open +65p' },
-    { role:'user', text:'OB zone อยู่ที่ไหน?' },
-    { role:'ai', text:'Bull OB M5: 3308–3315 ซ้อนทับ M15 demand 3305–3318' },
+    { role:'ai', text:'สวัสดีครับ — War Room พร้อมแล้ว รอผลจาก bot…' },
   ];
 
   // Countdown

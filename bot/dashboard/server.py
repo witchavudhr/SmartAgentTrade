@@ -1,4 +1,4 @@
-import sys, os, asyncio, json, random
+import sys, os, asyncio, json
 from datetime import datetime
 from typing import List, Optional
 
@@ -40,42 +40,35 @@ manager = WsManager()
 
 # ── App state ────────────────────────────────────────────────────────────────
 scan_phase = "idle"  # idle | gathering | scanning | voting | approved | rejected
-scan_log: list = [
-    {"time": "16:30", "result": "ok",  "text": "BUY SWING_OB ★★",   "sub": "APPROVED · 3/3"},
-    {"time": "16:00", "result": "no",  "text": "REJECTED",           "sub": "No OB proximity"},
-    {"time": "15:45", "result": "no",  "text": "REJECTED",           "sub": "No swing setup"},
-    {"time": "15:00", "result": "ok",  "text": "BUY TREND_OB ★★★",  "sub": "APPROVED · RR1:2.4"},
-    {"time": "14:00", "result": "bl",  "text": "BLOCKED",            "sub": "NFP in 28min"},
-    {"time": "13:30", "result": "ok",  "text": "SELL TREND_OB ★★",  "sub": "APPROVED · 2/3"},
-    {"time": "12:00", "result": "no",  "text": "REJECTED",           "sub": "RR 1.2 < 1.5"},
-    {"time": "10:45", "result": "ok",  "text": "BUY TREND_OB ★★",   "sub": "APPROVED · 3/3"},
-    {"time": "09:15", "result": "ok",  "text": "SELL SWING_OB ★",   "sub": "APPROVED · CHoCH"},
-]
+
+def _load_initial_state():
+    """Load real data from trade_log DB on startup."""
+    try:
+        from agents.trade_log import get_recent_scans, get_dashboard_stats
+        return get_recent_scans(9), get_dashboard_stats()
+    except Exception as e:
+        print(f"[server] trade_log load failed: {e}")
+        return [], {"today_pnl": 0, "open_pnl": 0, "win_rate": 0,
+                    "wins": 0, "losses": 0, "best_trade": 0, "trades": []}
+
+scan_log, stats = _load_initial_state()
+
 latest_signal = {
-    "direction": "BUY", "setup_type": "SWING_OB", "stars": "★★",
-    "entry": 3312.0, "sl": 3302.0, "tp": 3344.0, "lot": 0.01, "rr": 2.3,
-    "approved": True, "time": "16:30", "pnl": 6.50,
-    "votes": {"chart": True, "bias": True, "news": True, "risk": True},
-    "reason": "Bull OB + HTF demand + no news window",
-}
-stats = {
-    "today_pnl": 47.20, "open_pnl": 6.50,
-    "win_rate": 67, "wins": 3, "losses": 2, "best_trade": 20.00,
-    "trades": [
-        {"pnl": 15, "r": "w"}, {"pnl": 12, "r": "w"}, {"pnl": -13, "r": "l"},
-        {"pnl": 12, "r": "w"}, {"pnl": -5,  "r": "l"}, {"pnl": 20, "r": "w"},
-        {"pnl": 6.5, "r": "o"},
-    ]
+    "direction": "—", "setup_type": "—", "stars": "",
+    "entry": 0.0, "sl": 0.0, "tp": 0.0, "lot": 0.0, "rr": 0.0,
+    "approved": False, "time": "—", "pnl": 0.0,
+    "votes": {"chart": False, "bias": False, "news": False, "risk": False},
+    "reason": "Waiting for first scan…",
 }
 scan_running = False
 scan_requested = False  # set by /api/scan, cleared by /api/poll-scan
 
 GATHER_MSGS = {
     "supervisor":    "Knights, to the table!",
-    "chart_analyst": "Bull OB at 3308!",
-    "bias_analyst":  "HTF demand zone!",
-    "news_scout":    "No high impact!",
-    "risk_manager":  "RR 2.3 passes!",
+    "chart_analyst": "Fetching M5 data...",
+    "bias_analyst":  "Reading HTF bias...",
+    "news_scout":    "Checking calendar...",
+    "risk_manager":  "Loading balance...",
 }
 ANALYZE_MSGS = {
     "supervisor":    "Weighing all votes...",
@@ -134,7 +127,7 @@ class PushBody(BaseModel):
 @app.post("/api/push")
 async def push_result(body: PushBody):
     """Bot calls this after every supervisor.run() to update dashboard live."""
-    global latest_signal, scan_log
+    global latest_signal, scan_log, stats
     mapped = _map_supervisor_result(body.result)
     sig = mapped["signal"]
     latest_signal = sig
@@ -148,6 +141,13 @@ async def push_result(body: PushBody):
     scan_log.append(entry)
     await manager.broadcast({"type": "scan_log", "data": entry})
     await manager.broadcast({"type": "scan_phase", "phase": "approved" if sig["approved"] else "rejected"})
+    # Refresh stats from real DB
+    try:
+        from agents.trade_log import get_dashboard_stats
+        stats = get_dashboard_stats()
+        await manager.broadcast({"type": "stats", "data": stats})
+    except Exception:
+        pass
     await asyncio.sleep(3)
     await manager.broadcast({"type": "scan_phase", "phase": "idle"})
     return {"ok": True}
@@ -183,16 +183,6 @@ async def run_scan():
     scan_requested = True
     scan_running = False
     # scan_phase stays "scanning" until bot pushes result via /api/push
-
-async def run_bot_agents() -> dict:
-    try:
-        from agents import supervisor as sup_module
-        result = await asyncio.to_thread(sup_module.run)
-        return _map_supervisor_result(result)
-    except Exception as e:
-        print(f"[run_bot_agents] error: {e}")
-        return _mock_result()
-
 
 def _map_supervisor_result(result: dict) -> dict:
     approved  = result.get("approved", False)
@@ -239,32 +229,6 @@ def _map_supervisor_result(result: dict) -> dict:
         "reason": result.get("reject_reason", ""),
     }
 
-
-def _mock_result() -> dict:
-    approved  = random.random() > 0.4
-    direction = random.choice(["BUY", "SELL"])
-    setup     = random.choice(["SWING_OB", "TREND_OB"])
-    entry     = round(3300 + random.uniform(0, 50), 1)
-    return {
-        "approved": approved,
-        "votes": {
-            "supervisor":    f"{'APPROVED' if approved else 'REJECTED'} [mock]",
-            "chart_analyst": f"{'YES' if approved else 'NO'} — {setup}",
-            "bias_analyst":  "YES — H4 demand", "news_scout": "YES — clear",
-            "risk_manager":  f"{'OK' if approved else 'VETO'} — 0.01L",
-        },
-        "vote_count": 3 if approved else 0,
-        "signal": {
-            "direction": direction, "setup_type": setup,
-            "stars": "★★" if approved else "★",
-            "entry": entry, "sl": round(entry-10,1), "tp": round(entry+23,1),
-            "lot": 0.01, "rr": 2.3, "approved": approved,
-            "time": datetime.now().strftime("%H:%M"), "pnl": 0.0,
-            "votes": {"chart": approved, "bias": True, "news": True, "risk": approved},
-            "reason": "Bull OB + HTF demand" if approved else "No setup",
-        },
-        "reason": "" if approved else "No OB proximity",
-    }
 
 async def run_ask(question: str) -> str:
     try:
