@@ -856,7 +856,7 @@ async def _handle_scan_result(result: dict, send_fn):
 
             # BULL/BEAR_OB_ENTRY = รอ pullback ถึง OB จริงๆ → threshold แคบ (5 pts)
             # setup อื่น เช่น SWEEP_REJECT = เข้าได้ทันที → threshold กว้าง (25 pts)
-            FAR_THRESHOLD = 3 if "OB_ENTRY" in setup_type_now else 25
+            FAR_THRESHOLD = 5 if "OB_ENTRY" in setup_type_now else 25
 
             if direction == "BUY" and (current_mkt - ob_top) > FAR_THRESHOLD:
                 dist_usd = round(current_mkt - ob_top, 2)
