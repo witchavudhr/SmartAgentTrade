@@ -1,5 +1,5 @@
 # SmartAgentTrade — Project Tracker
-> Last updated: 2026-06-08
+> Last updated: 2026-06-16
 
 ---
 
@@ -8,10 +8,10 @@
 ```
 Phase 1 — Foundation         [100% ] ██████████ ✅
 Phase 2 — Full Voting        [100% ] ██████████ ✅
-Phase 3 — Virtual Office     [ 0%  ] ░░░░░░░░░░
+Phase 3 — MT5 Live Execution [75%  ] ███████░░░ 🔄
 Phase 4 — Self-Improvement   [ 0%  ] ░░░░░░░░░░
 
-TOTAL                        [ 50% ] █████░░░░░
+TOTAL                        [ 68% ] ███████░░░
 ```
 
 ---
@@ -144,33 +144,32 @@ OB Zone เข้า 3 entries:
 
 ---
 
-## Phase 3 — Virtual Office UI
-> เป้าหมาย: Web dashboard สวยงาม, report ครบ
-> Estimate: 3-4 สัปดาห์ | Budget: ~$0-10/เดือน (hosting)
+## Phase 3 — MT5 Live Execution
+> เป้าหมาย: เปิด/ปิด trade จริงผ่าน MT5 + EA จัดการ trailing
+> Status: 🔄 Live บน demo — กำลัง fine-tune
 
 ### Tasks
-- [ ] ออกแบบ UI (Figma หรือ sketch คร่าวๆ)
-- [ ] เขียน Web App (React + Tailwind)
-- [ ] Agent Cards แสดงสถานะ real-time
-- [ ] Live Feed แสดง activity
-- [ ] Report page (Daily/Weekly/Monthly)
-- [ ] สร้าง Agent Avatar (Midjourney)
-- [ ] Deploy บน Vercel (ฟรี)
-
-### หน้าที่ต้องมี
-```
-Dashboard   → ภาพรวม agent ทั้งหมด
-Live Feed   → activity real-time
-Reports     → Daily / Weekly / Monthly
-Trade Log   → ประวัติทุก trade
-Settings    → ปรับ mode, risk level
-```
+- [x] mt5_executor.py — เปิด/ปิด trade ผ่าน MT5 Python API
+- [x] SmartPartialClose EA — trailing stop + partial close อัตโนมัติ
+- [x] trade_monitor — monitor open position, trailing SL, re-entry
+- [x] pos_guard — ป้องกัน duplicate position
+- [x] state_manager — บันทึก bot state ลงดิสก์ (รอด restart)
+- [x] startup scan — จับ scan ที่หายเมื่อ restart
+- [x] paper_trader — ทดสอบโดยไม่ใช้เงินจริง
+- [x] War Room dashboard — web UI ดู signal real-time (localhost:8000)
+- [x] AMD pattern detector — จับท่า Spring/Upthrust (Range→Sweep→CHoCH→BOS)
+- [x] Primary OB selector — code เลือก M5/M15 OB ที่ใกล้ที่สุดก่อนส่งให้ Sonnet
+- [x] OB_ENTRY threshold $5 — ป้องกัน miss entry
+- [ ] MT5 data bridge — bot Mac ↔ MT5 Windows (ตอนนี้ใช้ yfinance delay 15 นาที)
+  options: (1) ย้าย bot ไป Windows (ง่ายสุด) (2) MetaAPI
+- [ ] Midnight scan window (00:00–01:00 Thai) — รอ backtest ก่อนเพิ่ม
+- [ ] Daily auto report ทุกเช้า
 
 ### Definition of Done
-- [ ] เปิดบนมือถือได้สวยงาม
-- [ ] ข้อมูล update real-time
-- [ ] report export เป็น PDF ได้
-- [ ] agent status แสดงถูกต้อง
+- [x] bot เปิด trade จริงได้ (demo)
+- [x] EA จัดการ trailing/partial close
+- [ ] data real-time (ไม่ใช่ yfinance delay)
+- [ ] รันต่อเนื่อง 7 วันไม่ crash
 
 ---
 
@@ -222,29 +221,29 @@ Settings    → ปรับ mode, risk level
 ---
 
 ## Next Action
-> ✅ Phase 1 + Phase 2 core เสร็จแล้ว — เริ่มทดสอบ + Phase 3
+> 🔄 Phase 3 กำลังรัน live บน demo — pending MT5 data bridge
 
-**ทดสอบทันที:**
-1. ส่ง `/scalein 4313 4280 bullish 10000` ใน Telegram → ดู scale-in plan
-2. ส่ง `/scan` → ดู pipeline ทั้งหมดทำงาน
-3. ส่ง `/bias` และ `/news` → ดูว่า cache ทำงาน
-4. รัน bot 1 ชั่วโมง ดูว่า auto scan ทำงาน + ไม่ crash
+**ทำทันที:**
+1. ย้าย bot ไปรันบน Windows เครื่องเดียวกับ MT5 → แก้ data delay 15 นาที
+2. Backtest midnight window (00:00–01:00 Thai) ก่อนเพิ่ม
+3. Daily auto report ทุกเช้า
 
-**Phase 3 (ถัดไป):**
-1. Virtual Office UI — React + dark theme + agent cards
-2. Daily auto report ทุกเช้า 08:00
-3. ย้าย bot ขึ้น VPS
+**Phase 4 (ถัดไป):**
+1. Weekly review agent — อ่าน trade log ปรับ weight
+2. Win rate tracking by setup type
+3. Alert ถ้า drawdown เกิน 5%
 
 ---
 
 ## Backlog (ทำทีหลัง)
 | รายการ | หมายเหตุ |
 |--------|---------|
-| UI สวยงาม (Virtual Office) | Phase 3 — React + dark theme + agent cards |
-| Agent Avatar | Midjourney generate ทีหลัง |
-| MT5 Integration | ส่งคำสั่งเทรดจริง — ทำหลังจาก bot stable แล้ว (มี EA + VPS พร้อมแล้ว) |
-| Cloud Server | มี VPS อยู่แล้ว — ย้าย bot ขึ้น VPS เมื่อพร้อม live |
+| MT5 data bridge (Mac↔Windows) | ย้าย bot ไป Windows หรือ MetaAPI |
+| Midnight scan 00:00–01:00 Thai | รอ backtest ก่อน — NY ยังไม่ปิดสมบูรณ์ |
+| Virtual Office UI | React + dark theme + agent cards — Phase ถัดไป |
 | Daily Auto Report | ส่งสรุปทุกเช้าอัตโนมัติ |
+| Live trading (real account) | หลัง demo stable 30+ วัน |
+| Agent Avatar | Midjourney generate ทีหลัง |
 
 ---
 
@@ -252,13 +251,15 @@ Settings    → ปรับ mode, risk level
 | วันที่ | Decision |
 |--------|---------|
 | 2026-06-08 | ใช้ Telegram (interactive) แทน Line |
-| 2026-06-08 | เริ่มจาก 0 ไม่ใช้ indicator เดิม |
 | 2026-06-08 | ใช้ Python เป็น main language |
-| 2026-06-08 | Virtual Office ทำ Phase 3 ไม่ใช่ตอนเริ่ม |
 | 2026-06-08 | Voting ต้องผ่าน 2/3 analyst + Risk ไม่ veto |
 | 2026-06-08 | ใช้ yfinance ดึงราคา + Claude Sonnet วิเคราะห์ |
-| 2026-06-08 | Bot รันครั้งแรกสำเร็จ — Telegram เชื่อมต่อได้แล้ว |
 | 2026-06-08 | ปรับ cost: Haiku + cache + signal filter → $22 → $2-3/เดือน |
-| 2026-06-08 | มี EA + VPS พร้อมแล้ว — MT5 integration ทำทีหลัง |
-| 2026-06-08 | เพิ่ม Scale-in OB strategy: 30%/30%/40% ratio, entry 3 ที่ sweep zone |
-| 2026-06-08 | Phase 2 core เสร็จ: Bias+News+Supervisor+Risk+ScaleIn ครบแล้ว |
+| 2026-06-08 | เพิ่ม Scale-in OB strategy: 30%/30%/40% ratio |
+| 2026-06-10 | MT5 executor live บน demo — เปิด/ปิด trade จริงได้แล้ว |
+| 2026-06-10 | SmartPartialClose EA จัดการ trailing/partial close แทน bot |
+| 2026-06-15 | OB direction check: Bull OB ต้องเป็น retest (ราคาเคยเหนือ OB แล้ว pull back) |
+| 2026-06-15 | Primary OB = code เลือก M5/M15 ที่ใกล้ที่สุด ไม่ให้ Sonnet เดาเอง |
+| 2026-06-15 | AMD pattern detector เพิ่มเข้า smc_engine — จับท่า Spring/Upthrust |
+| 2026-06-16 | OB_ENTRY threshold $3→$5 — ป้องกัน miss entry จาก margin เล็กน้อย |
+| 2026-06-16 | MT5 อยู่ Windows คนละเครื่องกับ bot (Mac) → yfinance delay 15 นาที ยังไม่แก้ |
