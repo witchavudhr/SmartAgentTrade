@@ -130,6 +130,7 @@ async def trigger_scan():
     global scan_running
     if scan_running:
         return {"ok": False, "msg": "Scan already running"}
+    scan_running = True  # lock ก่อน create task — ป้องกัน double-trigger
     asyncio.create_task(run_scan())
     return {"ok": True}
 
