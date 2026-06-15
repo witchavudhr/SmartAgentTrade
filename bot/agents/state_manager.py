@@ -80,8 +80,15 @@ def describe(state: dict) -> str:
         tid = state.get("pending_trade_id")
         pending_str = f"รอ Confirm: `{sig}`" + (f" (Trade #{tid})" if tid else "")
 
-    windows = state.get("scan_windows", [])
-    win_str = ", ".join(f"{w:g}:00" for w in windows) if windows else "-"
+    sessions = (
+        "🌅 Pre-Event  06:30–08:30\n"
+        "          🌏 Late Asia   10:30–12:00\n"
+        "          🇬🇧 London     13:45–17:30\n"
+        "          🇯🇵 JP Close   15:45–16:15\n"
+        "          🇺🇸 NY         19:00–23:00\n"
+        "          🌙 Late NY    01:00–02:00\n"
+        "          _(ทุก 15 นาที — DST-aware)_"
+    )
 
     return (
         f"📊 *Bot Status*\n"
@@ -89,7 +96,8 @@ def describe(state: dict) -> str:
         f"สถานะ: {status}\n"
         f"สแกนล่าสุด: `{last}`\n"
         f"Pending Signal: {pending_str}\n"
-        f"Scan Windows (Thai): `{win_str}`\n"
+        f"Scan Sessions (Thai):\n"
+        f"          {sessions}\n"
         f"State บันทึกล่าสุด: `{updated}`\n"
         f"💾 State ถูกเซฟลงดิสก์ทุกครั้งที่เปลี่ยน"
     )
