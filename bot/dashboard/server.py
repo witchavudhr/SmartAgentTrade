@@ -129,7 +129,8 @@ class PushBody(BaseModel):
 @app.post("/api/push")
 async def push_result(body: PushBody):
     """Bot calls this after every supervisor.run() to update dashboard live."""
-    global latest_signal, scan_log, stats
+    global latest_signal, scan_log, stats, scan_running
+    scan_running = False  # unblock Scan Now button
     mapped = _map_supervisor_result(body.result)
     sig = mapped["signal"]
     latest_signal = sig
@@ -182,9 +183,10 @@ async def run_scan():
         await asyncio.sleep(0.3)
 
     # Signal bot to run real supervisor.run() — result comes back via /api/push
+    # scan_running stays True until /api/push clears it (blocks duplicate Scan Now clicks)
     scan_requested = True
-    scan_running = False
-    # scan_phase stays "scanning" until bot pushes result via /api/push
+    # Safety timeout: auto-release lock after 120s in case bot doesn't respond
+    asyncio.create_task(_scan_timeout(120))
 
 def _map_supervisor_result(result: dict) -> dict:
     approved  = result.get("approved", False)
@@ -231,6 +233,15 @@ def _map_supervisor_result(result: dict) -> dict:
         "reason": result.get("reject_reason", ""),
     }
 
+
+async def _scan_timeout(seconds: int):
+    """Release scan lock if bot doesn't push result within timeout."""
+    global scan_running, scan_phase
+    await asyncio.sleep(seconds)
+    if scan_running:
+        scan_running = False
+        scan_phase = "idle"
+        await manager.broadcast({"type": "scan_phase", "phase": "idle"})
 
 async def run_ask(question: str) -> str:
     try:
