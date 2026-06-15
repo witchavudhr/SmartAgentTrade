@@ -118,6 +118,30 @@ async def trigger_scan():
 class AskBody(BaseModel):
     question: str
 
+class PushBody(BaseModel):
+    result: dict  # raw supervisor.run() output
+
+@app.post("/api/push")
+async def push_result(body: PushBody):
+    """Bot calls this after every supervisor.run() to update dashboard live."""
+    global latest_signal, scan_log
+    mapped = _map_supervisor_result(body.result)
+    sig = mapped["signal"]
+    latest_signal = sig
+    await manager.broadcast({"type": "signal", "data": sig})
+    entry = {
+        "time": datetime.now().strftime("%H:%M"),
+        "result": "ok" if sig["approved"] else "no",
+        "text": f"{sig['direction']} {sig['setup_type']} {sig['stars']}" if sig["approved"] else "REJECTED",
+        "sub": f"APPROVED · {mapped['vote_count']}/3" if sig["approved"] else mapped.get("reason", "No setup"),
+    }
+    scan_log.append(entry)
+    await manager.broadcast({"type": "scan_log", "data": entry})
+    await manager.broadcast({"type": "scan_phase", "phase": "approved" if sig["approved"] else "rejected"})
+    await asyncio.sleep(3)
+    await manager.broadcast({"type": "scan_phase", "phase": "idle"})
+    return {"ok": True}
+
 @app.post("/api/ask")
 async def ask_agents(body: AskBody):
     answer = await run_ask(body.question)
@@ -179,81 +203,86 @@ async def run_scan():
     scan_running = False
 
 async def run_bot_agents() -> dict:
-    """Run actual bot agents if available, otherwise return mock data."""
     try:
-        from agents.chart_analyst import ChartAnalyst
-        from agents.bias_analyst import BiasAnalyst
-        from agents.news_scout import NewsScout
-        from agents.supervisor import Supervisor
-
-        chart = ChartAnalyst()
-        bias  = BiasAnalyst()
-        news  = NewsScout()
-        sup   = Supervisor()
-
-        df, price = chart.get_price_data()
-        if df is None:
-            raise ValueError("No price data")
-
-        chart_result = await asyncio.to_thread(chart.analyze, df, price)
-        bias_result  = await asyncio.to_thread(bias.analyze)
-        news_result  = await asyncio.to_thread(news.check_news)
-        sup_result   = await asyncio.to_thread(sup.decide, chart_result, bias_result, news_result)
-
-        approved = sup_result.get("decision") == "BUY" or sup_result.get("decision") == "SELL"
-        return {
-            "approved": approved,
-            "votes": {
-                "chart_analyst": f"{'YES' if chart_result.get('signal') else 'NO'} — {chart_result.get('setup_type','?')}",
-                "bias_analyst":  f"{'YES' if bias_result.get('bias') else 'NO'} — {bias_result.get('direction','?')}",
-                "news_scout":    f"{'YES' if news_result.get('safe') else 'BLOCK'} — {news_result.get('summary','?')}",
-                "risk_manager":  f"OK — {sup_result.get('lot', '?')}L",
-                "supervisor":    f"{'APPROVED' if approved else 'REJECTED'} — {sup_result.get('reason','?')}",
-            },
-            "vote_count": 4 if approved else 0,
-            "signal": {
-                "direction":  sup_result.get("decision", "BUY"),
-                "setup_type": chart_result.get("setup_type", "TREND_OB"),
-                "stars": "★★",
-                "entry": float(price.get("current_price", 3310)),
-                "sl":    float(price.get("current_price", 3310)) - 10,
-                "tp":    float(price.get("current_price", 3310)) + 24,
-                "lot":   float(sup_result.get("lot", 0.01)),
-                "rr":    2.4,
-                "approved": approved,
-                "time":  datetime.now().strftime("%H:%M"),
-                "pnl":   0.0,
-                "votes": {"chart": True, "bias": True, "news": True, "risk": True},
-                "reason": sup_result.get("reason", ""),
-            },
-            "reason": sup_result.get("reason", ""),
-        }
+        from agents import supervisor as sup_module
+        result = await asyncio.to_thread(sup_module.run)
+        return _map_supervisor_result(result)
     except Exception as e:
-        # Mock fallback
-        approved = random.random() > 0.4
-        direction = random.choice(["BUY", "SELL"])
-        setup = random.choice(["SWING_OB", "TREND_OB"])
-        entry = round(3300 + random.uniform(0, 50), 1)
-        return {
-            "approved": approved,
-            "votes": {
-                "chart_analyst": f"{'YES' if approved else 'NO'} — {setup} detected",
-                "bias_analyst":  "YES — H4 demand bullish",
-                "news_scout":    "YES — calendar clear",
-                "risk_manager":  f"{'OK' if approved else 'VETO'} — RR {2.3 if approved else 1.1:.1f}",
-                "supervisor":    f"{'APPROVED' if approved else 'REJECTED'}",
-            },
-            "vote_count": 4 if approved else random.randint(0, 2),
-            "signal": {
-                "direction": direction, "setup_type": setup, "stars": "★★" if approved else "★",
-                "entry": entry, "sl": round(entry - 10, 1), "tp": round(entry + 23, 1),
-                "lot": 0.01, "rr": 2.3, "approved": approved,
-                "time": datetime.now().strftime("%H:%M"), "pnl": 0.0,
-                "votes": {"chart": approved, "bias": True, "news": True, "risk": approved},
-                "reason": "Bull OB + HTF demand" if approved else "RR too low / no setup",
-            },
-            "reason": "No OB proximity" if not approved else "",
-        }
+        print(f"[run_bot_agents] error: {e}")
+        return _mock_result()
+
+
+def _map_supervisor_result(result: dict) -> dict:
+    approved  = result.get("approved", False)
+    signal    = result.get("final_signal", "NO_TRADE")
+    direction = signal if signal in ("BUY", "SELL") else "BUY"
+    analysis  = result.get("analysis") or {}
+    stages    = result.get("stages") or {}
+    votes     = result.get("votes") or {}
+
+    entry_zone = result.get("entry_zone") or []
+    entry = float(entry_zone[0] if entry_zone else result.get("current_price") or 3310)
+    sl    = float(result.get("stop_loss")  or entry - 10)
+    tp    = float(result.get("take_profit") or entry + 23)
+    rr    = float(result.get("rr_ratio")   or 0)
+    lot   = float(result.get("lot")        or 0.01)
+
+    setup_type = analysis.get("setup_type", "TREND_OB")
+    confidence = analysis.get("confidence", 0)
+    stars = "★★★" if confidence >= 80 else "★★" if confidence >= 60 else "★"
+
+    bias_stage = stages.get("bias") or {}
+    news_stage = stages.get("news") or {}
+    risk_stage = stages.get("risk") or {}
+    reason = result.get("reasoning") or result.get("reject_reason", "")
+
+    return {
+        "approved": approved,
+        "votes": {
+            "supervisor":    f"{'APPROVED' if approved else 'REJECTED'} — {reason[:60]}",
+            "chart_analyst": f"{'YES' if votes.get('chart') else 'NO'} — {setup_type}",
+            "bias_analyst":  f"{'YES' if votes.get('bias') else 'NO'} — {bias_stage.get('overall','?')}",
+            "news_scout":    f"{'YES' if votes.get('news') else 'NO'} — {news_stage.get('risk_level','?')}",
+            "risk_manager":  f"{'VETO' if risk_stage.get('veto') else 'OK'} — {lot}L",
+        },
+        "vote_count": result.get("vote_score", 0),
+        "signal": {
+            "direction": direction, "setup_type": setup_type, "stars": stars,
+            "entry": entry, "sl": sl, "tp": tp, "lot": lot, "rr": rr,
+            "approved": approved, "time": datetime.now().strftime("%H:%M"), "pnl": 0.0,
+            "votes": {"chart": bool(votes.get("chart")), "bias": bool(votes.get("bias")),
+                      "news": bool(votes.get("news")), "risk": not risk_stage.get("veto")},
+            "reason": reason,
+        },
+        "reason": result.get("reject_reason", ""),
+    }
+
+
+def _mock_result() -> dict:
+    approved  = random.random() > 0.4
+    direction = random.choice(["BUY", "SELL"])
+    setup     = random.choice(["SWING_OB", "TREND_OB"])
+    entry     = round(3300 + random.uniform(0, 50), 1)
+    return {
+        "approved": approved,
+        "votes": {
+            "supervisor":    f"{'APPROVED' if approved else 'REJECTED'} [mock]",
+            "chart_analyst": f"{'YES' if approved else 'NO'} — {setup}",
+            "bias_analyst":  "YES — H4 demand", "news_scout": "YES — clear",
+            "risk_manager":  f"{'OK' if approved else 'VETO'} — 0.01L",
+        },
+        "vote_count": 3 if approved else 0,
+        "signal": {
+            "direction": direction, "setup_type": setup,
+            "stars": "★★" if approved else "★",
+            "entry": entry, "sl": round(entry-10,1), "tp": round(entry+23,1),
+            "lot": 0.01, "rr": 2.3, "approved": approved,
+            "time": datetime.now().strftime("%H:%M"), "pnl": 0.0,
+            "votes": {"chart": approved, "bias": True, "news": True, "risk": approved},
+            "reason": "Bull OB + HTF demand" if approved else "No setup",
+        },
+        "reason": "" if approved else "No OB proximity",
+    }
 
 async def run_ask(question: str) -> str:
     try:

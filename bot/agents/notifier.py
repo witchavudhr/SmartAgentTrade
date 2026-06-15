@@ -26,6 +26,21 @@ from agents.json_utils import fmt_pts
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+DASHBOARD_URL = "http://localhost:8000"
+
+def _push_to_dashboard(result: dict):
+    """Push supervisor result to War Room dashboard (best-effort)."""
+    try:
+        import urllib.request
+        data = json.dumps({"result": result}).encode()
+        req = urllib.request.Request(
+            f"{DASHBOARD_URL}/api/push",
+            data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        urllib.request.urlopen(req, timeout=2)
+    except Exception:
+        pass
+
 
 def _md(text: str) -> str:
     """Escape Telegram Markdown v1 special chars ใน AI-generated text"""
@@ -89,6 +104,7 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
     result = supervisor.run(force_session=True)  # manual scan ข้าม session filter
     log_scan(result)
+    _push_to_dashboard(result)
     state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     await _handle_scan_result(result, update.message.reply_text)
 
@@ -1102,6 +1118,7 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔬 *Test Scan* — รัน pipeline (ไม่เปิด trade จริง)...", parse_mode="Markdown")
 
     result = supervisor.run()
+    _push_to_dashboard(result)
 
     stages  = result.get("stages", {})
     votes   = result.get("votes", {})
@@ -1659,6 +1676,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
     result = supervisor.run()
     log_scan(result)
+    _push_to_dashboard(result)
 
     async def send(text, **kw):
         await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
