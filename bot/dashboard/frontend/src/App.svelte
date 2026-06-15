@@ -334,7 +334,7 @@
       <div class="srb">
         <div class="sc2">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-            <div class="sd" style="color:{signal?.direction==='BUY'?'#4ade80':'#f87171'}">
+            <div class="sd" style="color:{!signal?.approved ? '#6b7280' : signal?.direction==='BUY' ? '#4ade80' : '#f87171'}">
               {signal?.direction === 'BUY' ? '▲' : '▼'} {signal?.direction} XAUUSD
             </div>
             <span style="font-size:9px;background:#1c1c25;border:0.5px solid #2d2d3a;padding:1px 6px;border-radius:99px;color:#9ca3af">
