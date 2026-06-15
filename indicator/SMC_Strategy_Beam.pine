@@ -294,6 +294,14 @@ near_eql = array.size(sl_prices) >= 2 and
      math.abs(array.get(sl_prices, array.size(sl_prices)-1) -
               array.get(sl_prices, array.size(sl_prices)-2)) < eqh_threshold
 
+// EQL level (ค่าเฉลี่ยของ swing low 2 ตัวที่ใกล้กัน)
+eql_level = near_eql and array.size(sl_prices) >= 2 ?
+     (array.get(sl_prices, array.size(sl_prices)-1) +
+      array.get(sl_prices, array.size(sl_prices)-2)) / 2 : float(na)
+eqh_level = near_eqh and array.size(sh_prices) >= 2 ?
+     (array.get(sh_prices, array.size(sh_prices)-1) +
+      array.get(sh_prices, array.size(sh_prices)-2)) / 2 : float(na)
+
 // ═══════════════════════════════════════════════════════════════════
 // REVERSAL SCORE — port จาก detect_reversal()
 // Max 10 | threshold = i_min_score
@@ -540,9 +548,70 @@ if barstate.islast
     table.cell(tbl, 1, 9, score_short_txt, text_color=#FF8888, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
 
 // ═══════════════════════════════════════════════════════════════════
+// BOT ENTRY APPROXIMATION — เงื่อนไขที่ bot น่าจะเข้า (ไม่ใช่ 100%)
+// ใช้ logic เดียวกับ smc_engine.py + chart_analyst.py
+// ═══════════════════════════════════════════════════════════════════
+g_bot = "Bot Entry Zones"
+i_show_bot = input.bool(true, "Show Bot Entry Arrows", group=g_bot)
+
+// ── 1. TREND_OB / BULL_OB_ENTRY ───────────────────────────────────
+// bot เข้า BUY เมื่อราคาอยู่ใน Bull OB + H4 bullish + มี confirm candle
+bot_buy_ob = h4_ok_bull and in_bull_ob and bull_candle and long_cd
+
+// bot เข้า SELL เมื่อราคาอยู่ใน Bear OB + H4 bearish + มี confirm candle
+bot_sell_ob = h4_ok_bear and in_bear_ob and bear_candle and short_cd
+
+// ── 2. BULL_OB_SWEEP_REJECT ──────────────────────────────────────
+// sweep ต่ำกว่า OB + กลับขึ้นมา (rejection แรง) + H4 bull
+bot_buy_sweep_reject = h4_ok_bull and in_bull_ob and recent_sweep_l and bull_grab and long_cd
+
+// ── 3. EQL_SWEEP_BUY ─────────────────────────────────────────────
+// มี EQL + ราคา sweep ต่ำกว่า EQL + กลับขึ้นมาเหนือ EQL + bull candle
+// (ไม่ต้อง H4 align เพราะเป็น liquidity sweep play)
+eql_swept     = near_eql and recent_sweep_l
+eql_recovered = not na(eql_level) and close > eql_level
+bot_buy_eql   = eql_swept and eql_recovered and bull_candle and long_cd
+
+// ── 4. EQH_SWEEP_SELL ────────────────────────────────────────────
+// มี EQH + ราคา sweep สูงกว่า EQH + reject ลงมาต่ำกว่า EQH + bear candle
+eqh_swept     = near_eqh and recent_sweep_h
+eqh_rejected  = not na(eqh_level) and close < eqh_level
+bot_sell_eqh  = eqh_swept and eqh_rejected and bear_candle and short_cd
+
+// ── Final bot signals ─────────────────────────────────────────────
+bot_long  = i_show_bot and (bot_buy_ob or bot_buy_sweep_reject or bot_buy_eql)
+bot_short = i_show_bot and (bot_sell_ob or bot_sell_eqh)
+
+// Setup label สำหรับ tooltip
+bot_long_type  = bot_buy_eql           ? "EQL_SWEEP_BUY"      :
+                 bot_buy_sweep_reject  ? "BULL_OB_SWEEP_REJECT" :
+                 "BULL_OB_ENTRY"
+bot_short_type = bot_sell_eqh ? "EQH_SWEEP_SELL" : "BEAR_OB_ENTRY"
+
+// Plot — รูปเพชร สีต่างจาก R/TF เพื่อแยกว่าเป็น "bot zone"
+plotshape(bot_long  and not long_sig,  "Bot BUY",  shape.diamond, location.belowbar,
+     color=#00E5FF, size=size.small, text="🤖B", textcolor=#00E5FF)
+plotshape(bot_short and not short_sig, "Bot SELL", shape.diamond, location.abovebar,
+     color=#FF6D00, size=size.small, text="🤖S", textcolor=#FF6D00)
+
+// ถ้า bot signal ตรงกับ R/TF signal → ไฮไลท์พิเศษ (confluence สูง)
+plotshape(bot_long  and long_sig,  "Bot+Signal BUY",  shape.diamond, location.belowbar,
+     color=color.white, size=size.normal, text="🤖✅", textcolor=color.white)
+plotshape(bot_short and short_sig, "Bot+Signal SELL", shape.diamond, location.abovebar,
+     color=color.white, size=size.normal, text="🤖✅", textcolor=color.white)
+
+// EQL/EQH level lines
+plot(near_eql ? eql_level : na, "EQL Level", color=color.new(#00E5FF, 50), linewidth=1, style=plot.style_circles)
+plot(near_eqh ? eqh_level : na, "EQH Level", color=color.new(#FF6D00, 50), linewidth=1, style=plot.style_circles)
+
+// ═══════════════════════════════════════════════════════════════════
 // ALERTS
 // ═══════════════════════════════════════════════════════════════════
 alertcondition(long_sig,  "Long Signal",  "SMC-S Long ✅")
 alertcondition(short_sig, "Short Signal", "SMC-S Short ✅")
 alertcondition(long_sig  and long_stars  == "★★★", "Long ★★★",  "SMC-S Strong Long ★★★")
 alertcondition(short_sig and short_stars == "★★★", "Short ★★★", "SMC-S Strong Short ★★★")
+alertcondition(bot_long,  "Bot BUY Zone",  "🤖 Bot น่าจะเข้า BUY")
+alertcondition(bot_short, "Bot SELL Zone", "🤖 Bot น่าจะเข้า SELL")
+alertcondition(bot_buy_eql,  "Bot EQL_SWEEP_BUY",  "🤖 EQL Sweep BUY")
+alertcondition(bot_sell_eqh, "Bot EQH_SWEEP_SELL", "🤖 EQH Sweep SELL")
