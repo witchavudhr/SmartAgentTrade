@@ -25,6 +25,7 @@ i_show_fvg  = input.bool(true, "Show FVG",        group=g_fvg)
 i_fvg_fill  = input.color(color.new(#FFD700, 80), "FVG Color", group=g_fvg)
 
 g_htf  = "HTF Bias"
+i_use_d1    = input.bool(true, "D Bias Filter",   group=g_htf)
 i_use_h1    = input.bool(true, "H1 Bias Filter",  group=g_htf)
 i_use_h4    = input.bool(true, "H4 Bias Filter",  group=g_htf)
 
@@ -36,6 +37,9 @@ atr = ta.atr(14)
 // ═══════════════════════════════════════════════════════════════════
 // HTF BIAS (price vs 20-bar midpoint — same as bot)
 // ═══════════════════════════════════════════════════════════════════
+d1_h = request.security(syminfo.tickerid, "D",   ta.highest(high, 20))
+d1_l = request.security(syminfo.tickerid, "D",   ta.lowest(low,  20))
+d1_c = request.security(syminfo.tickerid, "D",   close)
 h1_h = request.security(syminfo.tickerid, "60",  ta.highest(high, 20))
 h1_l = request.security(syminfo.tickerid, "60",  ta.lowest(low,  20))
 h1_c = request.security(syminfo.tickerid, "60",  close)
@@ -43,8 +47,10 @@ h4_h = request.security(syminfo.tickerid, "240", ta.highest(high, 20))
 h4_l = request.security(syminfo.tickerid, "240", ta.lowest(low,  20))
 h4_c = request.security(syminfo.tickerid, "240", close)
 
+d1_mid  = (d1_h + d1_l) / 2.0
 h1_mid  = (h1_h + h1_l) / 2.0
 h4_mid  = (h4_h + h4_l) / 2.0
+d1_bull = d1_c > d1_mid
 h1_bull = h1_c > h1_mid
 h4_bull = h4_c > h4_mid
 
@@ -301,6 +307,7 @@ bull_rev_score += not na(recent_swing_low_5) and math.abs(close - recent_swing_l
 bull_rev_score += near_eql           ? 1 : 0   // Near EQL +1
 bull_rev_score += bull_candle        ? 2 : bull_grab ? 1 : 0   // Confirm candle +2 / grab +1
 bull_rev_score += in_bull_ob         ? 1 : 0   // In OB +1
+bull_rev_score += (i_use_d1 ? d1_bull : true)  ? 1 : 0   // D aligned +1
 bull_rev_score += (i_use_h1 ? h1_bull : true)  ? 1 : 0   // H1 aligned +1
 bull_rev_score += not momentum_bear  ? 1 : (at_extreme_low ? 1 : 0)  // No momentum / extreme +1
 
@@ -312,6 +319,7 @@ bear_rev_score += not na(recent_swing_high_5) and math.abs(close - recent_swing_
 bear_rev_score += near_eqh           ? 1 : 0
 bear_rev_score += bear_candle        ? 2 : bear_grab ? 1 : 0
 bear_rev_score += in_bear_ob         ? 1 : 0
+bear_rev_score += (i_use_d1 ? not d1_bull : true) ? 1 : 0   // D aligned +1
 bear_rev_score += (i_use_h1 ? not h1_bull : true) ? 1 : 0
 bear_rev_score += not momentum_bull  ? 1 : (at_extreme_high ? 1 : 0)
 
@@ -321,12 +329,14 @@ bear_rev_score += not momentum_bull  ? 1 : (at_extreme_high ? 1 : 0)
 // ═══════════════════════════════════════════════════════════════════
 
 // Bullish Trend Follow (H4 bull prerequisite)
+d1_ok_bull = i_use_d1 ? d1_bull : true
+d1_ok_bear = i_use_d1 ? not d1_bull : true
 h4_ok_bull = i_use_h4 ? h4_bull : true
 h4_ok_bear = i_use_h4 ? not h4_bull : true
 
 bull_tf_score = 0
 bull_tf_valid = false
-if h4_ok_bull
+if d1_ok_bull and h4_ok_bull
     if in_bull_ob
         bull_tf_score += 3
         bull_tf_valid := true
@@ -335,13 +345,13 @@ if h4_ok_bull
         bull_tf_valid := true
     if bull_tf_valid
         bull_tf_score += bull_candle ? 2 : bull_grab ? 1 : 0
-        bull_tf_score += not recent_choch_bear ? 1 : 0   // structure still bull
+        bull_tf_score += not recent_choch_bear ? 1 : 0
         bull_tf_score += (i_use_h1 ? h1_bull : true) ? 1 : 0
         bull_tf_score += not momentum_bear ? 1 : 0
 
 bear_tf_score = 0
 bear_tf_valid = false
-if h4_ok_bear
+if d1_ok_bear and h4_ok_bear
     if in_bear_ob
         bear_tf_score += 3
         bear_tf_valid := true
@@ -469,7 +479,7 @@ if short_sig and not i_show_sltp
 // ═══════════════════════════════════════════════════════════════════
 // INFO PANEL
 // ═══════════════════════════════════════════════════════════════════
-var table tbl = table.new(position.bottom_right, 2, 9,
+var table tbl = table.new(position.bottom_right, 2, 10,
      bgcolor=color.new(#0D1117, 5),
      border_color=color.new(#555555, 50), border_width=1,
      frame_color=color.new(#555555, 30), frame_width=1)
@@ -484,44 +494,50 @@ if barstate.islast
     table.cell(tbl, 0, 1, "Swing",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
     table.cell(tbl, 1, 1, bias_txt,  text_color=color.white, text_size=size.small, bgcolor=bias_col)
 
+    // D Bias
+    d1_txt = d1_bull ? "▲ BULL" : "▼ BEAR"
+    d1_col = d1_bull ? color.new(#00C853, 50) : color.new(#D50000, 50)
+    table.cell(tbl, 0, 2, "D",       text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 2, d1_txt,    text_color=color.white, text_size=size.small, bgcolor=d1_col)
+
     h1_txt = h1_bull ? "▲ BULL" : "▼ BEAR"
     h1_col = h1_bull ? color.new(#00C853, 68) : color.new(#D50000, 68)
-    table.cell(tbl, 0, 2, "H1",      text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 2, h1_txt,    text_color=color.white, text_size=size.small, bgcolor=h1_col)
+    table.cell(tbl, 0, 3, "H1",      text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 3, h1_txt,    text_color=color.white, text_size=size.small, bgcolor=h1_col)
 
     h4_txt = h4_bull ? "▲ BULL" : "▼ BEAR"
     h4_col = h4_bull ? color.new(#00C853, 68) : color.new(#D50000, 68)
-    table.cell(tbl, 0, 3, "H4",      text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 3, h4_txt,    text_color=color.white, text_size=size.small, bgcolor=h4_col)
+    table.cell(tbl, 0, 4, "H4",      text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 4, h4_txt,    text_color=color.white, text_size=size.small, bgcolor=h4_col)
 
     // OB / FVG
     ob_txt = in_bull_ob ? "Bull OB ✅" : in_bear_ob ? "Bear OB ✅" : "—"
     ob_col = in_bull_ob ? color.new(#00C853, 68) : in_bear_ob ? color.new(#D50000, 68) : color.new(#0D1117, 0)
-    table.cell(tbl, 0, 4, "In OB",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 4, ob_txt,    text_color=color.white, text_size=size.small, bgcolor=ob_col)
+    table.cell(tbl, 0, 5, "In OB",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 5, ob_txt,    text_color=color.white, text_size=size.small, bgcolor=ob_col)
 
     fvg_txt = in_bull_fvg ? "Bull FVG ✅" : in_bear_fvg ? "Bear FVG ✅" : "—"
     fvg_col = in_bull_fvg ? color.new(#FFD700, 60) : in_bear_fvg ? color.new(#FF6B6B, 60) : color.new(#0D1117, 0)
-    table.cell(tbl, 0, 5, "In FVG",  text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 5, fvg_txt,   text_color=color.white, text_size=size.small, bgcolor=fvg_col)
+    table.cell(tbl, 0, 6, "In FVG",  text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 6, fvg_txt,   text_color=color.white, text_size=size.small, bgcolor=fvg_col)
 
     // CHoCH
     choch_txt = recent_choch_bull ? "CHoCH ▲" : recent_choch_bear ? "CHoCH ▼" : "—"
     choch_col = recent_choch_bull ? color.new(#00C853, 60) : recent_choch_bear ? color.new(#D50000, 60) : color.new(#0D1117, 0)
-    table.cell(tbl, 0, 6, "CHoCH",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 6, choch_txt, text_color=color.white, text_size=size.small, bgcolor=choch_col)
+    table.cell(tbl, 0, 7, "CHoCH",   text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 7, choch_txt, text_color=color.white, text_size=size.small, bgcolor=choch_col)
 
     // Momentum
     mom_txt = momentum_bear ? "↓ Bear" : momentum_bull ? "↑ Bull" : "Normal"
     mom_col = momentum_bear ? color.new(#D50000, 55) : momentum_bull ? color.new(#00C853, 55) : color.new(#0D1117, 0)
-    table.cell(tbl, 0, 7, "Momentum", text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 7, mom_txt,    text_color=color.white, text_size=size.small, bgcolor=mom_col)
+    table.cell(tbl, 0, 8, "Momentum", text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 8, mom_txt,    text_color=color.white, text_size=size.small, bgcolor=mom_col)
 
     // Score
     score_long_txt  = "L:" + str.tostring(bull_rev_score) + " R / " + str.tostring(bull_tf_score) + " TF"
     score_short_txt = "S:" + str.tostring(bear_rev_score) + " R / " + str.tostring(bear_tf_score) + " TF"
-    table.cell(tbl, 0, 8, score_long_txt,  text_color=#88FF88, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
-    table.cell(tbl, 1, 8, score_short_txt, text_color=#FF8888, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 0, 9, score_long_txt,  text_color=#88FF88, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
+    table.cell(tbl, 1, 9, score_short_txt, text_color=#FF8888, text_size=size.tiny, bgcolor=color.new(#0D1117, 0))
 
 // ═══════════════════════════════════════════════════════════════════
 // ALERTS

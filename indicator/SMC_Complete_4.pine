@@ -585,6 +585,7 @@ i_show_ny     = input.bool(true,  "🔴 NY      19:00–04:00+1", group=g_sess)
 // ── Inputs: Entry Signals ─────────────────────────────────────────
 g_sig         = "📍 Entry Signals"
 i_show_sig    = input.bool(true,  "Show Signals",                group=g_sig)
+i_use_d1      = input.bool(true,  "D Bias Filter",               group=g_sig, tooltip="Daily trend — Long ต้องการ D bull")
 i_use_h1      = input.bool(true,  "H1 Bias Filter",              group=g_sig, tooltip="Long ต้องการ H1 bull / Short ต้องการ H1 bear")
 i_use_h4      = input.bool(true,  "H4 Bias Filter",              group=g_sig, tooltip="เปิด = ต้องการทั้ง H1+H4 agree (ตัด counter-trend ออก)")
 i_min_stars   = input.int(2,      "Show Min ★★ (1=all, 2=★★+, 3=★★★)", group=g_sig, minval=1, maxval=3, tooltip="กรอง signal คุณภาพต่ำออก — แนะนำ 2")
@@ -615,6 +616,12 @@ if i_show_sess and curr_name_s != last_sess_lbl and barstate.isconfirmed
 // ── HTF Bias ──────────────────────────────────────────────────────
 sig_atr = ta.atr(14)
 
+d1_h = request.security(syminfo.tickerid, "D",   ta.highest(high, 20))
+d1_l = request.security(syminfo.tickerid, "D",   ta.lowest (low,  20))
+d1_c = request.security(syminfo.tickerid, "D",   close)
+d1_bull = d1_c > (d1_h + d1_l) / 2.0
+d1_bear = d1_c < (d1_h + d1_l) / 2.0
+
 h1_h = request.security(syminfo.tickerid, "60",  ta.highest(high, 20))
 h1_l = request.security(syminfo.tickerid, "60",  ta.lowest (low,  20))
 h1_c = request.security(syminfo.tickerid, "60",  close)
@@ -627,6 +634,8 @@ h4_c = request.security(syminfo.tickerid, "240", close)
 h4_bull = h4_c > (h4_h + h4_l) / 2.0
 h4_bear = h4_c < (h4_h + h4_l) / 2.0
 
+d1_ok_long   = i_use_d1 ? d1_bull : true
+d1_ok_short  = i_use_d1 ? d1_bear : true
 htf_ok_long  = i_use_h1 ? h1_bull : true
 htf_ok_short = i_use_h1 ? h1_bear : true
 h4_ok_long   = i_use_h4 ? h4_bull : true
@@ -721,8 +730,8 @@ momentum_bear = drop_5  > sig_atr * 2.5
 momentum_bull = rally_5 > sig_atr * 2.5
 
 // ── Signal conditions ─────────────────────────────────────────────
-// Long A: with-trend — bias bull + H1 + confirm
-long_wt_s  = i_show_sig and bias_bull_s and htf_ok_long and bull_ok_s and long_cd
+// Long A: with-trend — bias bull + D + H1 + confirm
+long_wt_s  = i_show_sig and bias_bull_s and d1_ok_long and htf_ok_long and bull_ok_s and long_cd
 // Long B: sweep normal — บล็อกเมื่อ momentum ลงแรง
 long_sw_s  = i_show_sig and bull_grab_s   and (h4_ok_long or struct_sweep_long) and not momentum_bear and long_cd
 // Long B2: strong grab (>65% wick) — ข้าม momentum ได้เฉพาะที่ 50-bar extreme low
@@ -731,8 +740,8 @@ long_sw2_s = i_show_sig and bull_grab_strong and (not momentum_bear or at_extrem
 long_cs_s  = i_show_sig and bull_choch_grab and (not momentum_bear or at_extreme_low) and long_cd
 long_sig_s = long_wt_s or long_sw_s or long_sw2_s or long_cs_s
 
-// Short A: with-trend — bias bear + H1 + confirm
-short_wt_s  = i_show_sig and bias_bear_s and htf_ok_short and bear_ok_s and short_cd
+// Short A: with-trend — bias bear + D + H1 + confirm
+short_wt_s  = i_show_sig and bias_bear_s and d1_ok_short and htf_ok_short and bear_ok_s and short_cd
 // Short B: sweep normal — บล็อกเมื่อ momentum ขึ้นแรง
 short_sw_s  = i_show_sig and bear_grab_s  and (h4_ok_short or struct_sweep_short) and not momentum_bull and short_cd
 // Short B2: strong grab (>65% wick) — ข้าม momentum ได้เฉพาะที่ 50-bar extreme high
@@ -744,8 +753,8 @@ short_sig_s = short_wt_s or short_sw_s or short_sw2_s or short_cs_s
 // ── Confluence Score ★ ─────────────────────────────────────────────
 // Structural sweep ที่ Weak/Strong High/Low = +2 (โชว์เป็น ★★ เสมอ แม้ H1/H4 สวน)
 // CHoCH sweep +1 | OB +1 | H1 +1 | H4 +1  (max 5 แต่ cap แสดงที่ ★★★)
-long_score  = (in_bull_ob_s ? 1 : 0) + (h1_bull ? 1 : 0) + (h4_bull ? 1 : 0) + (bull_choch_grab ? 1 : 0) + (struct_sweep_long ? 2 : 0)
-short_score = (in_bear_ob_s ? 1 : 0) + (h1_bear ? 1 : 0) + (h4_bear ? 1 : 0) + (bear_choch_grab ? 1 : 0) + (struct_sweep_short ? 2 : 0)
+long_score  = (in_bull_ob_s ? 1 : 0) + (d1_bull ? 1 : 0) + (h1_bull ? 1 : 0) + (h4_bull ? 1 : 0) + (bull_choch_grab ? 1 : 0) + (struct_sweep_long ? 2 : 0)
+short_score = (in_bear_ob_s ? 1 : 0) + (d1_bear ? 1 : 0) + (h1_bear ? 1 : 0) + (h4_bear ? 1 : 0) + (bear_choch_grab ? 1 : 0) + (struct_sweep_short ? 2 : 0)
 
 long_t1  = long_sig_s  and long_score  <= 1 and i_min_stars <= 1
 long_t2  = long_sig_s  and long_score  == 2 and i_min_stars <= 2
@@ -769,7 +778,7 @@ if short_sig_s
     last_short_s := bar_index
 
 // ── Session + Info Panel (top right) ─────────────────────────────
-var table info_tbl = table.new(position.top_right, 2, 11, bgcolor=color.new(#0D1117, 5), border_color=color.new(#555555, 50), border_width=1, frame_color=color.new(#555555, 30), frame_width=1)
+var table info_tbl = table.new(position.top_right, 2, 12, bgcolor=color.new(#0D1117, 5), border_color=color.new(#555555, 50), border_width=1, frame_color=color.new(#555555, 30), frame_width=1)
 if barstate.islast
     // Header
     table.cell(info_tbl, 0, 0, "SESSION",           text_color=#CCCCCC, text_size=size.small, bgcolor=color.new(#1A1D2E, 0), text_halign=text.align_center)
@@ -802,21 +811,26 @@ if barstate.islast
     bias_col = bias_bull_s ? color.new(#00C853, 55) : color.new(#D50000, 55)
     table.cell(info_tbl, 0, 7, "Swing",              text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
     table.cell(info_tbl, 1, 7, bias_txt,             text_color=color.white, text_size=size.small, bgcolor=bias_col)
+    // D Bias
+    d1_txt = d1_bull ? "▲ BULL" : "▼ BEAR"
+    d1_col = d1_bull ? color.new(#00C853, 50) : color.new(#D50000, 50)
+    table.cell(info_tbl, 0, 8, "D",                  text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(info_tbl, 1, 8, d1_txt,               text_color=color.white, text_size=size.small, bgcolor=d1_col)
     // H1 Bias
     h1_txt = h1_bull ? "▲ BULL" : "▼ BEAR"
     h1_col = h1_bull ? color.new(#00C853, 68) : color.new(#D50000, 68)
-    table.cell(info_tbl, 0, 8, "H1",                 text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(info_tbl, 1, 8, h1_txt,               text_color=color.white, text_size=size.small, bgcolor=h1_col)
+    table.cell(info_tbl, 0, 9, "H1",                 text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(info_tbl, 1, 9, h1_txt,               text_color=color.white, text_size=size.small, bgcolor=h1_col)
     // H4 Bias
     h4_txt = h4_bull ? "▲ BULL" : "▼ BEAR"
     h4_col = h4_bull ? color.new(#00C853, 68) : color.new(#D50000, 68)
-    table.cell(info_tbl, 0, 9, "H4",                 text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(info_tbl, 1, 9, h4_txt,               text_color=color.white, text_size=size.small, bgcolor=h4_col)
+    table.cell(info_tbl, 0, 10, "H4",                text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(info_tbl, 1, 10, h4_txt,              text_color=color.white, text_size=size.small, bgcolor=h4_col)
     // In OB
     ob_txt = in_bull_ob_s ? "Bull OB ✅" : in_bear_ob_s ? "Bear OB ✅" : "—"
     ob_col = in_bull_ob_s ? color.new(#00C853, 68) : in_bear_ob_s ? color.new(#D50000, 68) : color.new(#0D1117, 0)
-    table.cell(info_tbl, 0, 10, "In OB",             text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
-    table.cell(info_tbl, 1, 10, ob_txt,              text_color=color.white, text_size=size.small, bgcolor=ob_col)
+    table.cell(info_tbl, 0, 11, "In OB",             text_color=#AAAAAA, text_size=size.small, bgcolor=color.new(#0D1117, 0))
+    table.cell(info_tbl, 1, 11, ob_txt,              text_color=color.white, text_size=size.small, bgcolor=ob_col)
 
 // ── Signal Alerts ─────────────────────────────────────────────────
 alertcondition(long_sig_s,  "Signal: Long (any)",   "SMC Long Signal ✅")

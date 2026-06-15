@@ -307,9 +307,8 @@ void OnTick()
    //--- Feature อื่นๆ ทำงานเฉพาะหลังจาก worst positions ปิดหมดแล้ว
    if(g_EnablePairClose)     CheckPairClose();
    if(g_EnablePairGuard)     CheckPairGuard();
-   //--- Per-position BE guard: ทำงานเฉพาะตอนมี pair/keep feature เปิดอยู่
-   if(g_EnablePosGuard && g_PosGuardTrigger > 0
-      && (g_EnableKeepBest || g_EnablePairClose || g_EnablePairGuard))
+   //--- Per-position guard: ทำงานอิสระ ไม่ผูกกับ pair/keep feature
+   if(g_EnablePosGuard && g_PosGuardTrigger > 0)
       CheckPerPosGuard();
    //--- POS TARGET: set/show TP รวมของ best N ไม้ (ทำงานทุก tick เพื่ออัปเดตเส้น)
    ApplyPosTargetTP();
@@ -445,14 +444,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       UpdateFeatureLines();
       ChartRedraw();
 
-      //--- ถ้าแก้ตัวเลข N ของ KeepBest → reset pending เพื่อ recalculate TP ใหม่ทันที
-      if(sparam == PREFIX+"EDT_KN" && g_EnableKeepBest)
+      //--- ถ้าแก้ตัวเลข N หรือ Min Profit ของ KeepBest → reset pending เพื่อ recalculate TP ใหม่ทันที
+      if((sparam == PREFIX+"EDT_KN" || sparam == PREFIX+"EDT_KBMP") && g_EnableKeepBest)
       {
          g_keepBestPending    = false;
          g_keepBestTotalCount = 0;
+         g_keepBestBeTP       = 0;
+         g_keepBestNetLots    = 0;
          ArrayResize(g_keepWorstTickets, 0);
          ArrayResize(g_tpSetTickets, 0);
-         Print("KeepBest: N changed to ", g_KeepBestN, " → recalculating...");
+         Print("KeepBest: param changed (N=", g_KeepBestN, " MinProfit=", g_KeepBestMinProfit, ") → recalculating...");
          if(g_EnableKeepBest) CheckKeepBest();
          if(g_EnableProfitTarget) ApplyProfitTargetTP();
       }
@@ -679,8 +680,6 @@ void CheckPartialClose()
       double curVol = posInfo.Volume();
       //--- skip ถ้าเหลือ ≤ keepLot
       if(curVol <= keepLot + 0.0001) continue;
-      //--- skip ไม้ที่ขาดทุนอยู่ — ไม่ partial close ไม้ติดลบ (เช่น pyramid ไม้ใหม่)
-      if(posInfo.Profit() < 0) continue;
 
       double closeLots = NormVol(sym, curVol * g_PartialClosePct / 100.0);
       //--- ถ้าปิดแล้วเหลือ < keepLot → ปรับให้เหลือ keepLot พอดี
@@ -1066,8 +1065,10 @@ void CheckPerPosGuard()
    double point     = SymbolInfoDouble(sym, SYMBOL_POINT);
    if(tickSize == 0 || tickValue == 0) return;
 
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid     = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask     = SymbolInfoDouble(sym, SYMBOL_ASK);
+   long   stopLvl = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = stopLvl * point;   // ระยะขั้นต่ำ broker กำหนด
 
    for(int i = PositionsTotal()-1; i >= 0; i--)
    {
@@ -1130,23 +1131,48 @@ void CheckPerPosGuard()
 
       //--- เลื่อน SL เฉพาะทิศที่ protective มากขึ้น (ไม่ถอยหลัง)
       bool needMove = isBuy
-         ? (existSL < guardSL - point)
-         : (existSL == 0 || existSL > guardSL + point);
+         ? (NormalizeDouble(guardSL - existSL, digits) > 0)
+         : (existSL == 0 || NormalizeDouble(existSL - guardSL, digits) > 0);
 
       if(!needMove) continue;
 
-      //--- ตรวจว่า SL ไม่ชนราคาปัจจุบัน
-      if(isBuy  && guardSL >= bid) continue;
-      if(!isBuy && guardSL <= ask) continue;
-
-      if(trade.PositionModify(posInfo.Ticket(), guardSL, posInfo.TakeProfit()))
-         Print("PosGuard OK | tk:", posInfo.Ticket(),
-               " open:", openPrice, " guardSL:", guardSL,
-               " rawProfit:$", DoubleToString(rawProfit,2));
+      //--- คำนวณ SL ที่ valid ตาม stop level ของ broker
+      double validSL = guardSL;
+      if(isBuy)
+      {
+         double slMax = NormalizeDouble(bid - minDist - point, digits);
+         if(validSL > slMax) validSL = slMax;   // clamp ให้ห่างจากราคา
+         if(validSL <= 0 || validSL >= bid)
+         {
+            PrintFormat("PosGuard SKIP | tk:%d BUY guardSL:%.5f too close to bid:%.5f (minDist:%.5f)",
+               (int)posInfo.Ticket(), guardSL, bid, minDist);
+            continue;
+         }
+      }
       else
-         Print("PosGuard FAIL | tk:", posInfo.Ticket(),
-               " err:", trade.ResultRetcode(),
-               " guardSL:", guardSL, " bid:", bid);
+      {
+         double slMin = NormalizeDouble(ask + minDist + point, digits);
+         if(validSL < slMin) validSL = slMin;   // clamp ให้ห่างจากราคา
+         if(validSL <= ask)
+         {
+            PrintFormat("PosGuard SKIP | tk:%d SELL guardSL:%.5f too close to ask:%.5f (minDist:%.5f)",
+               (int)posInfo.Ticket(), guardSL, ask, minDist);
+            continue;
+         }
+      }
+
+      //--- ตรวจ needMove อีกรอบหลัง clamp (ป้องกัน clamp ทำให้ validSL = existSL)
+      bool needMoveAfterClamp = isBuy
+         ? (NormalizeDouble(validSL - existSL, digits) > 0)
+         : (existSL == 0 || NormalizeDouble(existSL - validSL, digits) > 0);
+      if(!needMoveAfterClamp) continue;
+
+      if(trade.PositionModify(posInfo.Ticket(), validSL, posInfo.TakeProfit()))
+         PrintFormat("PosGuard OK | tk:%d open:%.5f SL:%.5f->%.5f profit:$%.2f",
+            (int)posInfo.Ticket(), openPrice, existSL, validSL, rawProfit);
+      else
+         PrintFormat("PosGuard FAIL | tk:%d err:%d SL:%.5f bid:%.5f",
+            (int)posInfo.Ticket(), trade.ResultRetcode(), validSL, bid);
    }
 }
 
@@ -1597,9 +1623,9 @@ void CheckTrailingStop()
    if(curTicks > g_trailCombinedHigh) g_trailCombinedHigh = curTicks;
 
    //--- ตรวจว่าผ่าน step ใหม่หรือยัง (ใช้ high water mark)
+   // step 1 ยิงทันทีที่ผ่าน BETrigger, step 2 ที่ BETrigger+step, ...
    double step      = g_TrailStepTicks;
-   double stepsGone = MathFloor((g_trailCombinedHigh - g_BETriggerTicks) / step);
-   if(stepsGone < 1) return;
+   double stepsGone = MathFloor((g_trailCombinedHigh - g_BETriggerTicks) / step) + 1;
 
    //--- SL รวมใหม่ = bePrice + (lock + stepsGone × step) ticks (ทิศ net)
    double newSLTicks = g_BELockTicks + stepsGone * step;
@@ -1622,12 +1648,19 @@ void CheckTrailingStop()
       double existSL = posInfo.StopLoss();
       bool needMove = (netLots > 0 && newSL > existSL)
                    || (netLots < 0 && (existSL == 0 || newSL < existSL));
-      if(needMove && trade.PositionModify(tk, newSL, posInfo.TakeProfit()))
-         anySet = true;
+      if(needMove)
+      {
+         if(trade.PositionModify(tk, newSL, posInfo.TakeProfit()))
+            anySet = true;
+         else
+            Print("Trail FAIL | tk:", tk, " err:", trade.ResultRetcode(),
+                  " newSL:", newSL, " existSL:", existSL, " cur:", cur);
+      }
    }
    if(anySet)
-      Print("Trail Combined | step#", stepsGone, " | SL=", newSL,
-            " | bePrice=", bePrice, " | curTicks=", curTicks);
+      Print("Trail Combined | step#", (int)stepsGone, " SL=", newSL,
+            " bePrice=", bePrice, " curTicks=", NormalizeDouble(curTicks,0),
+            " high=", NormalizeDouble(g_trailCombinedHigh,0));
 }
 
 //+------------------------------------------------------------------+
@@ -1837,12 +1870,20 @@ void CheckProtectProfit()
       count++;
    }
    if(count == 0) return;
-   if(totalProfit < g_ProtectProfitThreshold) return;
+   if(totalProfit < g_ProtectProfitThreshold)
+   {
+      static datetime lastLog = 0;
+      if(TimeCurrent() - lastLog >= 5)
+      {
+         Print("ProtectProfit | waiting: P&L=$", DoubleToString(totalProfit,2),
+               " / threshold=$", DoubleToString(g_ProtectProfitThreshold,2));
+         lastLog = TimeCurrent();
+      }
+      return;
+   }
 
-   // คำนวณ combined BE SL (profit รวม = $0) รวม swap ด้วย
-   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize2 = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   double vpp = (tickSize2 > 0 && tickValue > 0) ? tickValue / tickSize2 : 0;
+   // คำนวณ combined BE SL (profit รวม = $0)
+   double vpp = (tickSize > 0 && tickValue > 0) ? tickValue / tickSize : 0;
 
    double buyLots=0, sellLots=0, buyW=0, sellW=0, totalSwap=0;
    for(int j=0; j<count; j++)
@@ -1852,17 +1893,29 @@ void CheckProtectProfit()
       else                           { sellLots+=lots[j]; sellW+=opens[j]*lots[j]; }
    }
    double netLots = buyLots - sellLots;
-   if(MathAbs(netLots) < 0.0001) return;
+   if(MathAbs(netLots) < 0.0001)
+   {
+      Print("ProtectProfit | SKIP: netLots~0 (buyLots=", buyLots, " sellLots=", sellLots,
+            ") — hedged positions, cannot compute single BE SL");
+      return;
+   }
 
-   // ปรับ BE ให้ครอบ swap สะสม (swap < 0 → SL ต้องสูงกว่า open นิดนึง)
+   // ปรับ BE ให้ครอบ swap สะสม
    double swapAdj = (vpp > 0 && MathAbs(netLots) > 0) ? (-totalSwap) / (vpp * MathAbs(netLots)) : 0;
    double beSL = NormalizeDouble((buyW - sellW) / netLots + (netLots > 0 ? swapAdj : -swapAdj), digits);
 
-   // Validate: SL ต้องอยู่ฝั่งขาดทุน (ราคายังไม่ผ่านไปแล้ว)
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   if(netLots > 0 && beSL >= bid) { Print("ProtectProfit: beSL>=bid, skip"); return; }
-   if(netLots < 0 && beSL <= ask) { Print("ProtectProfit: beSL<=ask, skip"); return; }
+   if(netLots > 0 && beSL >= bid)
+   {
+      Print("ProtectProfit | SKIP: beSL=", beSL, " >= bid=", bid, " (price already below BE?)");
+      return;
+   }
+   if(netLots < 0 && beSL <= ask)
+   {
+      Print("ProtectProfit | SKIP: beSL=", beSL, " <= ask=", ask);
+      return;
+   }
 
    // Set SL ราคาเดียวกันทุกไม้
    g_ProtectProfitTriggered = true;
@@ -2633,7 +2686,7 @@ void UpdateBELine()
                    DoubleToString(bePrice,digits), count, totalProfit));
 
    //--- label ข้างขวา: ใช้ OBJ_TEXT ติด bar ล่าสุด + 3 bars ไปทางขวา
-   datetime tx = iTime(sym,PERIOD_CURRENT,0) + (long)PeriodSeconds(PERIOD_CURRENT)*3;
+   datetime tx = iTime(sym,PERIOD_CURRENT,0) + (datetime)((long)PeriodSeconds(PERIOD_CURRENT)*3);
    string   txt = StringFormat(" BE %s  ($%.2f)", DoubleToString(bePrice,digits), totalProfit);
    color    clr = (totalProfit >= 0) ? C'220,200,60' : C'220,100,60';
 
@@ -3148,17 +3201,23 @@ void UpdateFeatureLines()
    if(g_EnableTrailing && hasCombined)
    {
       double maxT = (curTicks > g_trailCombinedHigh) ? curTicks : g_trailCombinedHigh;
-      double nextStepNum;
-      if(maxT < g_BETriggerTicks) nextStepNum = 1;
+      double curStepNum, nextTicks;
+      if(maxT < g_BETriggerTicks)
+      {
+         // ยังไม่ถึง trigger → เส้นแสดงจุดที่ step 1 จะยิง
+         nextTicks = g_BETriggerTicks;
+         curStepNum = 0;
+      }
       else
       {
-         double stepsGone = MathFloor((maxT - g_BETriggerTicks) / g_TrailStepTicks);
-         nextStepNum = stepsGone + 1;
+         // step ที่ยิงไปแล้ว = floor(...)+1, next = curStep+1
+         double stepsGone = MathFloor((maxT - g_BETriggerTicks) / g_TrailStepTicks) + 1;
+         curStepNum = stepsGone;
+         nextTicks  = g_BETriggerTicks + stepsGone * g_TrailStepTicks;
       }
-      double nextTicks = g_BETriggerTicks + nextStepNum * g_TrailStepTicks;
       double trigPrice = NormalizeDouble(bePrice + sign * nextTicks * tickSize, digits);
       DrawFTLine(PREFIX+"FT_TR", barTime, lineEnd, trigPrice, C'90,200,220', STYLE_DASH,
-                 StringFormat(" Trail step#%.0f @ %s", nextStepNum, DoubleToString(trigPrice,digits)));
+                 StringFormat(" Trail next step#%.0f @ %s", curStepNum+1, DoubleToString(trigPrice,digits)));
    }
    else DelFTLine(PREFIX+"FT_TR");
 
