@@ -505,8 +505,15 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
     signal    = result.get("analysis", {})
     direction = signal.get("signal", "?")
     entry_raw = signal.get("entry_zone") or signal.get("entry")
-    sl_price  = signal.get("stop_loss") or signal.get("sl")
     tp_price  = signal.get("take_profit") or signal.get("tp")
+    # SL ของ pyramid ต้องใช้ SL เดิมของไม้แรก — ทุกไม้ใน setup เดียวกันต้อง SL เดียวกัน
+    # ห้ามใช้ SL จาก scan ใหม่ (Sonnet คิดค่าต่างกันทุกรอบ = ไม้ล่างอาจโดนก่อน)
+    sl_price = (
+        existing_trade.get("original_sl")
+        or existing_trade.get("current_sl")
+        or signal.get("stop_loss")
+        or signal.get("sl")
+    )
     confidence = int(signal.get("confidence") or 0)
 
     # ใช้ราคาตลาดจริงจาก MT5 (ask/bid) แทน midpoint ของ entry_zone
@@ -991,9 +998,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             (entry_raw[0] + entry_raw[1]) / 2 if isinstance(entry_raw, list)
             else float(entry_raw) if entry_raw else None
         )
-        sl_price = signal.get("stop_loss") or signal.get("sl")
         tp_price = signal.get("take_profit") or signal.get("tp")
         direction = signal.get("signal")
+        # ถ้ามี open trade ค้างอยู่ (pyramid) → ใช้ SL ของไม้แรก ไม่ใช่ SL จาก signal ใหม่
+        _existing = bot_state.get("open_trade") or {}
+        sl_price = (
+            _existing.get("original_sl")
+            or _existing.get("current_sl")
+            or signal.get("stop_loss")
+            or signal.get("sl")
+        )
         mt5_tag = ""
         if entry_price and sl_price and direction in ("BUY", "SELL"):
             open_trade = {
