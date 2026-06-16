@@ -467,16 +467,17 @@ MARKET DATA
 - ถ้าราคาถึง OB ฝั่งตรงข้ามแล้ว → trade ที่ OB ได้เลย (นั่นคือ supply/demand จริงๆ)
 
 ════════════════════════════════════════════
-⚠️ MACRO OVERRIDE — อ่านก่อน STEP 1 เสมอ
+⚠️ MACRO OVERRIDE — อ่านก่อน STEP 1 เสมอ (ใช้ทุกกรณี ไม่มีข้อยกเว้น)
 ════════════════════════════════════════════
-กฎ: ถ้า H4 BULL + H1 BULL (หรือ H4 BULL + Daily BULL) และราคาอยู่ใน/ใกล้ Bull OB:
-  → EQH sweep signal = IGNORE โดยสิ้นเชิง
-  → ท่านี้คือ AMD Upthrust ภายใน uptrend (sweep เพื่อดูด stops แล้วกลับขึ้น)
-  → vote BUY ที่ Bull OB แทน — ไม่ใช่ SELL
-  → SELL จะทำได้ก็ต่อเมื่อ H1 หรือ H4 มี CHoCH bearish ยืนยันก่อน
+กฎเหล็ก: ถ้า H4 BULL + H1 BULL (หรือ H4 BULL + Daily BULL):
+  → ห้าม SELL เด็ดขาด ไม่ว่าจะเห็น EQH sweep, rejection candle, bearish signal ใดๆ
+  → EQH sweep = AMD Upthrust ใน uptrend เท่านั้น (ดูด stops ก่อนขึ้นต่อ)
+  → vote BUY ที่ Bull OB ที่ใกล้ที่สุด หรือ BUY_WAIT ถ้ายังไม่ถึง OB
+  → ถ้าไม่มี setup BUY ที่ชัดเจน → vote NO (รอ) ดีกว่า SELL เสมอ
+  → SELL จะทำได้ก็ต่อเมื่อ H1 หรือ H4 มี CHoCH bearish ยืนยัน + BOS ลงชัดก่อนเท่านั้น
 
-ตัวอย่าง: H4 BULL + H1 BULL + EQH swept + ราคาอยู่ที่ Bull OB 4300–4313
-  → ถูก: vote BUY ที่ Bull OB | ผิด: vote SELL เพราะ EQH sweep
+ตัวอย่าง: H4 BULL + H1 BULL + EQH swept ที่ 4318 + ราคา 4312
+  → ถูก: vote BUY ที่ Bull OB ที่ใกล้สุด หรือ NO (รอ OB) | ผิด: vote SELL
 
 ════════════════════════════════════════════
 STEP 1 — Primary OB (code เลือกให้แล้ว)
@@ -563,8 +564,8 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   🔴 C2 — EQH_SWEEP_SELL (ถ้า eqh_sweep_signal ≠ null):
     EQH swept → ดูด buy-side liquidity → ราคา reject ลงมาต่ำกว่า EQH
     เงื่อนไข: eqh_level + sweep_high ชัดเจน + ราคาปัจจุบัน < eqh_level
-    ⛔ ห้ามใช้ C2 ถ้า: H4 BULL และ H1 BULL และราคาอยู่ใน/ใกล้ Bull OB
-       → กรณีนั้น EQH sweep คือ Upthrust ใน uptrend → ดู MACRO OVERRIDE แทน
+    ⛔ ห้ามใช้ C2 เด็ดขาดถ้า: H4 BULL และ H1 BULL (ไม่ต้องรอ Bull OB)
+       → MACRO OVERRIDE มีผลทันที: EQH sweep คือ Upthrust ใน uptrend เสมอ → ดู MACRO OVERRIDE
     Entry: ราคาปัจจุบัน (หรือ limit ที่ eqh_level)
     SL: สูงกว่า sweep_high 5-10 จุด
     TP: nearest_swing_low ที่คำนวณโดย code (ด้านล่าง)
@@ -597,7 +598,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
 STEP 3 — ตัดสินใจและโหวต
 ════════════════════════════════════════════
 ลำดับ priority:
-0. ⚠️ MACRO OVERRIDE: H4+H1 BULL + อยู่ใน Bull OB → BUY เสมอ, ignore EQH sweep
+0. ⚠️ MACRO OVERRIDE (บังคับสูงสุด): H4+H1 BULL → ห้าม SELL เด็ดขาด, ignore EQH sweep, vote BUY ที่ Bull OB หรือ NO (รอ)
 1. ★ OB ใกล้ + ตรง macro trend + ราคาถึง/ใกล้ OB → YES, setup_type=TREND_OB (confidence สูงสุด)
 2. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
 3. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
