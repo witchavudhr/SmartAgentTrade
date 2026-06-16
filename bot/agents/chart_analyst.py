@@ -467,6 +467,18 @@ MARKET DATA
 - ถ้าราคาถึง OB ฝั่งตรงข้ามแล้ว → trade ที่ OB ได้เลย (นั่นคือ supply/demand จริงๆ)
 
 ════════════════════════════════════════════
+⚠️ MACRO OVERRIDE — อ่านก่อน STEP 1 เสมอ
+════════════════════════════════════════════
+กฎ: ถ้า H4 BULL + H1 BULL (หรือ H4 BULL + Daily BULL) และราคาอยู่ใน/ใกล้ Bull OB:
+  → EQH sweep signal = IGNORE โดยสิ้นเชิง
+  → ท่านี้คือ AMD Upthrust ภายใน uptrend (sweep เพื่อดูด stops แล้วกลับขึ้น)
+  → vote BUY ที่ Bull OB แทน — ไม่ใช่ SELL
+  → SELL จะทำได้ก็ต่อเมื่อ H1 หรือ H4 มี CHoCH bearish ยืนยันก่อน
+
+ตัวอย่าง: H4 BULL + H1 BULL + EQH swept + ราคาอยู่ที่ Bull OB 4300–4313
+  → ถูก: vote BUY ที่ Bull OB | ผิด: vote SELL เพราะ EQH sweep
+
+════════════════════════════════════════════
 STEP 1 — Primary OB (code เลือกให้แล้ว)
 ════════════════════════════════════════════
 Code คำนวณ Primary OB ให้แล้วด้านบน — เลือก OB ที่ใกล้ราคาที่สุดระหว่าง M5 กับ M15
@@ -551,11 +563,13 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   🔴 C2 — EQH_SWEEP_SELL (ถ้า eqh_sweep_signal ≠ null):
     EQH swept → ดูด buy-side liquidity → ราคา reject ลงมาต่ำกว่า EQH
     เงื่อนไข: eqh_level + sweep_high ชัดเจน + ราคาปัจจุบัน < eqh_level
+    ⛔ ห้ามใช้ C2 ถ้า: H4 BULL และ H1 BULL และราคาอยู่ใน/ใกล้ Bull OB
+       → กรณีนั้น EQH sweep คือ Upthrust ใน uptrend → ดู MACRO OVERRIDE แทน
     Entry: ราคาปัจจุบัน (หรือ limit ที่ eqh_level)
     SL: สูงกว่า sweep_high 5-10 จุด
     TP: nearest_swing_low ที่คำนวณโดย code (ด้านล่าง)
     → setup_type = EQH_SWEEP_SELL
-    confidence สูงขึ้นถ้ามี bear confirm candle
+    confidence สูงขึ้นถ้ามี bear confirm candle + macro BEAR หรือ MIXED เท่านั้น
 
 ── CASE D: AMD Pattern — Range → Sweep → CHoCH → BOS ───────────
 ท่าเจอบ่อยที่สุด: ออกข้าง (Accumulation) → ดูด liquidity (Manipulation) → พลิกทิศ (Distribution)
@@ -583,6 +597,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
 STEP 3 — ตัดสินใจและโหวต
 ════════════════════════════════════════════
 ลำดับ priority:
+0. ⚠️ MACRO OVERRIDE: H4+H1 BULL + อยู่ใน Bull OB → BUY เสมอ, ignore EQH sweep
 1. ★ OB ใกล้ + ตรง macro trend + ราคาถึง/ใกล้ OB → YES, setup_type=TREND_OB (confidence สูงสุด)
 2. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
 3. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
