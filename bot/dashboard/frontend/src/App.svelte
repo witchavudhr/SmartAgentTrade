@@ -1,7 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
 
-  // ── Knight SVG sprites ────────────────────────────────────────────────────
   const C = {
     arthur: `<svg width="38" height="60" viewBox="0 0 38 60"><polygon points="5,15 8,8 12,13 16,6 19,11 22,6 26,13 30,8 33,15" fill="#D4A017"/><rect x="10" y="13" width="18" height="4" rx="1" fill="#B8860B"/><ellipse cx="19" cy="25" rx="10" ry="11" fill="#F0C090"/><circle cx="15" cy="24" r="1.5" fill="#2C1A08"/><circle cx="23" cy="24" r="1.5" fill="#2C1A08"/><path d="M15 30 Q19 33 23 30" fill="none" stroke="#9B6040" stroke-width="1.1" stroke-linecap="round"/><rect x="11" y="36" width="16" height="5" rx="2" fill="#D4A017"/><rect x="9" y="39" width="20" height="13" rx="3" fill="#1565C0"/><rect x="17" y="39" width="4" height="13" fill="#D4A017"/><rect x="11" y="45" width="16" height="2.5" fill="#D4A017"/><rect x="5" y="38" width="9" height="5" rx="2" fill="#D4A017"/><rect x="24" y="38" width="9" height="5" rx="2" fill="#D4A017"/><rect x="11" y="52" width="7" height="7" rx="2" fill="#0D47A1"/><rect x="20" y="52" width="7" height="7" rx="2" fill="#0D47A1"/><rect x="9" y="56" width="9" height="4" rx="2" fill="#050A20"/><rect x="20" y="56" width="9" height="4" rx="2" fill="#050A20"/></svg>`,
     dark:   `<svg width="38" height="60" viewBox="0 0 38 60"><path d="M9 21 Q11 8 19 8 Q27 8 29 21Z" fill="#1A1A3E"/><ellipse cx="19" cy="25" rx="10" ry="11" fill="#2C2C54"/><rect x="12" y="20" width="14" height="8" rx="2" fill="#050514"/><line x1="13" y1="23" x2="25" y2="23" stroke="#7C4DFF" stroke-width="1.2" opacity=".9"/><polygon points="17,16 19,10 21,16" fill="#3A3A6E"/><polygon points="9,18 6,9 12,16" fill="#3A3A6E"/><polygon points="29,18 32,9 26,16" fill="#3A3A6E"/><rect x="9" y="36" width="20" height="14" rx="3" fill="#1A1A3E"/><rect x="3" y="35" width="10" height="6" rx="3" fill="#7C4DFF"/><rect x="25" y="35" width="10" height="6" rx="3" fill="#7C4DFF"/><rect x="11" y="50" width="7" height="8" rx="2" fill="#111130"/><rect x="20" y="50" width="7" height="8" rx="2" fill="#111130"/><rect x="9" y="55" width="9" height="4" rx="2" fill="#050514"/><rect x="20" y="55" width="9" height="4" rx="2" fill="#050514"/></svg>`,
@@ -18,32 +17,13 @@
     { id:'a4', char:'gold',   name:'Risk Manager',  seat:{l:30,t:130},  patrol:[{l:3,t:58},{l:6,t:122},{l:4,t:65}],      idle:['2% rule holding...','RR calc ready...'] },
   ];
 
-  // ── Agent panel cards (top row) ───────────────────────────────────────────
-  const AGENT_CARDS = [
-    { key:'chart', name:'Chart Analyst', role:'M5 OB · BOS · Sweep', emoji:'⚔️', bg:'#1A237E' },
-    { key:'bias',  name:'Bias Analyst',  role:'H1 / H4 / Daily',      emoji:'🛡️', bg:'#311B92' },
-    { key:'news',  name:'News Scout',    role:'Economic Cal.',         emoji:'🪃', bg:'#4E342E' },
-    { key:'risk',  name:'Risk Manager',  role:'Lot · VETO',           emoji:'🗡️', bg:'#1B5E20' },
-    { key:'sup',   name:'Supervisor',    role:'Final vote',            emoji:'🏹', bg:'#7B1FA2' },
-    { key:'pos',   name:'POS Guard',     role:'Trail SL',              emoji:'🛡',  bg:'#0D47A1' },
-  ];
-
-  const PROMPTS = {
-    chart: { title:'Chart Analyst — System Prompt', body:`คุณคือ Chart Analyst Agent — วิเคราะห์ XAUUSD หาจุดเข้า trade\n\nSTEP 0 — OB PROXIMITY\nวัดระยะราคาปัจจุบัน vs Bear OB และ Bull OB\n  CASE A — ใกล้ Bear OB → รอ SELL ที่ Bear OB\n  CASE B — ใกล้ Bull OB → โอกาส Swing ขึ้นหรือ bounce\n\nSTEP 1 — TREND SETUP (CASE A)\n  - direction ตรง macro bias\n  - ราคาอยู่ใน M15/M5 OB ≤30 pips\n  - มี BOS ตาม trend + pullback + confirm candle\n  - RR ≥ 1.5\n\nSTEP 2 — SWING OB ENTRY (CASE B)\n  TP = next swing high/low เท่านั้น\n\nตอบ JSON: { vote, signal, setup_type, confidence, entry_zone, stop_loss, take_profit, rr_ratio, reasoning }` },
-    bias:  { title:'Bias Analyst — System Prompt', body:`คุณคือ Bias Analyst Agent — วิเคราะห์ภาพใหญ่ XAUUSD จาก Weekly/Daily/H4/H1\n\n① อ่าน macro trend (Weekly > Daily > H4 > H1)\n② ตรวจสอบ Demand/Supply Zone ของ HTF\n③ ประเมิน Signal ที่เสนอ\n   YES ถ้า: A) with-trend B) ถึง HTF zone แม้ counter-trend\n   NO  ถ้า: C) counter-trend ยังไม่ถึง level D) trend แข็งมาก\n\nตอบ JSON: { vote, case, at_htf_level, overall_bias, h4_bias, h1_bias, trade_direction, reasoning }` },
-    news:  { title:'News Scout — System Prompt', body:`คุณคือ News Scout Agent — วิเคราะห์ข่าวเศรษฐกิจที่กระทบ Gold\n\nBlock window:\n  ก่อนข่าว: 30 นาที\n  หลังข่าว: 30 นาที\n\nถ้าไม่มีข่าว → vote YES อัตโนมัติ (ไม่เรียก Claude)\n\nตอบ JSON: { vote, risk_level, safe_to_trade, key_event, gold_impact, reasoning }` },
-    risk:  { title:'Risk Manager — Rules', body:`VETO conditions (auto-reject ก่อนส่ง Supervisor):\n  1. Loss streak ≥ 3 ครั้งติด → หยุดพัก\n  2. Daily loss > 3% → หยุดวันนี้\n  3. ไม่มี SL หรือ SL pips ≤ 0\n  4. RR < 1.5\n\nLot calculation:\n  lot = (balance × risk%) / (sl_pips × pip_value × 100)\n\nCaution mode (H4 ขัด bias): lot ลด 50%\n\nScale-in Pyramid (OB zone):\n  Entry 1 (OB top):    20% lot\n  Entry 2 (OB middle): 40% lot\n  Entry 3 (Sweep zone): 40% lot` },
-    sup:   { title:'Supervisor — System Prompt', body:`คุณคือ Supervisor Agent — ตัดสินใจสุดท้าย APPROVE หรือ REJECT\n\nVote รวม X/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง\n\nวิธีตัดสิน:\n1. Chart เป็น agent หลัก — YES + setup ชัด → น้ำหนักสูงสุด\n2. vote 1/3 แต่ YES เหตุผลแข็งมาก → APPROVE ได้\n3. vote 2/3 แต่ YES อ่อน, NO ชัดเจน → REJECT ได้\n\nตอบ JSON: { approve, confidence, key_agent, reasoning }` },
-    pos:   { title:'POS Guard — Auto Trail SL', body:`POS Guard ทำงานทุก interval วินาที\nตรวจ open positions ทุก ticket ใน MT5\n\nTrigger: profit ≥ POSGUARD_TRIGGER_USD ($20)\n  → Lock SL ที่ open price + POSGUARD_LOCK_TICKS\n  → Trail ทุก POSGUARD_STEP_TICKS\n\nตั้งค่าใน .env:\n  POSGUARD_ENABLED=true\n  POSGUARD_TRIGGER_USD=20.0\n  POSGUARD_LOCK_TICKS=10.0\n  POSGUARD_STEP_TICKS=500.0\n  POSGUARD_CHECK_INTERVAL=10` },
-  };
-
   // ── State ─────────────────────────────────────────────────────────────────
   let statusText = 'Watching the market...';
   let connected = false;
   let scanPhase = 'idle';
   let scanRunning = false;
-  let vbnText = '';
   let vbnVisible = false;
+  let vbnText = '';
 
   let knights = AGENTS_DEF.map(a => ({
     ...a, pos:{...a.patrol[0]}, pIdx:0, moving:false, flip:false, bubble:'', bubbleOn:false,
@@ -51,12 +31,12 @@
 
   let scanLog = [];
   let signal = {
-    direction:'—', setup_type:'—', stars:'', entry:0, sl:0, tp:0, lot:0, rr:0,
-    pnl:0, time:'—', approved:false,
+    direction:'—', setup_type:'—', stars:'', entry:0, sl:0, tp:0, lot:0.01, rr:0,
+    approved:false, time:'—',
     votes:{chart:false, bias:false, news:false, risk:false},
     reason:'Waiting for first scan…',
   };
-  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, pending:0, best_trade:0, trades:[], period:'today' };
+  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, best_trade:0, trades:[], period:'today' };
   let activePeriod = 'today';
   const PERIODS = [
     {key:'today',label:'Today'},{key:'week',label:'Week'},
@@ -72,47 +52,35 @@
     } catch(e) {}
   }
 
+  // Ask agents
   let askInput = '';
   let askLoading = false;
-  let messages = [{ role:'ai', text:'สวัสดีครับ — War Room พร้อมแล้ว รอผลจาก bot…' }];
-  let activeModal = null;
+  let messages = [{ role:'ai', text:'สวัสดีครับ — พร้อมแล้ว' }];
   let msgsEl;
 
   function sessionLabel() {
     const h = new Date().getHours();
-    if (h >= 8 && h < 17) return 'London';
-    if (h >= 13 && h < 22) return 'NY';
+    if (h >= 8 && h < 17) return 'London Session';
+    if (h >= 13 && h < 22) return 'NY Session';
     return 'Off-hours';
+  }
+  function sessionHours() {
+    const h = new Date().getHours();
+    if (h >= 8 && h < 17) return '15:30 → 21:00 UTC+7';
+    if (h >= 13 && h < 22) return '20:00 → 03:00 UTC+7';
+    return '—';
   }
   function nowHHMM() {
     const n = new Date();
     return `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`;
   }
+  function todayStr() {
+    const n = new Date();
+    return `${n.toLocaleDateString('en-US',{month:'short'})} ${n.getDate()}`;
+  }
   let timeStr = nowHHMM();
   let sessStr = sessionLabel();
-
-  // ── Agent dot/vote helpers ─────────────────────────────────────────────────
-  function agentDot(key) {
-    if (scanPhase === 'gathering' || scanPhase === 'scanning') return 'yellow';
-    if (key === 'pos') return 'gray';
-    if (key === 'sup') return signal.direction==='—' ? 'gray' : (signal.approved ? 'green' : 'red');
-    if (key === 'chart') return signal.direction==='—' ? 'gray' : (signal.votes?.chart  ? 'green' : 'red');
-    if (key === 'bias')  return signal.direction==='—' ? 'gray' : (signal.votes?.bias   ? 'green' : 'red');
-    if (key === 'news')  return signal.direction==='—' ? 'gray' : (signal.votes?.news   ? 'green' : 'red');
-    if (key === 'risk')  return signal.direction==='—' ? 'gray' : (signal.votes?.risk   ? 'green' : 'red');
-    return 'gray';
-  }
-  function agentVoteLabel(key) {
-    if (scanPhase === 'gathering') return 'Gathering…';
-    if (scanPhase === 'scanning')  return 'Analyzing…';
-    if (signal.direction === '—') return 'Standby';
-    if (key === 'chart') return signal.votes?.chart  ? `YES ${signal.stars}` : 'NO';
-    if (key === 'bias')  return signal.votes?.bias   ? 'YES — Bullish' : 'NO';
-    if (key === 'news')  return signal.votes?.news   ? 'YES — Low risk' : 'BLOCKED';
-    if (key === 'risk')  return signal.votes?.risk   ? `OK · ${signal.lot}L` : 'VETO';
-    if (key === 'sup')   return signal.approved ? 'APPROVED ✓' : 'REJECTED';
-    return 'Standby';
-  }
+  let sessHrs = sessionHours();
 
   // ── Knights ───────────────────────────────────────────────────────────────
   function showBubble(idx, txt, dur=2500) {
@@ -125,7 +93,6 @@
     knights[idx] = {...knights[idx], pos:{l,t}, moving:true, flip};
     knights = [...knights];
   }
-
   let patrolTimer;
   function startPatrol() {
     clearInterval(patrolTimer);
@@ -156,7 +123,6 @@
     } catch(e) { return; }
     scanRunning = true;
     clearInterval(patrolTimer);
-    statusText = 'Sending knights to the field...';
   }
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
@@ -176,7 +142,7 @@
       } else if (msg.type==='signal') {
         signal = msg.data;
       } else if (msg.type==='scan_log') {
-        scanLog = [msg.data, ...scanLog].slice(0,12);
+        scanLog = [msg.data, ...scanLog].slice(0,8);
       } else if (msg.type==='stats') {
         stats = {...stats, ...msg.data};
       } else if (msg.type==='scan_phase') {
@@ -190,8 +156,8 @@
           knights.forEach((_,i) => { knights[i]={...knights[i],moving:false}; }); knights=[...knights];
         } else if (ph==='approved') {
           statusText = 'APPROVED — sending alert';
-          vbnText = `APPROVED — ${signal.direction} XAUUSD  |  Entry ${signal.entry}  |  TP ${signal.tp}`;
-          vbnVisible = true; setTimeout(()=>{vbnVisible=false;}, 3400);
+          vbnText = `APPROVED — ${signal.direction} XAUUSD  Entry ${signal.entry}  TP ${signal.tp}`;
+          vbnVisible = true; setTimeout(()=>{ vbnVisible=false; }, 3400);
         } else if (ph==='rejected') {
           statusText = 'No setup found';
         } else if (ph==='idle') {
@@ -206,7 +172,6 @@
     };
   }
 
-  // ── Ask ───────────────────────────────────────────────────────────────────
   async function sendAsk() {
     const q = askInput.trim();
     if (!q || askLoading) return;
@@ -220,312 +185,308 @@
       messages = [...messages, {role:'ai', text:'[ไม่สามารถเชื่อมต่อได้]'}];
     }
     askLoading = false;
-    setTimeout(() => { if (msgsEl) msgsEl.scrollTop=msgsEl.scrollHeight; }, 50);
+    setTimeout(() => { if(msgsEl) msgsEl.scrollTop=msgsEl.scrollHeight; }, 50);
   }
   function askKey(e) { if (e.key==='Enter') sendAsk(); }
 
   function fmtPnl(v) { return (v>=0?'+$':'-$')+Math.abs(v??0).toFixed(2); }
-  function signColor(v) { return v>=0 ? '#16a34a' : '#dc2626'; }
+  $: tradeMax = Math.max(...(stats.trades||[]).map(t=>Math.abs(t.p??t.pnl??0)), 1);
 
   onMount(() => {
     initWs(); startPatrol();
     AGENTS_DEF.forEach((a,i) => setTimeout(()=>showBubble(i,a.idle[0],2400), i*500+600));
-    setInterval(() => { timeStr=nowHHMM(); sessStr=sessionLabel(); }, 30000);
+    setInterval(() => { timeStr=nowHHMM(); sessStr=sessionLabel(); sessHrs=sessionHours(); }, 30000);
   });
   onDestroy(() => { clearInterval(patrolTimer); if(ws) ws.close(); });
 </script>
 
-<!-- ── TOP BAR ─────────────────────────────────────────────────────────── -->
-<div class="office">
+<div class="shell">
 
-<div class="topbar">
-  <div class="tb-left">
-    <span class="tb-title">SmartAgentTrade</span>
-    <span class="badge-live">LIVE</span>
-    <span class="badge-sess">{sessStr} · {timeStr}</span>
-  </div>
-  <div class="tb-mid">
-    <span class="tb-pair">XAUUSD</span>
+  <!-- ── TOP BAR ────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <span class="tb-brand">SmartAgentTrade — War Room</span>
     <span class="tb-status">{statusText}</span>
-  </div>
-  <div class="tb-right">
-    <div class="live-dot" class:live={connected}></div>
-    <button class="scan-btn" disabled={scanRunning} on:click={triggerScan}>
-      {scanRunning ? '⏳ Scanning...' : '⚡ Scan now'}
-    </button>
-  </div>
-</div>
-
-<!-- ── AGENT CARDS ROW ───────────────────────────────────────────────── -->
-<div class="agents-row">
-  {#each AGENT_CARDS as ac}
-    {@const dot = agentDot(ac.key)}
-    {@const vl  = agentVoteLabel(ac.key)}
-    <div class="ac" class:ac-sup={ac.key==='sup'}
-         on:click={() => activeModal = ac.key}
-         role="button" tabindex="0"
-         on:keydown={e => e.key==='Enter' && (activeModal=ac.key)}>
-      <div class="ac-sprite" style="background:{ac.bg}">
-        <span style="font-size:22px">{ac.emoji}</span>
-        <span class="ac-dot dot-{dot}"></span>
-      </div>
-      <div class="ac-name">{ac.name}</div>
-      <div class="ac-role">{ac.role}</div>
-      <div class="ac-vote vote-{dot==='green'?'yes':dot==='red'?'no':'wait'}">{vl}</div>
+    <div class="tb-right">
+      <div class="ldot" class:live={connected}></div>
+      <button class="scanbtn" disabled={scanRunning} on:click={triggerScan}>
+        {scanRunning ? '⏳ Scanning...' : '⚡ Scan now'}
+      </button>
     </div>
-  {/each}
-</div>
+  </header>
 
-<!-- ── MAIN 3-COLUMN GRID ─────────────────────────────────────────────── -->
-<div class="main-grid">
+  <!-- ── COLUMNS ────────────────────────────────────────────────────── -->
+  <div class="cols">
 
-  <!-- LEFT: Scan log ──────────────────────── -->
-  <div class="panel">
-    <div class="ph">
-      <span>Scan log</span>
-      <span class="ph-sub">{scanLog.length} scans</span>
-    </div>
-    <div class="pb">
-      {#if scanLog.length === 0}
-        <div class="no-item">No scans yet today</div>
-      {/if}
-      {#each scanLog as l}
-        <div class="le" class:le-ok={l.result==='ok'} class:le-no={l.result==='no'}>
-          <div class="le-time">{l.time ?? l.t}</div>
-          <div class="le-main">{l.text ?? l.tx}</div>
-          <div class="le-sub">{l.sub ?? l.s}</div>
-        </div>
-      {/each}
+    <!-- ─── LEFT ────────────────────────────────────────────────────── -->
+    <aside class="lcol">
 
-      {#if signal.entry > 0}
-        <div style="margin-top:12px">
-          <div class="ph-sub" style="margin-bottom:6px">Latest signal · {signal.time}</div>
-          <div class="sig-levels">
-            <div class="sl-item"><div class="sl-lbl">Entry</div><div class="sl-val">{signal.entry}</div></div>
-            <div class="sl-item"><div class="sl-lbl">SL</div><div class="sl-val" style="color:#dc2626">{signal.sl}</div></div>
-            <div class="sl-item"><div class="sl-lbl">TP</div><div class="sl-val" style="color:#16a34a">{signal.tp}</div></div>
-            <div class="sl-item"><div class="sl-lbl">RR</div><div class="sl-val">1:{signal.rr}</div></div>
-          </div>
-          {#if signal.reason}
-            <div class="sig-reason" class:sig-ok={signal.approved}>{signal.reason}</div>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  </div>
-
-  <!-- CENTER: Summary + War Room ──────────── -->
-  <div class="center-col">
-    <!-- stat strip -->
-    <div class="sum-strip">
+      <div class="sh">STATS</div>
       <div class="ptabs">
         {#each PERIODS as p}
-          <button class="ptab" class:ptab-on={activePeriod===p.key} on:click={()=>switchPeriod(p.key)}>{p.label}</button>
+          <button class="pt" class:pt-on={activePeriod===p.key} on:click={()=>switchPeriod(p.key)}>{p.label}</button>
         {/each}
       </div>
-      <div class="sum-cards">
+      <div class="sg">
         <div class="sc">
-          <div class="sc-lbl">P&amp;L</div>
-          <div class="sc-val" style="color:{signColor(stats.today_pnl)}">{fmtPnl(stats.today_pnl)}</div>
+          <div class="sl">P&amp;L</div>
+          <div class="sv" style="color:{stats.today_pnl>=0?'#22c55e':'#ef4444'}">{fmtPnl(stats.today_pnl)}</div>
         </div>
         <div class="sc">
-          <div class="sc-lbl">W / L</div>
-          <div class="sc-val"><span style="color:#16a34a">{stats.wins}</span> / <span style="color:#dc2626">{stats.losses}</span></div>
+          <div class="sl">Win rate</div>
+          <div class="sv">{stats.win_rate}%</div>
         </div>
         <div class="sc">
-          <div class="sc-lbl">Win rate</div>
-          <div class="sc-val">{stats.win_rate}%</div>
+          <div class="sl">W / L</div>
+          <div class="sv"><span style="color:#22c55e">{stats.wins}</span> / <span style="color:#ef4444">{stats.losses}</span></div>
         </div>
         <div class="sc">
-          <div class="sc-lbl">Best</div>
-          <div class="sc-val" style="color:#16a34a">{fmtPnl(stats.best_trade??0)}</div>
+          <div class="sl">Best trade</div>
+          <div class="sv" style="color:#22c55e">{fmtPnl(stats.best_trade??0)}</div>
         </div>
       </div>
-    </div>
 
-    <!-- War room fills remaining space -->
-    <div class="vr-wrap">
-      <div class="vr">
-        <div class="bg"></div>
-        <div class="wall"></div>
-        <div class="ban">
-          <div class="ban-p"></div>
-          <div class="ban-f"><svg width="30" height="30" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9 17,13 19,20 12,16 5,20 7,13 2,9 9,9" fill="#D4A017"/></svg></div>
-          <div class="ban-p"></div>
+      <div class="sh">TRADE HISTORY BARS</div>
+      <div class="bars">
+        {#each (stats.trades||[]) as t}
+          {@const pv = t.p ?? t.pnl ?? 0}
+          {@const h = Math.max(4, Math.round(Math.abs(pv)/tradeMax*32))}
+          <div style="display:flex;flex-direction:column;align-items:center;flex:1">
+            <div class="bar" class:bar-w={pv>=0} class:bar-l={pv<0} style="height:{h}px"></div>
+          </div>
+        {/each}
+        {#if !(stats.trades||[]).length}
+          <div style="font-size:10px;color:#374151;width:100%;text-align:center">No trades</div>
+        {/if}
+      </div>
+
+      <div class="sh">SESSION</div>
+      <div class="sess-card">
+        <div class="sess-name">{sessStr}</div>
+        <div class="sess-hrs">{sessHrs}</div>
+        <div class="sess-news">
+          <span class="news-pill">News: clear</span>
+          <span class="news-pill">Next: CPI 21:30</span>
         </div>
-        <div class="tr" style="left:32px;top:22px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
-        <div class="tr" style="right:32px;top:22px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
-        <div class="tr" style="left:32px;bottom:10px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
-        <div class="tr" style="right:32px;bottom:10px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
-        <svg style="position:absolute;left:39px;top:26px;z-index:3" width="420" height="306" viewBox="0 0 220 160">
-          <ellipse cx="110" cy="92" rx="112" ry="77" fill="rgba(0,0,0,.45)"/>
-          <ellipse cx="110" cy="82" rx="110" ry="74" fill="#3A1E08"/>
-          <ellipse cx="110" cy="82" rx="110" ry="74" fill="none" stroke="#5A3010" stroke-width="8"/>
-          <ellipse cx="110" cy="82" rx="98" ry="62" fill="#472A0C"/>
-          <ellipse cx="110" cy="82" rx="84" ry="50" fill="#57361A"/>
-          <circle cx="110" cy="82" r="30" fill="none" stroke="#B8900A" stroke-width="1.6" opacity=".55"/>
-          <polygon points="110,53 117,72 137,72 122,84 128,103 110,91 92,103 98,84 83,72 103,72" fill="none" stroke="#C4980E" stroke-width="1.6" opacity=".65"/>
-          <rect x="94" y="0" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
-          <rect x="200" y="52" width="11" height="32" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
-          <rect x="171" y="140" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
-          <rect x="17" y="140" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
-          <rect x="9" y="52" width="11" height="32" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
-          <g transform="translate(110,82) rotate(-90)"><circle cx="-8" cy="0" r="3" fill="#D4A017"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#7B4920"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#D4A017"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#C8D4E0"/><polygon points="50,-1 50,1 56,0" fill="#D8E4F0"/></g>
-          <g transform="translate(110,82) rotate(-18)"><circle cx="-8" cy="0" r="3" fill="#6030C0"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#0D0020"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#6030C0"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#6A6A90"/><polygon points="50,-1 50,1 56,0" fill="#8080B0"/></g>
-          <g transform="translate(110,82) rotate(54)"><circle cx="-8" cy="0" r="3" fill="#9C27B0"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#380048"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#9C27B0"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#BCCCD8"/><polygon points="50,-1 50,1 56,0" fill="#CCDDE8"/></g>
-          <g transform="translate(110,82) rotate(126)"><circle cx="-8" cy="0" r="3" fill="#7B2A0A"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#3A1500"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#C62020"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#9A9A9A"/><polygon points="50,-1 50,1 56,0" fill="#B0B0B0"/></g>
-          <g transform="translate(110,82) rotate(198)"><circle cx="-8" cy="0" r="3" fill="#F57F17"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#6A3600"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#F9A825"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#D4C040"/><polygon points="50,-1 50,1 56,0" fill="#E0D050"/></g>
-        </svg>
-        <div class="vbn" class:on={vbnVisible}>{vbnText}</div>
-        {#each knights as k, i}
-          <div class="kn" class:mv={k.moving} class:fl={k.flip}
-               style="left:{k.pos.l}px;top:{k.pos.t}px"
-               on:click={() => showBubble(i, AGENTS_DEF[i].idle[Math.floor(Math.random()*2)], 2800)}
-               role="button" tabindex="0"
-               on:keydown={e=>e.key==='Enter'&&showBubble(i,AGENTS_DEF[i].idle[0],2800)}>
-            <div class="ki">{@html C[k.char]}</div>
-            <div class="bbl" class:on={k.bubbleOn}>{k.bubble}</div>
-            <div class="ntg">{k.name}</div>
+      </div>
+
+      <div class="sh">OPEN TRADE</div>
+      {#if signal.approved && signal.entry > 0}
+        <div class="ot-card" class:ot-buy={signal.direction==='BUY'} class:ot-sell={signal.direction==='SELL'}>
+          <div class="ot-dir">{signal.direction} {signal.entry} → now</div>
+          <div class="ot-sub">{fmtPnl(signal.pnl??0)} open | SL {signal.sl}</div>
+        </div>
+      {:else}
+        <div class="ot-none">No open trade</div>
+      {/if}
+
+    </aside>
+
+    <!-- ─── CENTER ──────────────────────────────────────────────────── -->
+    <main class="ccol">
+      <div class="rt-hdr">ROUND TABLE</div>
+
+      <!-- War room animation -->
+      <div class="vr-wrap">
+        <div class="vr">
+          <div class="bg"></div>
+          <div class="wall"></div>
+          <div class="ban">
+            <div class="ban-p"></div>
+            <div class="ban-f"><svg width="28" height="28" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9 17,13 19,20 12,16 5,20 7,13 2,9 9,9" fill="#D4A017"/></svg></div>
+            <div class="ban-p"></div>
+          </div>
+          <div class="tr" style="left:32px;top:22px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+          <div class="tr" style="right:32px;top:22px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+          <div class="tr" style="left:32px;bottom:10px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+          <div class="tr" style="right:32px;bottom:10px"><div class="tg"></div><div class="tf"></div><div class="ts"></div></div>
+          <svg style="position:absolute;left:39px;top:26px;z-index:3" width="420" height="306" viewBox="0 0 220 160">
+            <ellipse cx="110" cy="92" rx="112" ry="77" fill="rgba(0,0,0,.45)"/>
+            <ellipse cx="110" cy="82" rx="110" ry="74" fill="#3A1E08"/>
+            <ellipse cx="110" cy="82" rx="110" ry="74" fill="none" stroke="#5A3010" stroke-width="8"/>
+            <ellipse cx="110" cy="82" rx="98" ry="62" fill="#472A0C"/>
+            <ellipse cx="110" cy="82" rx="84" ry="50" fill="#57361A"/>
+            <circle cx="110" cy="82" r="30" fill="none" stroke="#B8900A" stroke-width="1.6" opacity=".55"/>
+            <polygon points="110,53 117,72 137,72 122,84 128,103 110,91 92,103 98,84 83,72 103,72" fill="none" stroke="#C4980E" stroke-width="1.6" opacity=".65"/>
+            <rect x="94" y="0" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+            <rect x="200" y="52" width="11" height="32" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+            <rect x="171" y="140" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+            <rect x="17" y="140" width="32" height="11" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+            <rect x="9" y="52" width="11" height="32" rx="2" fill="#2A1408" stroke="#5A3010" stroke-width=".9"/>
+            <g transform="translate(110,82) rotate(-90)"><circle cx="-8" cy="0" r="3" fill="#D4A017"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#7B4920"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#D4A017"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#C8D4E0"/><polygon points="50,-1 50,1 56,0" fill="#D8E4F0"/></g>
+            <g transform="translate(110,82) rotate(-18)"><circle cx="-8" cy="0" r="3" fill="#6030C0"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#0D0020"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#6030C0"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#6A6A90"/><polygon points="50,-1 50,1 56,0" fill="#8080B0"/></g>
+            <g transform="translate(110,82) rotate(54)"><circle cx="-8" cy="0" r="3" fill="#9C27B0"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#380048"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#9C27B0"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#BCCCD8"/><polygon points="50,-1 50,1 56,0" fill="#CCDDE8"/></g>
+            <g transform="translate(110,82) rotate(126)"><circle cx="-8" cy="0" r="3" fill="#7B2A0A"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#3A1500"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#C62020"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#9A9A9A"/><polygon points="50,-1 50,1 56,0" fill="#B0B0B0"/></g>
+            <g transform="translate(110,82) rotate(198)"><circle cx="-8" cy="0" r="3" fill="#F57F17"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#6A3600"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#F9A825"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#D4C040"/><polygon points="50,-1 50,1 56,0" fill="#E0D050"/></g>
+          </svg>
+          <div class="vbn" class:on={vbnVisible}>{vbnText}</div>
+          {#each knights as k, i}
+            <div class="kn" class:mv={k.moving} class:fl={k.flip}
+                 style="left:{k.pos.l}px;top:{k.pos.t}px"
+                 on:click={() => showBubble(i, AGENTS_DEF[i].idle[Math.floor(Math.random()*2)], 2800)}
+                 role="button" tabindex="0"
+                 on:keydown={e=>e.key==='Enter'&&showBubble(i,AGENTS_DEF[i].idle[0],2800)}>
+              <div class="ki">{@html C[k.char]}</div>
+              <div class="bbl" class:on={k.bubbleOn}>{k.bubble}</div>
+              <div class="ntg">{k.name}</div>
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <!-- Signal panel below animation -->
+      <div class="sig-panel">
+        <div class="sig-status">{statusText}</div>
+        <div class="sig-toggle"
+             class:sig-has={signal.entry > 0}>
+          {signal.entry > 0 ? `Latest signal details · ${signal.time}` : 'No signal yet'}
+        </div>
+        <div class="vote-row">
+          <span class="vt" class:vt-yes={signal.votes?.chart} class:vt-no={!signal.votes?.chart}>chart</span>
+          <span class="vt" class:vt-yes={signal.votes?.bias}  class:vt-no={!signal.votes?.bias}>bias</span>
+          <span class="vt" class:vt-yes={signal.votes?.news}  class:vt-no={!signal.votes?.news}>news</span>
+          <span class="vt" class:vt-yes={signal.votes?.risk}  class:vt-no={!signal.votes?.risk}>risk</span>
+        </div>
+        <div class="verdict" class:v-ok={signal.approved} class:v-no={!signal.approved && signal.entry>0}>
+          King Arthur: {signal.entry>0 ? (signal.approved ? 'APPROVED' : 'REJECTED') : '—'}
+        </div>
+        {#if signal.reason && signal.reason !== 'Waiting for first scan…'}
+          <div class="reason">{signal.reason}</div>
+        {/if}
+        <div class="levels">
+          <div class="lv"><div class="ll">Entry</div><div class="lval">{signal.entry||'—'}</div></div>
+          <div class="lv"><div class="ll">SL</div><div class="lval" style="color:#ef4444">{signal.sl||'—'}</div></div>
+          <div class="lv"><div class="ll">TP</div><div class="lval" style="color:#22c55e">{signal.tp||'—'}</div></div>
+          <div class="lv"><div class="ll">RR / Lot</div><div class="lval">{signal.rr||'—'} / {signal.lot||'.01'}</div></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ─── RIGHT ───────────────────────────────────────────────────── -->
+    <aside class="rcol">
+
+      <div class="sh">ASK AGENTS</div>
+      <div class="qcs">
+        <button class="qc" on:click={() => { askInput='OB zone อยู่ที่ไหน?'; }}>OB zone?</button>
+        <button class="qc" on:click={() => { askInput='ควร close ไหม?'; }}>Close?</button>
+        <button class="qc" on:click={() => { askInput='bias วันนี้คืออะไร?'; }}>Bias?</button>
+      </div>
+      <div class="msgs" bind:this={msgsEl}>
+        {#each messages as m}
+          <div class="msg" class:msg-u={m.role==='user'}>
+            <div class="mb">{m.text}</div>
+          </div>
+        {/each}
+        {#if askLoading}
+          <div class="msg"><div class="mb" style="font-style:italic;color:#6b7280">กำลังถาม…</div></div>
+        {/if}
+      </div>
+      <div class="cin">
+        <input type="text" placeholder="ถาม XAUUSD..." bind:value={askInput} on:keydown={askKey}/>
+        <button class="sendbtn" on:click={sendAsk}>Send</button>
+      </div>
+
+      <div class="sh">SCAN HISTORY</div>
+      <div class="slog">
+        {#if !scanLog.length}
+          <div style="font-size:10px;color:#374151;padding:8px">No scans yet</div>
+        {/if}
+        {#each scanLog as l}
+          <div class="sli" class:sli-ok={l.result==='ok'} class:sli-no={l.result==='no'}>
+            <div class="sli-top">{l.time??l.t} {l.text??l.tx}</div>
+            <div class="sli-sub">{l.sub??l.s}</div>
           </div>
         {/each}
       </div>
-    </div>
-  </div>
 
-  <!-- RIGHT: Ask agents ────────────────────── -->
-  <div class="panel chat-panel">
-    <div class="ph">
-      <span>Ask anything</span>
-      <span class="ph-sub">Haiku 4.5</span>
-    </div>
-    <div class="qcs">
-      <button class="qc" on:click={() => { askInput='ทองวันนี้มองยังไง?'; }}>ทอง?</button>
-      <button class="qc" on:click={() => { askInput='OB ที่ใช้เข้าอยู่ที่ไหน?'; }}>OB?</button>
-      <button class="qc" on:click={() => { askInput='ควร close trade ไหม?'; }}>Close?</button>
-      <button class="qc" on:click={() => { askInput='news วันนี้มีอะไร?'; }}>News?</button>
-    </div>
-    <div class="msgs" bind:this={msgsEl}>
-      {#each messages as m}
-        <div class="msg" class:msg-user={m.role==='user'}>
-          {#if m.role==='ai'}<div class="msg-role">Assistant</div>{/if}
-          <div class="msg-bubble">{m.text}</div>
-        </div>
-      {/each}
-      {#if askLoading}
-        <div class="msg"><div class="msg-bubble" style="color:#6b7280;font-style:italic">กำลังถาม…</div></div>
-      {/if}
-    </div>
-    <div class="chat-in-row">
-      <input type="text" placeholder="ถามเกี่ยวกับ XAUUSD..." bind:value={askInput} on:keydown={askKey}/>
-      <button class="send-btn" on:click={sendAsk}>Send</button>
-    </div>
-  </div>
+      <div class="foot">{todayStr()} · {sessStr} {timeStr}</div>
 
-</div><!-- /main-grid -->
-</div><!-- /office -->
+    </aside>
 
-<!-- ── AGENT MODAL ────────────────────────────────────────────────────── -->
-{#if activeModal}
-  <div class="modal-bg" on:click={() => activeModal=null}
-       role="button" tabindex="0" on:keydown={e=>e.key==='Escape'&&(activeModal=null)}>
-    <div class="modal" on:click|stopPropagation={() => {}} role="dialog">
-      <div class="modal-hdr">
-        <span>{PROMPTS[activeModal]?.title}</span>
-        <button on:click={() => activeModal=null}>✕</button>
-      </div>
-      <pre class="modal-body">{PROMPTS[activeModal]?.body}</pre>
-    </div>
-  </div>
-{/if}
+  </div><!-- /cols -->
+</div><!-- /shell -->
 
 <style>
   :global(*){box-sizing:border-box;margin:0;padding:0}
   :global(html,body){height:100%;overflow:hidden;background:#0f0f17;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e5e7eb}
 
-  /* ── OFFICE shell ─────────────────────────── */
-  .office{display:grid;grid-template-rows:44px auto 1fr;height:100vh;overflow:hidden;background:#111118}
+  /* ── shell ──────────────────────────────────────────────── */
+  .shell{display:grid;grid-template-rows:40px 1fr;height:100vh;overflow:hidden;background:#111118}
 
-  /* ── TOP BAR ──────────────────────────────── */
-  .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 16px;gap:12px;background:#0f0f17;border-bottom:0.5px solid rgba(255,255,255,.08);flex-shrink:0}
-  .tb-left{display:flex;align-items:center;gap:8px;min-width:0}
-  .tb-title{font-size:14px;font-weight:500;color:#f9fafb;white-space:nowrap}
-  .badge-live{background:#14532d;color:#86efac;font-size:10px;padding:1px 7px;border-radius:99px;white-space:nowrap}
-  .badge-sess{background:#1c1c25;color:#9ca3af;font-size:10px;padding:1px 8px;border-radius:99px;border:0.5px solid rgba(255,255,255,.1);white-space:nowrap}
-  .tb-mid{display:flex;align-items:center;gap:10px;flex:1;justify-content:center}
-  .tb-pair{font-size:15px;font-weight:500;color:#f9fafb}
-  .tb-status{font-size:10px;color:#6b7280}
-  .tb-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
-  .live-dot{width:7px;height:7px;border-radius:50%;background:#374151}
-  .live-dot.live{background:#4ade80;box-shadow:0 0 5px #4ade80}
-  .scan-btn{padding:5px 14px;background:#d97706;color:#0E0800;border:none;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;white-space:nowrap}
-  .scan-btn:hover:not(:disabled){background:#f59e0b}
-  .scan-btn:disabled{opacity:.4;cursor:default}
+  /* ── TOP BAR ─────────────────────────────────────────────── */
+  .topbar{
+    display:flex;align-items:center;gap:10px;padding:0 14px;
+    background:#0c0c14;border-bottom:1px solid rgba(255,255,255,.07);
+    flex-shrink:0;
+  }
+  .tb-brand{font-size:13px;font-weight:500;color:#f3f4f6;white-space:nowrap}
+  .tb-status{flex:1;font-size:10px;color:#4b5563;padding-left:10px}
+  .tb-right{display:flex;align-items:center;gap:7px;flex-shrink:0}
+  .ldot{width:6px;height:6px;border-radius:50%;background:#374151}
+  .ldot.live{background:#4ade80;box-shadow:0 0 5px #4ade80}
+  .scanbtn{padding:4px 12px;background:#d97706;color:#0E0800;border:none;border-radius:4px;font-size:10.5px;font-weight:500;cursor:pointer}
+  .scanbtn:hover:not(:disabled){background:#f59e0b}
+  .scanbtn:disabled{opacity:.4;cursor:default}
 
-  /* ── AGENTS ROW ───────────────────────────── */
-  .agents-row{display:flex;gap:8px;padding:8px 14px;background:#0f0f17;border-bottom:0.5px solid rgba(255,255,255,.08);overflow-x:auto;flex-shrink:0}
-  .agents-row::-webkit-scrollbar{height:3px}
-  .agents-row::-webkit-scrollbar-thumb{background:#2a2a35;border-radius:99px}
+  /* ── COLUMNS ─────────────────────────────────────────────── */
+  .cols{display:grid;grid-template-columns:216px 1fr 216px;height:100%;overflow:hidden}
 
-  .ac{flex:0 0 auto;min-width:100px;border:0.5px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 6px;text-align:center;cursor:pointer;background:#18181f;transition:border-color .15s}
-  .ac:hover{border-color:rgba(255,255,255,.25)}
-  .ac-sup{border-color:rgba(217,119,6,.4);background:#1a1408}
-  .ac-sprite{width:46px;height:46px;margin:0 auto 5px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative}
-  .ac-dot{position:absolute;bottom:1px;right:1px;width:9px;height:9px;border-radius:50%;border:1.5px solid #18181f}
-  .dot-green{background:#43a047}
-  .dot-red{background:#e53935}
-  .dot-yellow{background:#f9a825;animation:pulse 1.2s infinite}
-  .dot-gray{background:#6b7280}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-  .ac-name{font-size:10px;font-weight:500;color:#f9fafb;line-height:1.3}
-  .ac-role{font-size:9px;color:#6b7280;margin-top:1px}
-  .ac-vote{font-size:9px;margin-top:4px;padding:2px 5px;border-radius:99px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .vote-yes{background:rgba(34,197,94,.15);color:#4ade80;border:0.5px solid rgba(34,197,94,.3)}
-  .vote-no{background:rgba(239,68,68,.12);color:#f87171;border:0.5px solid rgba(239,68,68,.25)}
-  .vote-wait{background:#1c1c25;color:#6b7280;border:0.5px solid rgba(255,255,255,.08)}
+  /* ── shared LEFT / RIGHT ─────────────────────────────────── */
+  .lcol,.rcol{display:flex;flex-direction:column;overflow:hidden;background:#0f0f17}
+  .lcol{border-right:1px solid rgba(255,255,255,.07)}
+  .rcol{border-left:1px solid rgba(255,255,255,.07)}
 
-  /* ── MAIN GRID ────────────────────────────── */
-  .main-grid{display:grid;grid-template-columns:260px 1fr 280px;overflow:hidden;min-height:0}
+  /* section header */
+  .sh{
+    font-size:9px;font-weight:600;letter-spacing:.08em;
+    color:#4b5563;padding:7px 12px 4px;
+    border-bottom:1px solid rgba(255,255,255,.05);
+    flex-shrink:0;text-transform:uppercase;
+  }
 
-  /* shared panel */
-  .panel{display:flex;flex-direction:column;overflow:hidden;border-right:0.5px solid rgba(255,255,255,.07)}
-  .chat-panel{border-right:none}
-  .ph{padding:8px 12px;border-bottom:0.5px solid rgba(255,255,255,.07);font-size:11px;font-weight:500;color:#9ca3af;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
-  .ph-sub{font-size:9px;color:#4b5563}
-  .pb{flex:1;overflow-y:auto;padding:8px}
-  .pb::-webkit-scrollbar{width:3px}
-  .pb::-webkit-scrollbar-thumb{background:#2a2a35;border-radius:99px}
-  .no-item{font-size:11px;color:#4b5563;text-align:center;padding:20px}
+  /* ── LEFT: STATS ─────────────────────────────────────────── */
+  .ptabs{display:flex;flex-wrap:wrap;gap:3px;padding:6px 10px;flex-shrink:0}
+  .pt{padding:2px 8px;border-radius:99px;font-size:9px;cursor:pointer;
+      border:0.5px solid rgba(255,255,255,.1);background:transparent;color:#6b7280}
+  .pt:hover{color:#d1d5db}
+  .pt-on{background:#d97706;border-color:#d97706;color:#fff}
 
-  /* scan log entries */
-  .le{padding:6px 8px;border-radius:5px;margin-bottom:4px;font-size:11px;line-height:1.5}
-  .le-time{font-size:9.5px;color:#6b7280;font-family:monospace}
-  .le-main{font-weight:500;color:#e5e7eb}
-  .le-sub{font-size:9.5px;color:#6b7280}
-  .le-ok{background:rgba(22,163,74,.1);border-left:2px solid #16a34a}
-  .le-no{background:rgba(255,255,255,.03);border-left:2px solid rgba(255,255,255,.12)}
+  .sg{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:rgba(255,255,255,.06);flex-shrink:0}
+  .sc{background:#0f0f17;padding:8px 10px}
+  .sl{font-size:9px;color:#4b5563;margin-bottom:2px}
+  .sv{font-size:17px;font-weight:500;color:#e5e7eb}
 
-  /* signal levels */
-  .sig-levels{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:5px}
-  .sl-item{background:#1c1c25;border-radius:4px;padding:4px;text-align:center;border:0.5px solid rgba(255,255,255,.07)}
-  .sl-lbl{font-size:8.5px;color:#6b7280}
-  .sl-val{font-size:11px;font-weight:500;font-family:monospace;color:#e5e7eb}
-  .sig-reason{font-size:9.5px;color:#6b7280;padding:4px 6px;background:#1c1c25;border-radius:4px;line-height:1.4}
-  .sig-ok{color:#4ade80;background:rgba(74,222,128,.06)}
+  /* ── LEFT: BARS ──────────────────────────────────────────── */
+  .bars{display:flex;align-items:flex-end;gap:2px;padding:6px 10px;height:42px;flex-shrink:0}
+  .bar{flex:1;border-radius:2px 2px 0 0;background:#1f2937}
+  .bar-w{background:#16a34a}
+  .bar-l{background:#dc2626}
 
-  /* ── CENTER column ────────────────────────── */
-  .center-col{display:flex;flex-direction:column;overflow:hidden;border-right:0.5px solid rgba(255,255,255,.07)}
-  .sum-strip{flex-shrink:0;padding:6px 10px;border-bottom:0.5px solid rgba(255,255,255,.07);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .ptabs{display:flex;gap:3px}
-  .ptab{padding:2px 9px;border-radius:99px;font-size:9px;font-weight:500;cursor:pointer;border:0.5px solid rgba(255,255,255,.1);background:transparent;color:#6b7280}
-  .ptab:hover{color:#d1d5db}
-  .ptab-on{background:#d97706;border-color:#d97706;color:#fff}
-  .sum-cards{display:flex;gap:5px;flex:1;justify-content:flex-end}
-  .sc{background:#1c1c25;border-radius:5px;padding:4px 10px;text-align:center;border:0.5px solid rgba(255,255,255,.07);min-width:64px}
-  .sc-lbl{font-size:8.5px;color:#6b7280}
-  .sc-val{font-size:13px;font-weight:500;color:#e5e7eb}
+  /* ── LEFT: SESSION ───────────────────────────────────────── */
+  .sess-card{padding:8px 12px;flex-shrink:0}
+  .sess-name{font-size:12px;font-weight:500;color:#f3f4f6}
+  .sess-hrs{font-size:10px;color:#6b7280;margin:2px 0 5px}
+  .sess-news{display:flex;flex-wrap:wrap;gap:3px}
+  .news-pill{font-size:9px;padding:2px 7px;border-radius:99px;background:#1c1c25;color:#6b7280;border:0.5px solid rgba(255,255,255,.08)}
 
-  /* War room */
-  .vr-wrap{flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#0a0604;min-height:0}
+  /* ── LEFT: OPEN TRADE ────────────────────────────────────── */
+  .ot-card{margin:0 10px 10px;padding:9px 10px;border-radius:6px;flex-shrink:0}
+  .ot-buy{background:rgba(22,163,74,.18);border:1px solid rgba(22,163,74,.4)}
+  .ot-sell{background:rgba(220,38,38,.15);border:1px solid rgba(220,38,38,.35)}
+  .ot-dir{font-size:12px;font-weight:500;color:#f3f4f6}
+  .ot-sub{font-size:10px;color:#9ca3af;margin-top:2px}
+  .ot-none{margin:0 10px;padding:8px 10px;font-size:10px;color:#374151;background:#1c1c25;border-radius:6px;border:1px solid rgba(255,255,255,.05);flex-shrink:0}
+
+  /* ── CENTER ──────────────────────────────────────────────── */
+  .ccol{display:flex;flex-direction:column;overflow:hidden;background:#0a0604}
+  .rt-hdr{
+    font-size:9px;font-weight:600;letter-spacing:.1em;color:#4b5563;
+    text-align:center;padding:5px;text-transform:uppercase;
+    border-bottom:1px solid rgba(255,255,255,.05);flex-shrink:0;
+    background:#0f0f17;
+  }
+
+  /* war room */
+  .vr-wrap{flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:0}
   .vr{position:relative;width:500px;height:340px;flex-shrink:0}
   .bg{position:absolute;inset:0;background:#0E0903}
   .bg::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.012) 0 1px,transparent 1px 48px),repeating-linear-gradient(0deg,rgba(255,255,255,.012) 0 1px,transparent 1px 48px)}
@@ -533,7 +494,7 @@
   .wall::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.015) 0 1px,transparent 1px 60px),repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 1px,transparent 1px 30px)}
   .ban{position:absolute;top:3px;left:50%;transform:translateX(-50%);display:flex;gap:9px;align-items:flex-start;z-index:5}
   .ban-p{width:3px;height:50px;background:#7B4E28}
-  .ban-f{background:#6B0000;width:56px;height:55px;clip-path:polygon(0 0,100% 0,100% 75%,50% 100%,0 75%);display:flex;align-items:center;justify-content:center}
+  .ban-f{background:#6B0000;width:52px;height:52px;clip-path:polygon(0 0,100% 0,100% 75%,50% 100%,0 75%);display:flex;align-items:center;justify-content:center}
   .tr{position:absolute;width:12px;z-index:4}
   .tf{width:9px;height:14px;margin:0 auto;position:relative;animation:flk .42s alternate infinite ease-in-out}
   @keyframes flk{0%{transform:scaleX(1)}100%{transform:scaleX(.55) scaleY(.75)}}
@@ -552,30 +513,57 @@
   .bbl::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:rgba(255,248,215,.97)}
   .bbl.on{opacity:1}
   .ntg{position:absolute;top:calc(100% + 2px);left:50%;transform:translateX(-50%);font-size:8px;color:rgba(255,200,80,.65);white-space:nowrap;text-shadow:0 1px 4px rgba(0,0,0,.95);pointer-events:none}
-  .vbn{position:absolute;top:48%;left:50%;transform:translate(-50%,-50%);background:rgba(6,3,0,.96);border:1px solid #D4A017;border-radius:8px;padding:11px 20px;text-align:center;z-index:40;color:#FFD54F;font-size:11px;font-weight:500;pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap}
+  .vbn{position:absolute;top:48%;left:50%;transform:translate(-50%,-50%);background:rgba(6,3,0,.96);border:1px solid #D4A017;border-radius:8px;padding:10px 18px;z-index:40;color:#FFD54F;font-size:11px;font-weight:500;pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap}
   .vbn.on{opacity:1}
 
-  /* ── RIGHT: chat ──────────────────────────── */
-  .qcs{padding:6px 10px;display:flex;gap:4px;flex-wrap:wrap;flex-shrink:0;border-bottom:0.5px solid rgba(255,255,255,.07)}
-  .qc{font-size:9.5px;padding:3px 9px;border:0.5px solid rgba(255,255,255,.1);border-radius:99px;cursor:pointer;color:#9ca3af;background:#18181f}
-  .qc:hover{background:#1e1e2a;color:#e5e7eb}
-  .msgs{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:5px;min-height:0}
+  /* ── signal panel ─────────────────────────────────────────── */
+  .sig-panel{flex-shrink:0;background:#0f0f17;border-top:1px solid rgba(255,255,255,.07)}
+  .sig-status{padding:5px 12px;font-size:10px;color:#4b5563;border-bottom:1px solid rgba(255,255,255,.05)}
+  .sig-toggle{
+    padding:7px 12px;font-size:11px;font-weight:500;color:#9ca3af;
+    border-bottom:1px solid rgba(255,255,255,.05);cursor:default;
+    background:#111118;
+  }
+  .sig-has{color:#93c5fd;background:#0f1b38}
+  .vote-row{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.05)}
+  .vt{text-align:center;padding:4px;border-radius:5px;font-size:10px;font-weight:500;border:0.5px solid rgba(255,255,255,.08);color:#6b7280;background:#1c1c25}
+  .vt-yes{background:rgba(22,163,74,.18);color:#4ade80;border-color:rgba(22,163,74,.35)}
+  .vt-no{background:rgba(220,38,38,.12);color:#f87171;border-color:rgba(220,38,38,.3)}
+  .verdict{padding:6px 12px;text-align:center;font-size:11px;font-weight:500;color:#6b7280;border-bottom:1px solid rgba(255,255,255,.05)}
+  .v-ok{background:rgba(22,163,74,.18);color:#4ade80}
+  .v-no{background:rgba(220,38,38,.1);color:#f87171}
+  .reason{padding:4px 12px;font-size:10px;color:#6b7280;border-bottom:1px solid rgba(255,255,255,.05)}
+  .levels{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:rgba(255,255,255,.06)}
+  .lv{background:#0f0f17;padding:5px 8px;text-align:center}
+  .ll{font-size:8.5px;color:#4b5563;margin-bottom:2px}
+  .lval{font-size:12px;font-weight:500;font-family:monospace;color:#e5e7eb}
+
+  /* ── RIGHT ───────────────────────────────────────────────── */
+  .qcs{display:flex;gap:4px;padding:6px 10px;flex-shrink:0}
+  .qc{font-size:9.5px;padding:3px 9px;border:0.5px solid rgba(255,255,255,.1);border-radius:99px;cursor:pointer;color:#9ca3af;background:transparent}
+  .qc:hover{background:#1c1c25;color:#e5e7eb}
+  .msgs{flex:1;overflow-y:auto;padding:7px 10px;display:flex;flex-direction:column;gap:5px;min-height:0}
   .msgs::-webkit-scrollbar{width:3px}
   .msgs::-webkit-scrollbar-thumb{background:#2a2a35;border-radius:99px}
-  .msg{display:flex;flex-direction:column;gap:2px}
-  .msg-role{font-size:9px;color:#6b7280}
-  .msg-bubble{padding:7px 10px;border-radius:8px;font-size:11px;line-height:1.5;max-width:92%;background:#1c1c25;border:0.5px solid rgba(255,255,255,.08);color:#d1d5db}
-  .msg-user{align-items:flex-end}
-  .msg-user .msg-bubble{background:#1e3a6e;color:#93c5fd;border-color:rgba(59,130,246,.2)}
-  .chat-in-row{padding:7px 8px;border-top:0.5px solid rgba(255,255,255,.07);display:flex;gap:5px;flex-shrink:0}
-  .chat-in-row input{flex:1;padding:5px 9px;font-size:11px;border:0.5px solid rgba(255,255,255,.12);border-radius:5px;outline:none;color:#e5e7eb;background:#18181f}
-  .chat-in-row input:focus{border-color:#3b82f6}
-  .send-btn{padding:5px 11px;background:#1d4ed8;color:#fff;border:none;border-radius:5px;font-size:11px;cursor:pointer}
+  .msg{display:flex}
+  .msg-u{justify-content:flex-end}
+  .mb{padding:6px 9px;border-radius:7px;font-size:10.5px;line-height:1.5;max-width:94%;background:#1c1c25;border:0.5px solid rgba(255,255,255,.07);color:#d1d5db}
+  .msg-u .mb{background:#1e3a5f;color:#93c5fd;border-color:rgba(59,130,246,.2)}
+  .cin{display:flex;gap:4px;padding:6px 8px;border-top:1px solid rgba(255,255,255,.07);flex-shrink:0}
+  .cin input{flex:1;padding:5px 8px;font-size:10.5px;border:0.5px solid rgba(255,255,255,.12);border-radius:4px;outline:none;color:#e5e7eb;background:#18181f}
+  .cin input:focus{border-color:#3b82f6}
+  .sendbtn{padding:5px 10px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;font-size:10.5px;cursor:pointer;white-space:nowrap}
 
-  /* ── MODAL ────────────────────────────────── */
-  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100;display:flex;align-items:center;justify-content:center}
-  .modal{background:#18181f;border:0.5px solid rgba(255,255,255,.12);border-radius:10px;width:520px;max-height:75vh;overflow:hidden;display:flex;flex-direction:column}
-  .modal-hdr{padding:12px 16px;border-bottom:0.5px solid rgba(255,255,255,.08);display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:500;color:#f9fafb;flex-shrink:0}
-  .modal-hdr button{background:none;border:none;cursor:pointer;color:#9ca3af;font-size:17px;line-height:1}
-  .modal-body{padding:16px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:monospace;white-space:pre-wrap;color:#9ca3af}
+  .slog{flex:1;overflow-y:auto;padding:5px 8px;min-height:0}
+  .slog::-webkit-scrollbar{width:3px}
+  .slog::-webkit-scrollbar-thumb{background:#2a2a35;border-radius:99px}
+  .sli{border-radius:5px;padding:5px 8px;margin-bottom:4px;font-size:10px;line-height:1.45}
+  .sli-top{font-weight:500;color:#f3f4f6}
+  .sli-sub{font-size:9px;margin-top:1px;opacity:.7}
+  .sli-ok{background:rgba(22,163,74,.18);border:0.5px solid rgba(22,163,74,.35);color:#4ade80}
+  .sli-ok .sli-top{color:#86efac}
+  .sli-no{background:rgba(220,38,38,.1);border:0.5px solid rgba(220,38,38,.25);color:#f87171}
+  .sli-no .sli-top{color:#fca5a5}
+
+  .foot{padding:5px 10px;font-size:9px;color:#374151;border-top:1px solid rgba(255,255,255,.05);flex-shrink:0;background:#0c0c14}
 </style>
