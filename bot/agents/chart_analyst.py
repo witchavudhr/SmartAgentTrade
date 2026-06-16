@@ -683,6 +683,13 @@ STEP 3 — ตัดสินใจและโหวต
     result["m15_bias"]      = m15.get("bias")
     result["claude_called"] = True
 
+    def _ob_zone(ob):
+        if not ob: return None
+        return {"top": ob.get("top"), "bottom": ob.get("bottom"), "tf": ob.get("tf", ""), "in_ob": ob.get("in_ob", False)}
+
+    result["bull_ob_zone"] = _ob_zone(primary_bull_ob)
+    result["bear_ob_zone"] = _ob_zone(primary_bear_ob)
+
     return result
 
 def format_signal_message(analysis: dict) -> str:

@@ -1192,11 +1192,23 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── Format ───────────────────────────────────────────────
     price = result.get("current_price", "?")
 
+    def _fmt_ob_zone(ob: dict | None, label: str) -> str:
+        if not ob or not ob.get("top"):
+            return f"{label}: ไม่มี"
+        top = ob["top"]; bot = ob["bottom"]; tf = ob.get("tf", "")
+        in_ob = " ← IN OB ✅" if ob.get("in_ob") else ""
+        return f"{label} [{tf}]: `{bot} – {top}`{in_ob}"
+
+    bull_ob_line = _fmt_ob_zone(chart_s.get("bull_ob_zone"), "🟢 Bull OB")
+    bear_ob_line = _fmt_ob_zone(chart_s.get("bear_ob_zone"), "🔴 Bear OB")
+    ob_block = f"{bull_ob_line}\n{bear_ob_line}\n"
+
     if smc_stage == "NO_SIGNAL":
         msg = (
             f"🔬 *Test Scan Result*\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"💰 ราคา: `{price}`\n"
+            f"{ob_block}"
             f"⬜ SMC Engine: ไม่มี setup\n"
             f"→ ไม่เรียก Claude เลย (ประหยัด cost)\n"
         )
@@ -1231,7 +1243,8 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"🔬 *Test Scan — {final_icon}*\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"💰 ราคา: `{price}`\n\n"
+            f"💰 ราคา: `{price}`\n"
+            f"{ob_block}\n"
             f"*[1] SMC Engine:* ✅ พบ setup\n"
             f"*[2] Chart Analyst:* {vi(chart_vote)}\n"
             f"   Signal: `{chart_sig}` Conf: `{chart_conf}%`\n"

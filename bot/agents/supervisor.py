@@ -76,6 +76,8 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
         "vote":          chart_vote,
         "vote_reasoning": analysis.get("vote_reasoning", ""),
         "reasoning":     analysis.get("reasoning"),
+        "bull_ob_zone":  analysis.get("bull_ob_zone"),
+        "bear_ob_zone":  analysis.get("bear_ob_zone"),
     }
 
     result["analysis"] = analysis  # เก็บไว้เสมอ เพื่อให้ format_alert แสดง signal/conf/setup จริง
