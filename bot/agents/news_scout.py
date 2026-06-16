@@ -43,34 +43,27 @@ HIGH_IMPACT_EVENTS = [
 
 
 def _fetch_from_forexfactory() -> list:
-    """ดึง economic calendar จาก ForexFactory JSON feed — ฟรี ไม่ต้อง API key"""
+    """ดึง economic calendar จาก ForexFactory JSON feed — ฟรี ไม่ต้อง API key
+    Format: {"title":..., "country":..., "date":"2026-06-17T08:30:00-04:00", "impact":...}
+    """
     try:
         urls = [
             "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
             "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
         ]
         result = []
-        today = datetime.now().date()
         for url in urls:
             resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
             if resp.status_code != 200:
                 continue
             for e in resp.json():
                 try:
-                    # date: "06-18-2026", time: "12:15pm" or "All Day" or "Tentative"
-                    date_str  = e.get("date", "")
-                    time_str  = e.get("time", "")
+                    date_str = e.get("date", "")
                     if not date_str:
                         continue
-                    if time_str in ("All Day", "Tentative", ""):
-                        time_str = "00:00am"
-                    dt = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
-                    # FF feed ใช้ Eastern Time — แปลงเป็น local (Windows ใช้ local time)
-                    from datetime import timezone
-                    import pytz
-                    et = pytz.timezone("America/New_York")
-                    dt_et  = et.localize(dt)
-                    dt_local = dt_et.astimezone().replace(tzinfo=None)
+                    # ISO format: "2026-06-17T08:30:00-04:00"
+                    dt = datetime.fromisoformat(date_str)
+                    dt_local = dt.astimezone().replace(tzinfo=None)
                     result.append({
                         "event":    e.get("title", ""),
                         "date":     dt_local.strftime("%Y-%m-%d %H:%M:%S"),
