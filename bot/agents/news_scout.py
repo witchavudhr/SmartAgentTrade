@@ -55,7 +55,7 @@ def _fetch_from_mt5() -> list:
         now = datetime.now()
         date_from = now - timedelta(hours=2)
         date_to   = now + timedelta(hours=24)
-        values = _mt5.calendar_value_get(date_from, date_to) or []
+        values = _mt5.calendar_value_history_get(date_from, date_to) or []
         mt5_executor.disconnect()
         importance_map = {0: "Low", 1: "Low", 2: "Medium", 3: "High"}
         result = []
