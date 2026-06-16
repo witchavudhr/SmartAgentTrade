@@ -1561,11 +1561,18 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                     pnl_pips = round(pnl_raw * 10, 1)
                     outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
 
+                net_usd = None
                 if outcome and trade_id and str(trade_id).isdigit():
-                    from agents.trade_log import update_outcome
+                    from agents.trade_log import update_outcome, log_mt5_transaction
                     update_outcome(int(trade_id), outcome, pnl_pips, actual_exit=close_px)
+                    if deal:
+                        try:
+                            net_usd = log_mt5_transaction(int(trade_id), direction, deal, ot)
+                        except Exception as e:
+                            print(f"[trade_monitor] log_mt5_transaction error: {e}")
 
                 icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
+                net_line = f"\nNet (หลัง commission+swap): `${net_usd:+.2f}`" if net_usd is not None else ""
                 state_manager.set_field(bot_state, "open_trade", None)
                 await ctx.bot.send_message(
                     chat_id=TELEGRAM_CHAT_ID,
@@ -1573,7 +1580,7 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                         f"{icon} *MT5 ปิด Trade อัตโนมัติ — #{trade_id}*\n"
                         f"━━━━━━━━━━━━━━━━━\n"
                         f"{direction} | Entry: `{entry_px}` → Exit: `{close_px or '?'}`\n"
-                        f"P&L: `{pnl_pips:+.1f} จุด`\n"
+                        f"P&L: `{pnl_pips:+.1f} จุด`{net_line}\n"
                         f"บันทึก outcome: `{outcome or 'unknown'}` ใน DB แล้ว"
                     ) if outcome else (
                         f"⚠️ *Trade ปิดจาก MT5 แต่ดึง history ไม่ได้*\n"

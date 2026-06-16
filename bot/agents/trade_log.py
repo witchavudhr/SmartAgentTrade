@@ -56,6 +56,30 @@ def init_db():
     """)
 
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS mt5_transactions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp    TEXT NOT NULL,
+            ticket       INTEGER,
+            trade_id     INTEGER,
+            direction    TEXT,
+            symbol       TEXT DEFAULT 'XAUUSD',
+            lot          REAL,
+            open_price   REAL,
+            close_price  REAL,
+            sl           REAL,
+            tp           REAL,
+            pnl_pips     REAL,
+            profit_usd   REAL,
+            commission   REAL,
+            swap         REAL,
+            net_usd      REAL,
+            open_time    TEXT,
+            close_time   TEXT,
+            comment      TEXT
+        )
+    """)
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp    TEXT NOT NULL,
@@ -301,6 +325,85 @@ def log_trade(analysis: dict, action: str) -> int:
     conn.commit()
     conn.close()
     return trade_id
+
+
+def log_mt5_transaction(trade_id: int, direction: str, deal: dict, open_trade: dict):
+    """
+    บันทึก MT5 transaction จริงหลัง position ปิด
+    deal มาจาก get_last_deal_for_ticket() หรือ get_latest_closed_deal()
+    """
+    init_db()
+    close_px  = deal.get("close_price")
+    open_px   = open_trade.get("entry", 0)
+    lot       = open_trade.get("lot")
+    ticket    = deal.get("ticket") or open_trade.get("mt5_ticket")
+    profit    = deal.get("profit", 0) or 0
+    comm      = deal.get("commission", 0) or 0
+    swap      = deal.get("swap", 0) or 0
+    net       = round(profit + comm + swap, 2)
+    pnl_raw   = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
+    pnl_pips  = round(pnl_raw * 10, 1) if (close_px and open_px) else None
+
+    from datetime import datetime
+    close_time = deal.get("time")
+    if close_time and isinstance(close_time, (int, float)):
+        close_time = datetime.fromtimestamp(close_time).strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO mt5_transactions (
+            timestamp, ticket, trade_id, direction, symbol, lot,
+            open_price, close_price, sl, tp,
+            pnl_pips, profit_usd, commission, swap, net_usd,
+            open_time, close_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ticket,
+        trade_id,
+        direction,
+        open_trade.get("pair", "XAUUSD"),
+        lot,
+        open_px,
+        close_px,
+        open_trade.get("original_sl"),
+        open_trade.get("tp"),
+        pnl_pips,
+        round(profit, 2),
+        round(comm, 2),
+        round(swap, 2),
+        net,
+        open_trade.get("opened_at"),
+        close_time,
+    ))
+    conn.commit()
+    conn.close()
+    return net
+
+
+def get_mt5_summary(days: int = 30) -> dict:
+    """สรุป P&L จริงจาก MT5 transactions"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    since = f"-{days} days"
+    rows = conn.execute("""
+        SELECT profit_usd, commission, swap, net_usd, pnl_pips, direction
+        FROM mt5_transactions
+        WHERE timestamp >= DATE('now', ?)
+    """, (since,)).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"total_net_usd": 0, "total_pips": 0, "total_commission": 0,
+                "total_swap": 0, "count": 0}
+    return {
+        "count":            len(rows),
+        "total_gross_usd":  round(sum(r[0] or 0 for r in rows), 2),
+        "total_commission": round(sum(r[1] or 0 for r in rows), 2),
+        "total_swap":       round(sum(r[2] or 0 for r in rows), 2),
+        "total_net_usd":    round(sum(r[3] or 0 for r in rows), 2),
+        "total_pips":       round(sum(r[4] or 0 for r in rows), 1),
+    }
 
 
 def update_outcome(trade_id: int, outcome: str,
