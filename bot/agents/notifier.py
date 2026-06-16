@@ -1955,7 +1955,7 @@ def _build_scan_windows() -> list[tuple]:
     windows += _range(13, 45, 14, 30, ld, "🇬🇧 London Open")      # London open
     windows += _range(15, 45, 16, 15, 0,  "🇯🇵 Japan Close")      # Tokyo close 09:00 UTC = 16:00 Thai
     windows += _range(16, 30, 17, 30, ld, "🇬🇧 London Mid")       # London mid
-    windows += _range(19,  0, 21,  0, nd, "🇺🇸 NY Session")       # NY open/mid
+    windows += _range(19,  0, 21, 45, nd, "🇺🇸 NY Session")       # NY open/mid
     windows += _range(22,  0, 23,  0, nd, "🇺🇸 NY Peak")          # NY peak
     windows += _range(23, 15, 23, 45, nd, "🌙 NY Close")          # NY close 23:15-23:45
     windows += _range(1,   0,  2,  0, nd, "🌙 Late NY")           # late NY
