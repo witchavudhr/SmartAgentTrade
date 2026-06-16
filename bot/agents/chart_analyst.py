@@ -527,6 +527,20 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   - RR ≥ 1.5 | setup_type = TREND_OB
   confidence สูงสุดเพราะ: OB + macro + structure ตรงกันหมด
 
+── ★★ BREAKER BLOCK / BOS RETEST (สำคัญมาก — อย่าพลาด) ──────
+เมื่อ BOS ขึ้น (bullish) ทะลุผ่าน Bear OB ไปแล้ว → Bear OB นั้นกลายเป็น support (Breaker Block)
+ราคา pull back มาทดสอบ Breaker Block นี้ = BUY setup ไม่ใช่ SELL
+
+สัญญาณ:
+  - มี BOS ขึ้น (ราคาเคยอยู่เหนือ Bear OB ที่ปัจจุบันเห็น)
+  - ราคาตอนนี้ pull back มาใกล้ Bear OB นั้น (ด้านล่าง ≤150 จุด)
+  - macro BULL (H4+H1 bullish)
+  → vote BUY | setup_type = TREND_OB | confidence สูง
+
+⛔ อย่าสับสน: Bear OB ที่เห็นอยู่เหนือราคาตอนนี้ = code เลือกให้ว่าเป็น resistance
+  แต่ถ้าราคาเพิ่ง break ขึ้นไปเหนือมันแล้ว pull back ลงมา = Breaker Block = support = BUY
+  ดูจาก: BOS ขึ้นล่าสุด + ราคาเคยอยู่เหนือ Bear OB zone + ตอนนี้ pull back มา
+
 ── CASE A: ใกล้ Bear OB แต่ macro ไม่ตรง หรือ MIXED ──
 ราคาขึ้นสู่ supply zone → โอกาส SELL แต่ระวังมากขึ้น
 
@@ -625,21 +639,23 @@ STEP 3 — ตัดสินใจและโหวต
 0. ถ้าไม่มี OB ใกล้ราคา (ทั้ง Bull และ Bear ห่างเกิน 300 จุด) → NO_TRADE รอ
 1. ★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (confidence สูงสุด — support+trend)
    ★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (confidence สูงสุด — resistance+trend)
-2. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
-3. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
-4. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
-5. CASE C1 (eql_sweep_signal ≠ null) → YES, setup_type=EQL_SWEEP_BUY
-6. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
-7. CASE D1 (amd_signal=AMD_BUY) → YES, setup_type=AMD_BUY
-8. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
-9. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
+2. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK (Breaker Block = support)
+   ★★ BOS ลง + pullback มา Bull OB เดิม + macro BEAR → SELL, setup_type=BREAKER_BLOCK
+3. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
+4. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
+5. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
+6. CASE C1 (eql_sweep_signal ≠ null) → YES, setup_type=EQL_SWEEP_BUY
+7. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
+8. CASE D1 (amd_signal=AMD_BUY) → YES, setup_type=AMD_BUY
+9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
+10. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
 ตอบ JSON เท่านั้น:
 {{
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "TREND_OB/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/WAIT_FOR_OB/NO_TRADE",
   "trend_aligned": true ถ้า OB ที่ใกล้ตรงกับ macro trend หรือ false,
   "proximity_case": "A หรือ B",
   "pyramid_mode": true หรือ false,
