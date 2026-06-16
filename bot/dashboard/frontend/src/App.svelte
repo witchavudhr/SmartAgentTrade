@@ -320,10 +320,11 @@
       <div class="sh">TRADE HISTORY BARS</div>
       <div class="bars">
         {#each (stats.trades||[]) as t}
-          {@const pv = t.p ?? t.pnl ?? 0}
-          {@const h = Math.max(4, Math.round(Math.abs(pv)/tradeMax*32))}
+          {@const pv = Math.abs(t.pnl ?? t.p ?? 1)}
+          {@const h = Math.max(4, Math.round(pv/tradeMax*32))}
+          {@const win = (t.r ?? (t.pnl >= 0 ? 'w' : 'l')) === 'w'}
           <div style="display:flex;flex-direction:column;align-items:center;flex:1">
-            <div class="bar" class:bar-w={pv>=0} class:bar-l={pv<0} style="height:{h}px"></div>
+            <div class="bar" class:bar-w={win} class:bar-l={!win} style="height:{h}px"></div>
           </div>
         {/each}
         {#if !(stats.trades||[]).length}
