@@ -679,7 +679,7 @@ def get_dashboard_stats() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
 
     today_trades = conn.execute("""
-        SELECT outcome, pnl_pips FROM trades
+        SELECT outcome, pnl_pips, COALESCE(lot, 0.01) FROM trades
         WHERE action IN ('confirmed','mt5_import') AND DATE(timestamp)=?
           AND outcome IN ('win','loss','be')
     """, (today,)).fetchall()
@@ -701,16 +701,23 @@ def get_dashboard_stats() -> dict:
 
     all_wins   = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='win' AND action IN ('confirmed','mt5_import')").fetchone()[0]
     all_losses = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='loss' AND action IN ('confirmed','mt5_import')").fetchone()[0]
-    best_pnl_row = conn.execute(
-        "SELECT MAX(pnl_pips) FROM trades WHERE outcome='win' AND action IN ('confirmed','mt5_import')"
-    ).fetchone()
+    best_trade_row = conn.execute("""
+        SELECT pnl_pips, COALESCE(lot, 0.01) FROM trades
+        WHERE outcome='win' AND action IN ('confirmed','mt5_import')
+          AND pnl_pips IS NOT NULL
+        ORDER BY pnl_pips * COALESCE(lot, 0.01) DESC LIMIT 1
+    """).fetchone()
 
     conn.close()
 
-    today_pnl    = sum(r[1] or 0 for r in today_trades)
+    # pnl_usd = pnl_pips * lot * 10  (XAUUSD: 1 pip = $0.10/lot, 100oz/lot)
+    def _pips_to_usd(pips, lot):
+        return (pips or 0) * (lot or 0.01) * 10
+
+    today_pnl    = sum(_pips_to_usd(r[1], r[2]) for r in today_trades)
     today_wins   = sum(1 for r in today_trades if r[0] == "win")
     today_losses = sum(1 for r in today_trades if r[0] == "loss")
-    today_win_pips = [r[1] or 0 for r in today_trades if r[0] == "win"]
+    today_win_usd = [_pips_to_usd(r[1], r[2]) for r in today_trades if r[0] == "win"]
 
     has_today = (today_wins + today_losses) > 0
     display_wins   = today_wins   if has_today else all_wins
@@ -719,7 +726,11 @@ def get_dashboard_stats() -> dict:
         round(display_wins / (display_wins + display_losses) * 100, 1)
         if (display_wins + display_losses) > 0 else 0
     )
-    best_pnl = round(max(today_win_pips, default=0), 2) if has_today else round(best_pnl_row[0] or 0, 2)
+    best_pnl = (
+        round(max(today_win_usd, default=0), 2) if has_today
+        else round(_pips_to_usd(best_trade_row[0], best_trade_row[1]), 2) if best_trade_row
+        else 0.0
+    )
 
     trades_bar = []
     for approved, confidence in reversed(recent_scans):
@@ -736,7 +747,7 @@ def get_dashboard_stats() -> dict:
         "losses":      display_losses,
         "pending":     pending_count,
         "today_only":  has_today,
-        "best_trade":  best_pnl,
+        "best_trade":  round(best_pnl, 2),
         "best_setup":  best_setup_row[0] if best_setup_row else "",
         "trades":      trades_bar,
     }
