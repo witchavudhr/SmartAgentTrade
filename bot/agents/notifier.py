@@ -1552,11 +1552,14 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
 
                 if ticket:
                     deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
-                    if deal:
-                        close_px = deal["close_price"]
-                        pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
-                        pnl_pips = round(pnl_raw * 10, 1)
-                        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+                else:
+                    # fallback: ไม่รู้ ticket → หา deal ล่าสุดของ XAUUSD ใน 4 ชั่วโมงที่ผ่านมา
+                    deal = mt5_executor.get_latest_closed_deal(hours=4)
+                if deal:
+                    close_px = deal["close_price"]
+                    pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
+                    pnl_pips = round(pnl_raw * 10, 1)
+                    outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
 
                 if outcome and trade_id and str(trade_id).isdigit():
                     from agents.trade_log import update_outcome

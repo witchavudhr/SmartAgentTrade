@@ -261,20 +261,35 @@ def get_last_deal_for_ticket(ticket: int) -> dict | None:
     date_to   = datetime.now() + timedelta(hours=1)
     deals = mt5.history_deals_get(date_from, date_to) or []
     disconnect()
-    # หา deal ที่เป็นการปิด position ของ ticket นี้ (entry=1 = close deal)
     close_deals = [
         d for d in deals
         if d.position_id == ticket and d.entry == 1  # 1 = DEAL_ENTRY_OUT
     ]
     if not close_deals:
         return None
-    d = close_deals[-1]  # ล่าสุด
-    return {
-        "close_price": d.price,
-        "profit":      d.profit,
-        "volume":      d.volume,
-        "time":        d.time,
-    }
+    d = close_deals[-1]
+    return {"close_price": d.price, "profit": d.profit, "volume": d.volume, "time": d.time}
+
+
+def get_latest_closed_deal(symbol: str = "XAUUSD", hours: int = 4) -> dict | None:
+    """fallback: ดึง deal ปิดล่าสุดของ symbol ใน X ชั่วโมงที่ผ่านมา (ใช้เมื่อไม่รู้ ticket)"""
+    ok, _ = _connect()
+    if not ok:
+        return None
+    from datetime import datetime, timedelta
+    date_from = datetime.now() - timedelta(hours=hours)
+    date_to   = datetime.now() + timedelta(hours=1)
+    deals = mt5.history_deals_get(date_from, date_to) or []
+    disconnect()
+    close_deals = [
+        d for d in deals
+        if d.symbol == symbol and d.entry == 1
+    ]
+    if not close_deals:
+        return None
+    d = sorted(close_deals, key=lambda x: x.time)[-1]  # ล่าสุด
+    return {"close_price": d.price, "profit": d.profit, "volume": d.volume,
+            "time": d.time, "ticket": d.position_id}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
