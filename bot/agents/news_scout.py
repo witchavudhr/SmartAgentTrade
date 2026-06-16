@@ -42,37 +42,50 @@ HIGH_IMPACT_EVENTS = [
 ]
 
 
-def _fetch_from_mt5() -> list:
-    """ดึง economic calendar จาก MT5 terminal โดยตรง — ไม่ต้อง API key"""
+def _fetch_from_forexfactory() -> list:
+    """ดึง economic calendar จาก ForexFactory JSON feed — ฟรี ไม่ต้อง API key"""
     try:
-        import MetaTrader5 as _mt5
-        from agents import mt5_executor
-        if not mt5_executor.is_available():
-            return []
-        ok, _ = mt5_executor._connect()
-        if not ok:
-            return []
-        now = datetime.now()
-        date_from = now - timedelta(hours=2)
-        date_to   = now + timedelta(hours=24)
-        values = _mt5.calendar_value_history_get(date_from, date_to) or []
-        mt5_executor.disconnect()
-        importance_map = {0: "Low", 1: "Low", 2: "Medium", 3: "High"}
+        urls = [
+            "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+            "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+        ]
         result = []
-        for v in values:
-            result.append({
-                "event":   getattr(v, "event_name", str(getattr(v, "event_id", ""))),
-                "date":    datetime.fromtimestamp(v.time).strftime("%Y-%m-%d %H:%M:%S"),
-                "country": getattr(v, "country_name", ""),
-                "impact":  importance_map.get(getattr(v, "importance", 0), "Low"),
-                "actual":  getattr(v, "actual_value", None),
-                "estimate": getattr(v, "forecast_value", None),
-                "previous": getattr(v, "prev_value", None),
-            })
-        print(f"[news_scout] MT5 calendar: {len(result)} events")
+        today = datetime.now().date()
+        for url in urls:
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200:
+                continue
+            for e in resp.json():
+                try:
+                    # date: "06-18-2026", time: "12:15pm" or "All Day" or "Tentative"
+                    date_str  = e.get("date", "")
+                    time_str  = e.get("time", "")
+                    if not date_str:
+                        continue
+                    if time_str in ("All Day", "Tentative", ""):
+                        time_str = "00:00am"
+                    dt = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
+                    # FF feed ใช้ Eastern Time — แปลงเป็น local (Windows ใช้ local time)
+                    from datetime import timezone
+                    import pytz
+                    et = pytz.timezone("America/New_York")
+                    dt_et  = et.localize(dt)
+                    dt_local = dt_et.astimezone().replace(tzinfo=None)
+                    result.append({
+                        "event":    e.get("title", ""),
+                        "date":     dt_local.strftime("%Y-%m-%d %H:%M:%S"),
+                        "country":  e.get("country", ""),
+                        "impact":   e.get("impact", "Low").capitalize(),
+                        "actual":   e.get("actual"),
+                        "estimate": e.get("forecast"),
+                        "previous": e.get("previous"),
+                    })
+                except Exception:
+                    continue
+        print(f"[news_scout] ForexFactory: {len(result)} events")
         return result
     except Exception as e:
-        print(f"[news_scout] MT5 calendar error: {e}")
+        print(f"[news_scout] ForexFactory error: {e}")
         return []
 
 
@@ -84,10 +97,10 @@ def fetch_calendar() -> list:
     3. Finnhub API (ถ้ามี FINNHUB_API_KEY)
     4. คืน None (ไม่รู้ข้อมูล — ไม่ให้บอกว่า "ปลอดภัย")
     """
-    # ── 1. MT5 calendar (best source — real-time, no key needed) ──
-    mt5_events = _fetch_from_mt5()
-    if mt5_events:
-        return mt5_events
+    # ── 1. ForexFactory JSON feed (ฟรี ไม่ต้อง API key) ──
+    ff_events = _fetch_from_forexfactory()
+    if ff_events:
+        return ff_events
 
     today    = datetime.now().strftime("%Y-%m-%d")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
