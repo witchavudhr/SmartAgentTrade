@@ -438,14 +438,34 @@ async def cmd_backfill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     try:
         import MetaTrader5 as mt5
-        date_from = datetime.now() - timedelta(days=14)
+        date_from = datetime.now() - timedelta(days=30)
         date_to   = datetime.now() + timedelta(hours=1)
         all_deals = mt5.history_deals_get(date_from, date_to) or []
     finally:
         mt5_executor.disconnect()
 
-    # กรองเฉพาะ closing deals (DEAL_ENTRY_OUT = 1)
+    if not all_deals:
+        await update.message.reply_text(
+            "⚠️ MT5 ไม่มี deal history\n"
+            "ลองเปิด MT5 → History tab แล้วดูว่ามี trades จริงไหม\n"
+            "หรือ deals อาจอยู่นอกช่วง 30 วันที่ query"
+        )
+        return
+
+    # debug: แสดงตัวอย่าง deals ที่ดึงมา
     close_deals = [d for d in all_deals if d.entry == 1]
+    open_deals  = [d for d in all_deals if d.entry == 0]
+    debug_lines = [
+        f"🔍 *MT5 deals พบ {len(all_deals)} รายการ*\n"
+        f"Open deals: {len(open_deals)} | Close deals: {len(close_deals)}\n"
+        f"ช่วงเวลา: {date_from.strftime('%m-%d')} ถึง {date_to.strftime('%m-%d')}\n"
+    ]
+    # แสดง 5 closing deals ล่าสุดเป็น reference
+    for d in sorted(close_deals, key=lambda x: x.time, reverse=True)[:5]:
+        dt = datetime.fromtimestamp(d.time).strftime("%m-%d %H:%M")
+        dir_txt = "BUY" if d.type == 1 else "SELL"
+        debug_lines.append(f"  `[{dt}] {dir_txt} pos#{d.position_id} @{d.price} profit={d.profit:.2f}`")
+    await update.message.reply_text("\n".join(debug_lines), parse_mode="Markdown")
 
     # จัด index ตาม position_id → closing deal
     pos_close = {}
@@ -454,8 +474,6 @@ async def cmd_backfill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if pid not in pos_close or d.time > pos_close[pid].time:
             pos_close[pid] = d
 
-    # หา opening deal สำหรับแต่ละ position
-    open_deals = [d for d in all_deals if d.entry == 0]
     pos_open = {}
     for d in open_deals:
         pid = d.position_id
@@ -465,7 +483,7 @@ async def cmd_backfill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # match: สำหรับแต่ละ pending trade ดูว่ามี position ที่ open time ใกล้เคียงกันไหม
     updated = []
     unmatched = []
-    WINDOW_SEC = 600  # match ±10 นาที
+    WINDOW_SEC = 3600  # match ±1 ชั่วโมง (กว้างขึ้นเพราะ user อาจเปิดเองใน MT5)
 
     for trade in pending:
         try:
