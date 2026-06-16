@@ -104,10 +104,10 @@ ANALYZE_MSGS = {
 async def ws_endpoint(websocket: WebSocket):
     global stats
     await manager.connect(websocket)
-    # Always read fresh stats from DB on connect
+    # Always read fresh stats from DB on connect (default period: today)
     try:
         from agents.trade_log import get_dashboard_stats
-        stats = get_dashboard_stats()
+        stats = get_dashboard_stats("today")
     except Exception:
         pass
     await websocket.send_text(json.dumps({
@@ -154,6 +154,15 @@ def get_debug():
     except Exception as e:
         result["error"] = str(e)
     return result
+
+@app.get("/api/stats")
+def get_stats_period(period: str = "today"):
+    """Return stats for a specific period: today|week|month|year|all"""
+    try:
+        from agents.trade_log import get_dashboard_stats
+        return get_dashboard_stats(period)
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/api/refresh-stats")
 async def refresh_stats():

@@ -672,64 +672,68 @@ def get_recent_scans(n: int = 9) -> list[dict]:
     return result
 
 
-def get_dashboard_stats() -> dict:
-    """Real stats for dashboard — today P&L + scan history bars."""
+def _pips_to_usd(pips, lot):
+    """XAUUSD: 1 pip = $0.10/lot → pnl_usd = pips * lot * 10"""
+    return (pips or 0) * (lot or 0.01) * 10
+
+
+_PERIOD_FILTER = {
+    "today": "DATE(timestamp) = DATE('now','localtime')",
+    "week":  "DATE(timestamp) >= DATE('now','localtime','-6 days')",
+    "month": "DATE(timestamp) >= DATE('now','localtime','start of month')",
+    "year":  "DATE(timestamp) >= DATE('now','localtime','start of year')",
+    "all":   "1=1",
+}
+
+
+def get_dashboard_stats(period: str = "today") -> dict:
+    """Real stats for dashboard. period: today|week|month|year|all"""
     init_db()
     conn = sqlite3.connect(DB_PATH)
-    today = datetime.now().strftime("%Y-%m-%d")
 
-    today_trades = conn.execute("""
+    date_filter = _PERIOD_FILTER.get(period, _PERIOD_FILTER["today"])
+    base_filter = f"action IN ('confirmed','mt5_import') AND {date_filter}"
+
+    period_trades = conn.execute(f"""
         SELECT outcome, pnl_pips, COALESCE(lot, 0.01) FROM trades
-        WHERE action IN ('confirmed','mt5_import') AND DATE(timestamp)=?
-          AND outcome IN ('win','loss','be')
-    """, (today,)).fetchall()
+        WHERE {base_filter} AND outcome IN ('win','loss','be')
+    """).fetchall()
 
     recent_scans = conn.execute("""
         SELECT approved, confidence FROM scan_log
         ORDER BY id DESC LIMIT 20
     """).fetchall()
 
-    best_setup_row = conn.execute("""
+    best_setup_row = conn.execute(f"""
         SELECT setup_type FROM scan_log
-        WHERE approved=1 AND DATE(timestamp)=?
+        WHERE approved=1 AND {date_filter.replace('timestamp','timestamp')}
         ORDER BY confidence DESC LIMIT 1
-    """, (today,)).fetchone()
+    """).fetchone()
 
     pending_count = conn.execute(
         "SELECT COUNT(*) FROM trades WHERE outcome='pending' AND action='confirmed'"
     ).fetchone()[0]
 
-    all_wins   = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='win' AND action IN ('confirmed','mt5_import')").fetchone()[0]
-    all_losses = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='loss' AND action IN ('confirmed','mt5_import')").fetchone()[0]
-    best_trade_row = conn.execute("""
+    best_trade_row = conn.execute(f"""
         SELECT pnl_pips, COALESCE(lot, 0.01) FROM trades
-        WHERE outcome='win' AND action IN ('confirmed','mt5_import')
-          AND pnl_pips IS NOT NULL
+        WHERE outcome='win' AND {base_filter} AND pnl_pips IS NOT NULL
         ORDER BY pnl_pips * COALESCE(lot, 0.01) DESC LIMIT 1
     """).fetchone()
 
     conn.close()
 
-    # pnl_usd = pnl_pips * lot * 10  (XAUUSD: 1 pip = $0.10/lot, 100oz/lot)
-    def _pips_to_usd(pips, lot):
-        return (pips or 0) * (lot or 0.01) * 10
+    period_pnl    = sum(_pips_to_usd(r[1], r[2]) for r in period_trades)
+    period_wins   = sum(1 for r in period_trades if r[0] == "win")
+    period_losses = sum(1 for r in period_trades if r[0] == "loss")
+    period_win_usd = [_pips_to_usd(r[1], r[2]) for r in period_trades if r[0] == "win"]
 
-    today_pnl    = sum(_pips_to_usd(r[1], r[2]) for r in today_trades)
-    today_wins   = sum(1 for r in today_trades if r[0] == "win")
-    today_losses = sum(1 for r in today_trades if r[0] == "loss")
-    today_win_usd = [_pips_to_usd(r[1], r[2]) for r in today_trades if r[0] == "win"]
-
-    has_today = (today_wins + today_losses) > 0
-    display_wins   = today_wins   if has_today else all_wins
-    display_losses = today_losses if has_today else all_losses
-    display_wr = (
-        round(display_wins / (display_wins + display_losses) * 100, 1)
-        if (display_wins + display_losses) > 0 else 0
+    win_rate = (
+        round(period_wins / (period_wins + period_losses) * 100, 1)
+        if (period_wins + period_losses) > 0 else 0
     )
     best_pnl = (
-        round(max(today_win_usd, default=0), 2) if has_today
-        else round(_pips_to_usd(best_trade_row[0], best_trade_row[1]), 2) if best_trade_row
-        else 0.0
+        round(_pips_to_usd(best_trade_row[0], best_trade_row[1]), 2)
+        if best_trade_row else 0.0
     )
 
     trades_bar = []
@@ -740,14 +744,14 @@ def get_dashboard_stats() -> dict:
         })
 
     return {
-        "today_pnl":   round(today_pnl, 2),
+        "period":      period,
+        "today_pnl":   round(period_pnl, 2),
         "open_pnl":    0.0,
-        "win_rate":    display_wr,
-        "wins":        display_wins,
-        "losses":      display_losses,
+        "win_rate":    win_rate,
+        "wins":        period_wins,
+        "losses":      period_losses,
         "pending":     pending_count,
-        "today_only":  has_today,
-        "best_trade":  round(best_pnl, 2),
+        "best_trade":  best_pnl,
         "best_setup":  best_setup_row[0] if best_setup_row else "",
         "trades":      trades_bar,
     }

@@ -46,7 +46,24 @@
     reason:'Waiting for first scan…',
   };
 
-  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, pending:0, today_only:false, best_trade:0, trades:[] };
+  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, pending:0, best_trade:0, trades:[], period:'today' };
+  let activePeriod = 'today';
+  const PERIODS = [
+    { key:'today', label:'Today' },
+    { key:'week',  label:'Week' },
+    { key:'month', label:'Month' },
+    { key:'year',  label:'Year' },
+    { key:'all',   label:'All' },
+  ];
+
+  async function switchPeriod(p) {
+    activePeriod = p;
+    try {
+      const res = await fetch(`/api/stats?period=${p}`);
+      const data = await res.json();
+      if (!data.error) stats = data;
+    } catch(e) {}
+  }
 
   // Ask panel
   let askInput = '';
@@ -394,22 +411,27 @@
     </div>
   </div>
 
-  <!-- ROW 3: stats -->
+  <!-- ROW 3: period tabs + stats -->
+  <div class="row3hdr">
+    {#each PERIODS as p}
+      <button class="ptab" class:ptab-on={activePeriod===p.key} on:click={()=>switchPeriod(p.key)}>{p.label}</button>
+    {/each}
+  </div>
   <div class="row3">
     <div class="s3">
-      <div class="s3l">Today P&L</div>
-      <div class="s3v" style="color:#15803d">{fmtPnl(stats.today_pnl)}</div>
+      <div class="s3l">P&L</div>
+      <div class="s3v" style="color:{stats.today_pnl>=0?'#15803d':'#991b1b'}">{fmtPnl(stats.today_pnl)}</div>
       <div class="s3s">{fmtPnl(stats.open_pnl)} open</div>
     </div>
     <div class="s3">
-      <div class="s3l">Win rate {stats.today_only ? '' : '(all)'}</div>
+      <div class="s3l">Win rate</div>
       <div class="s3v">{stats.win_rate}%</div>
       <div class="s3s">{stats.wins} of {stats.wins + stats.losses} closed</div>
     </div>
     <div class="s3">
-      <div class="s3l">W / L {stats.today_only ? '' : '(all)'}</div>
+      <div class="s3l">W / L</div>
       <div class="s3v"><span style="color:#15803d">{stats.wins}</span> / <span style="color:#991b1b">{stats.losses}</span></div>
-      <div class="s3s">{stats.pending > 0 ? `+${stats.pending} pending` : stats.open_pnl !== 0 ? `${fmtPnl(stats.open_pnl)} open` : '—'}</div>
+      <div class="s3s">{stats.pending > 0 ? `+${stats.pending} pending` : '—'}</div>
     </div>
     <div class="s3">
       <div class="s3l">Best trade</div>
@@ -530,6 +552,13 @@
   .cir input{flex:1;padding:4px 7px;font-size:10px;border:0.5px solid rgba(255,255,255,.15);border-radius:4px;outline:none;color:#e5e7eb;background:#18181f}
   .cir input:focus{border-color:#3b82f6}
   .sbtn{padding:4px 10px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer}
+
+  /* ROW 3 period tabs */
+  .row3hdr{display:flex;gap:4px;padding:5px 10px 4px;background:#18181f;border-bottom:0.5px solid rgba(255,255,255,.06)}
+  .ptab{padding:2px 9px;border-radius:10px;font-size:9px;font-weight:500;cursor:pointer;
+        border:0.5px solid rgba(255,255,255,.12);background:transparent;color:#6b7280;transition:all .15s}
+  .ptab:hover{color:#d1d5db;border-color:rgba(255,255,255,.25)}
+  .ptab-on{background:#d97706;border-color:#d97706;color:#fff}
 
   /* ROW 3 stats */
   .row3{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:0.5px solid rgba(255,255,255,.08)}
