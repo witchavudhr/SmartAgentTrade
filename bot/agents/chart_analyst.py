@@ -374,22 +374,34 @@ TP = next swing high/low เท่านั้น (ไม่คาด trend ก�
     bear_confluence = _ob_overlap(m5_bear_ob, m15_bear_ob)
 
     # Primary OB = ใกล้ราคาที่สุดระหว่าง M5 กับ M15 (merged zone ถ้า overlap)
-    def _primary_ob(m5_ob, m15_ob, price):
-        overlap = _ob_overlap(m5_ob, m15_ob)
+    # Bull OB ต้องอยู่ใต้ราคา (top ≤ price) — Bear OB ต้องอยู่เหนือราคา (bottom ≥ price)
+    def _primary_ob(m5_ob, m15_ob, price, ob_type: str = 'bull'):
+        def _valid(ob):
+            if not ob: return False
+            if ob.get('in_ob'): return True
+            if ob_type == 'bull':
+                return ob.get('top', price + 1) <= price   # demand zone ต้องอยู่ใต้ราคา
+            else:
+                return ob.get('bottom', price - 1) >= price  # supply zone ต้องอยู่เหนือราคา
+
+        v5  = m5_ob  if _valid(m5_ob)  else None
+        v15 = m15_ob if _valid(m15_ob) else None
+
+        overlap = _ob_overlap(v5, v15)
         if overlap:
             overlap['tf'] = 'M5+M15'
-            overlap['in_ob'] = (m5_ob or {}).get('in_ob') or (m15_ob or {}).get('in_ob')
+            overlap['in_ob'] = (v5 or {}).get('in_ob') or (v15 or {}).get('in_ob')
             return overlap
-        d5  = _ob_dist(m5_ob, price)
-        d15 = _ob_dist(m15_ob, price)
-        if d15 <= d5 and m15_ob:
-            ob = dict(m15_ob); ob['tf'] = 'M15'; return ob
-        if m5_ob:
-            ob = dict(m5_ob); ob['tf'] = 'M5'; return ob
+        d5  = _ob_dist(v5,  price)
+        d15 = _ob_dist(v15, price)
+        if d15 <= d5 and v15:
+            ob = dict(v15); ob['tf'] = 'M15'; return ob
+        if v5:
+            ob = dict(v5); ob['tf'] = 'M5'; return ob
         return None
 
-    primary_bull_ob = _primary_ob(m5_bull_ob, m15_bull_ob, price_now)
-    primary_bear_ob = _primary_ob(m5_bear_ob, m15_bear_ob, price_now)
+    primary_bull_ob = _primary_ob(m5_bull_ob, m15_bull_ob, price_now, 'bull')
+    primary_bear_ob = _primary_ob(m5_bear_ob, m15_bear_ob, price_now, 'bear')
 
     # อัพเดต dist_to_* ด้วย primary OB
     dist_to_bull_ob = round(_ob_dist(primary_bull_ob, price_now) * 10, 1)
