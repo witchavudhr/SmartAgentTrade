@@ -409,6 +409,15 @@ TP = next swing high/low เท่านั้น (ไม่คาด trend ก�
     near_bull_ob = bool(primary_bull_ob and (dist_to_bull_ob <= 30 or (primary_bull_ob or {}).get('in_ob')))
     near_bear_ob = bool(primary_bear_ob and (dist_to_bear_ob <= 30 or (primary_bear_ob or {}).get('in_ob')))
 
+    src = smc_summary.get("price_source", "yfinance")
+    def _ob_str(ob):
+        if not ob: return "ไม่มี"
+        in_tag = " ← IN OB" if ob.get("in_ob") else ""
+        return f"{ob.get('bottom')} – {ob.get('top')} [{ob.get('tf','')}]{in_tag}"
+    print(f"[OB] 📡 source={src} | ราคา={price_now}")
+    print(f"[OB] 🟢 Bull OB: {_ob_str(primary_bull_ob)}  ห่าง {dist_to_bull_ob:.0f}p")
+    print(f"[OB] 🔴 Bear OB: {_ob_str(primary_bear_ob)}  ห่าง {dist_to_bear_ob:.0f}p")
+
     def _fmt_ob(ob: dict | None, in_ob_key: bool = False) -> str:
         if not ob:
             return "ไม่มี"
