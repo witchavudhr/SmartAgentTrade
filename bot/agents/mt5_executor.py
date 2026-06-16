@@ -252,44 +252,58 @@ def get_open_positions() -> list[dict]:
 
 
 def get_last_deal_for_ticket(ticket: int) -> dict | None:
-    """ดึง deal ปิดล่าสุดของ ticket จาก MT5 history (ย้อนหลัง 7 วัน)"""
-    ok, _ = _connect()
-    if not ok:
-        return None
+    """ดึง deal ปิดล่าสุดของ ticket จาก MT5 history (ย้อนหลัง 7 วัน, retry 3 ครั้ง)"""
     from datetime import datetime, timedelta
-    date_from = datetime.now() - timedelta(days=7)
-    date_to   = datetime.now() + timedelta(hours=1)
-    deals = mt5.history_deals_get(date_from, date_to) or []
-    disconnect()
-    close_deals = [
-        d for d in deals
-        if d.position_id == ticket and d.entry == 1  # 1 = DEAL_ENTRY_OUT
-    ]
-    if not close_deals:
-        return None
-    d = close_deals[-1]
-    return {"close_price": d.price, "profit": d.profit, "volume": d.volume, "time": d.time}
+    import time as _time
+    # DEAL_ENTRY_OUT=1, DEAL_ENTRY_INOUT=2, DEAL_ENTRY_OUT_BY=3
+    EXIT_TYPES = {1, 2, 3}
+    for attempt in range(3):
+        ok, err = _connect()
+        if not ok:
+            print(f"[mt5] get_last_deal_for_ticket connect fail (attempt {attempt+1}): {err}")
+            _time.sleep(1)
+            continue
+        date_from = datetime.now() - timedelta(days=7)
+        date_to   = datetime.now() + timedelta(hours=1)
+        deals = mt5.history_deals_get(date_from, date_to) or []
+        disconnect()
+        close_deals = [
+            d for d in deals
+            if d.position_id == ticket and d.entry in EXIT_TYPES
+        ]
+        if close_deals:
+            d = close_deals[-1]
+            return {"close_price": d.price, "profit": d.profit, "volume": d.volume,
+                    "time": d.time, "commission": d.commission, "swap": d.swap}
+        print(f"[mt5] get_last_deal_for_ticket: ticket={ticket} deals={len(deals)} close_deals=0 (attempt {attempt+1})")
+        _time.sleep(2)
+    return None
 
 
 def get_latest_closed_deal(symbol: str = "XAUUSD", hours: int = 4) -> dict | None:
     """fallback: ดึง deal ปิดล่าสุดของ symbol ใน X ชั่วโมงที่ผ่านมา (ใช้เมื่อไม่รู้ ticket)"""
-    ok, _ = _connect()
-    if not ok:
-        return None
     from datetime import datetime, timedelta
-    date_from = datetime.now() - timedelta(hours=hours)
-    date_to   = datetime.now() + timedelta(hours=1)
-    deals = mt5.history_deals_get(date_from, date_to) or []
-    disconnect()
-    close_deals = [
-        d for d in deals
-        if d.symbol == symbol and d.entry == 1
-    ]
-    if not close_deals:
-        return None
-    d = sorted(close_deals, key=lambda x: x.time)[-1]  # ล่าสุด
-    return {"close_price": d.price, "profit": d.profit, "volume": d.volume,
-            "time": d.time, "ticket": d.position_id}
+    import time as _time
+    EXIT_TYPES = {1, 2, 3}
+    for attempt in range(3):
+        ok, err = _connect()
+        if not ok:
+            print(f"[mt5] get_latest_closed_deal connect fail (attempt {attempt+1}): {err}")
+            _time.sleep(1)
+            continue
+        date_from = datetime.now() - timedelta(hours=hours)
+        date_to   = datetime.now() + timedelta(hours=1)
+        deals = mt5.history_deals_get(date_from, date_to) or []
+        disconnect()
+        close_deals = [d for d in deals if d.symbol == symbol and d.entry in EXIT_TYPES]
+        if close_deals:
+            d = sorted(close_deals, key=lambda x: x.time)[-1]
+            return {"close_price": d.price, "profit": d.profit, "volume": d.volume,
+                    "time": d.time, "ticket": d.position_id,
+                    "commission": d.commission, "swap": d.swap}
+        print(f"[mt5] get_latest_closed_deal: symbol={symbol} deals={len(deals)} close_deals=0 (attempt {attempt+1})")
+        _time.sleep(2)
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

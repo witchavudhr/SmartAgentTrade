@@ -42,17 +42,57 @@ HIGH_IMPACT_EVENTS = [
 ]
 
 
+def _fetch_from_mt5() -> list:
+    """ดึง economic calendar จาก MT5 terminal โดยตรง — ไม่ต้อง API key"""
+    try:
+        import MetaTrader5 as _mt5
+        from agents import mt5_executor
+        if not mt5_executor.is_available():
+            return []
+        ok, _ = mt5_executor._connect()
+        if not ok:
+            return []
+        now = datetime.now()
+        date_from = now - timedelta(hours=2)
+        date_to   = now + timedelta(hours=24)
+        values = _mt5.calendar_value_get(date_from, date_to) or []
+        mt5_executor.disconnect()
+        importance_map = {0: "Low", 1: "Low", 2: "Medium", 3: "High"}
+        result = []
+        for v in values:
+            result.append({
+                "event":   getattr(v, "event_name", str(getattr(v, "event_id", ""))),
+                "date":    datetime.fromtimestamp(v.time).strftime("%Y-%m-%d %H:%M:%S"),
+                "country": getattr(v, "country_name", ""),
+                "impact":  importance_map.get(getattr(v, "importance", 0), "Low"),
+                "actual":  getattr(v, "actual_value", None),
+                "estimate": getattr(v, "forecast_value", None),
+                "previous": getattr(v, "prev_value", None),
+            })
+        print(f"[news_scout] MT5 calendar: {len(result)} events")
+        return result
+    except Exception as e:
+        print(f"[news_scout] MT5 calendar error: {e}")
+        return []
+
+
 def fetch_calendar() -> list:
     """
     ดึง economic calendar — ลองตามลำดับ:
-    1. FMP API (ถ้ามี FMP_API_KEY)
-    2. Finnhub API (ถ้ามี FINNHUB_API_KEY)
-    3. ไม่มีข่าว (empty list) — ไม่ใช้ mock ที่ทำให้ block logic เสีย
+    1. MT5 terminal calendar (ไม่ต้อง API key)
+    2. FMP API (ถ้ามี FMP_API_KEY)
+    3. Finnhub API (ถ้ามี FINNHUB_API_KEY)
+    4. คืน None (ไม่รู้ข้อมูล — ไม่ให้บอกว่า "ปลอดภัย")
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    # ── 1. MT5 calendar (best source — real-time, no key needed) ──
+    mt5_events = _fetch_from_mt5()
+    if mt5_events:
+        return mt5_events
+
+    today    = datetime.now().strftime("%Y-%m-%d")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # ── 1. FMP API ──────────────────────────────────────────
+    # ── 2. FMP API ──────────────────────────────────────────
     if FMP_API_KEY:
         try:
             resp = requests.get(
@@ -67,7 +107,7 @@ def fetch_calendar() -> list:
         except Exception:
             pass
 
-    # ── 2. Finnhub economic calendar ────────────────────────
+    # ── 3. Finnhub economic calendar ────────────────────────
     if FINNHUB_API_KEY:
         try:
             resp = requests.get(
@@ -94,8 +134,8 @@ def fetch_calendar() -> list:
         except Exception:
             pass
 
-    # ── 3. No data — คืน empty (ดีกว่า mock ที่ทำ block logic เสีย) ──
-    return []
+    # ── 4. ดึงไม่ได้ — คืน None (ไม่ใช่ [] เพื่อแยก "ไม่มีข่าว" ออกจาก "ดึงไม่ได้") ──
+    return None
 
 
 def filter_gold_events(events: list) -> list:
@@ -115,13 +155,16 @@ def filter_gold_events(events: list) -> list:
     return filtered
 
 
-def get_upcoming_news(minutes_ahead: int = 120) -> list:
+def get_upcoming_news(minutes_ahead: int = 120) -> list | None:
     """
     หาข่าวในช่วง block window:
     - ก่อนข่าว: 0 ถึง minutes_ahead
     - หลังข่าวออก: ยัง block อีก NEWS_BLOCK_AFTER_MINUTES นาที (ราคายังผันผวน)
+    คืน None ถ้าดึงข้อมูลไม่ได้ (ต่างจาก [] ที่หมายถึง "ไม่มีข่าว")
     """
     events = fetch_calendar()
+    if events is None:
+        return None  # ไม่รู้ — ให้ caller ตัดสินใจ
     gold_events = filter_gold_events(events)
 
     now = datetime.now()
@@ -157,6 +200,9 @@ def should_block_trade() -> tuple[bool, str]:
 
     upcoming = get_upcoming_news(minutes_ahead=NEWS_BLOCK_MINUTES)
 
+    if upcoming is None:
+        return True, "⚠️ ดึงข้อมูลข่าวไม่ได้ — ระวังเทรดช่วงนี้"
+
     if upcoming:
         event = upcoming[0]
         mins  = event.get("minutes_until", 0)
@@ -188,7 +234,19 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
     upcoming = get_upcoming_news(minutes_ahead=240)
     blocked, block_reason = should_block_trade()
 
-    if upcoming:
+    if upcoming is None:
+        # ดึงข้อมูลไม่ได้ — vote NO เพื่อความปลอดภัย
+        result = {
+            "vote": "NO",
+            "vote_reasoning": "ดึงข้อมูล economic calendar ไม่ได้ — ระวังไว้ก่อน",
+            "risk_level": "medium",
+            "safe_to_trade": False,
+            "block_until": None,
+            "key_event": None,
+            "gold_impact": "unknown",
+            "reasoning": "ไม่สามารถดึงข้อมูลข่าวได้ (MT5/API ไม่ตอบสนอง) — แนะนำตรวจ ForexFactory เอง"
+        }
+    elif upcoming:
         news_text = json.dumps(upcoming, indent=2, ensure_ascii=False)
         signal_ctx = f"\nChart Analyst เสนอเข้า: {signal_direction}" if signal_direction else ""
         prompt = f"""คุณคือ News Scout Agent ผู้เชี่ยวชาญข่าวเศรษฐกิจที่กระทบ Gold
