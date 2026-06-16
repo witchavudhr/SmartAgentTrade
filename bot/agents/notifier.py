@@ -415,6 +415,128 @@ async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ รูปแบบไม่ถูกต้อง: {e}\nดูวิธีใช้: `/outcome`", parse_mode="Markdown")
 
 
+async def cmd_backfill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/backfill — ดึง MT5 deal history แล้ว auto-match กับ pending trades"""
+    from agents.trade_log import get_pending_trades, update_outcome
+    from datetime import datetime, timedelta
+
+    await update.message.reply_text("🔍 กำลังดึง MT5 deal history...")
+
+    pending = get_pending_trades()
+    if not pending:
+        await update.message.reply_text("✅ ไม่มี pending trade")
+        return
+
+    if not mt5_executor.is_available():
+        await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม — ใช้ `/outcome` แทน", parse_mode="Markdown")
+        return
+
+    ok, _ = mt5_executor._connect()
+    if not ok:
+        await update.message.reply_text("⚠️ เชื่อม MT5 ไม่ได้")
+        return
+
+    try:
+        import MetaTrader5 as mt5
+        date_from = datetime.now() - timedelta(days=14)
+        date_to   = datetime.now() + timedelta(hours=1)
+        all_deals = mt5.history_deals_get(date_from, date_to) or []
+    finally:
+        mt5_executor.disconnect()
+
+    # กรองเฉพาะ closing deals (DEAL_ENTRY_OUT = 1)
+    close_deals = [d for d in all_deals if d.entry == 1]
+
+    # จัด index ตาม position_id → closing deal
+    pos_close = {}
+    for d in close_deals:
+        pid = d.position_id
+        if pid not in pos_close or d.time > pos_close[pid].time:
+            pos_close[pid] = d
+
+    # หา opening deal สำหรับแต่ละ position
+    open_deals = [d for d in all_deals if d.entry == 0]
+    pos_open = {}
+    for d in open_deals:
+        pid = d.position_id
+        if pid not in pos_open:
+            pos_open[pid] = d
+
+    # match: สำหรับแต่ละ pending trade ดูว่ามี position ที่ open time ใกล้เคียงกันไหม
+    updated = []
+    unmatched = []
+    WINDOW_SEC = 600  # match ±10 นาที
+
+    for trade in pending:
+        try:
+            trade_ts = datetime.strptime(trade["timestamp"], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            unmatched.append(trade)
+            continue
+
+        trade_dir = trade["signal"]  # BUY or SELL
+        # MT5 deal type: 0=BUY, 1=SELL
+        expected_type = 0 if trade_dir == "BUY" else 1
+
+        best_pid = None
+        best_diff = float("inf")
+        for pid, od in pos_open.items():
+            if od.type != expected_type:
+                continue
+            if pid not in pos_close:
+                continue  # ยังไม่ปิด
+            open_dt = datetime.fromtimestamp(od.time)
+            diff = abs((open_dt - trade_ts).total_seconds())
+            if diff < WINDOW_SEC and diff < best_diff:
+                best_diff = diff
+                best_pid = pid
+
+        if best_pid is None:
+            unmatched.append(trade)
+            continue
+
+        cd = pos_close[best_pid]
+        od = pos_open[best_pid]
+        close_px = cd.price
+        open_px  = od.price
+        pnl_raw  = (close_px - open_px) if trade_dir == "BUY" else (open_px - close_px)
+        pnl_pips = round(pnl_raw * 10, 1)
+        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+        close_dt = datetime.fromtimestamp(cd.time)
+        dur_min  = int((close_dt - trade_ts).total_seconds() / 60)
+
+        update_outcome(trade["id"], outcome, pnl_pips,
+                       actual_entry=open_px, actual_exit=close_px, duration_min=dur_min)
+        updated.append({
+            "id": trade["id"], "dir": trade_dir, "setup": trade["setup_type"] or "",
+            "outcome": outcome, "pips": pnl_pips,
+            "open_px": open_px, "close_px": close_px,
+            "matched_pid": best_pid, "diff_sec": int(best_diff),
+        })
+
+    # รายงาน
+    lines = [f"📊 *Backfill เสร็จแล้ว*\n━━━━━━━━━━━━━━━━━"]
+    if updated:
+        wins   = sum(1 for u in updated if u["outcome"] == "win")
+        losses = sum(1 for u in updated if u["outcome"] == "loss")
+        be     = sum(1 for u in updated if u["outcome"] == "be")
+        lines.append(f"✅ Match แล้ว {len(updated)} trade — W:{wins} L:{losses} BE:{be}\n")
+        for u in updated:
+            icon = "✅" if u["outcome"] == "win" else "❌" if u["outcome"] == "loss" else "➖"
+            lines.append(
+                f"{icon} *#{u['id']}* `{u['dir']} {u['setup']}` "
+                f"`{u['pips']:+.1f}p` "
+                f"({u['open_px']}→{u['close_px']}, ±{u['diff_sec']}s)"
+            )
+    if unmatched:
+        lines.append(f"\n⚠️ Match ไม่ได้ {len(unmatched)} trade:")
+        for u in unmatched:
+            t = u["timestamp"][11:16] if u["timestamp"] else "?"
+            lines.append(f"  `#{u['id']}` {u['signal']} {u['setup_type'] or ''} {t} → ใช้ `/outcome {u['id']} win/loss [pips]`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/pending — แสดง trades ที่ยังรอ outcome"""
     from agents.trade_log import get_pending_trades
@@ -2039,6 +2161,7 @@ def run():
     app.add_handler(CommandHandler("trades", cmd_trades))
     app.add_handler(CommandHandler("outcome", cmd_outcome))
     app.add_handler(CommandHandler("pending", cmd_pending))
+    app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
