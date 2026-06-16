@@ -16,6 +16,25 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.on_event("startup")
 async def start_stats_refresh():
     asyncio.create_task(_stats_refresh_loop())
+    asyncio.create_task(_price_loop())
+
+async def _price_loop():
+    """Fetch XAUUSD price every 60s via yfinance and broadcast."""
+    global current_price, nearest_ob
+    while True:
+        await asyncio.sleep(60)
+        try:
+            import yfinance as yf
+            price = round(float(yf.Ticker("GC=F").fast_info.last_price), 2)
+            current_price = price
+            ob_lo = nearest_ob.get("lo", 0)
+            ob_hi = nearest_ob.get("hi", 0)
+            ob_mid = (ob_lo + ob_hi) / 2 if ob_lo else 0
+            dist = round(abs(price - ob_mid) * 10, 1) if ob_mid else 0
+            nearest_ob = {**nearest_ob, "dist": dist}
+            await manager.broadcast({"type": "price_update", "price": price, "ob": nearest_ob})
+        except Exception:
+            pass
 
 async def _stats_refresh_loop():
     """Refresh stats from DB every 15s and broadcast to all clients."""
@@ -84,6 +103,11 @@ scan_log, stats, latest_signal = _load_initial_state()
 scan_running = False
 scan_requested = False  # set by /api/scan, cleared by /api/poll-scan
 
+# ── Extra live state ──────────────────────────────────────────────────────────
+current_price: float = 0.0
+htf_bias: dict = {"overall": "?", "h4": "?", "h1": "?", "daily": "?"}
+nearest_ob: dict = {"type": "?", "lo": 0.0, "hi": 0.0, "dist": 0}
+
 GATHER_MSGS = {
     "supervisor":    "Knights, to the table!",
     "chart_analyst": "Fetching M5 data...",
@@ -116,6 +140,9 @@ async def ws_endpoint(websocket: WebSocket):
         "signal": latest_signal,
         "scan_log": scan_log[-9:],
         "stats": stats,
+        "price": current_price,
+        "htf_bias": htf_bias,
+        "nearest_ob": nearest_ob,
     }, default=str))
     try:
         while True:
@@ -227,6 +254,10 @@ async def push_result(body: PushBody):
     scan_log.append(entry)
     await manager.broadcast({"type": "scan_log", "data": entry})
     await manager.broadcast({"type": "scan_phase", "phase": "approved" if sig["approved"] else "rejected"})
+    # Broadcast updated price/bias/OB
+    await manager.broadcast({"type": "market_update", "price": mapped.get("price", 0),
+                             "htf_bias": mapped.get("htf_bias", {}),
+                             "nearest_ob": mapped.get("nearest_ob", {})})
     # Refresh stats from real DB
     try:
         from agents.trade_log import get_dashboard_stats
@@ -272,6 +303,8 @@ async def run_scan():
     asyncio.create_task(_scan_timeout(120))
 
 def _map_supervisor_result(result: dict) -> dict:
+    global current_price, htf_bias, nearest_ob
+
     approved  = result.get("approved", False)
     signal    = result.get("final_signal", "NO_TRADE")
     direction = signal if signal in ("BUY", "SELL") else "BUY"
@@ -280,7 +313,8 @@ def _map_supervisor_result(result: dict) -> dict:
     votes     = result.get("votes") or {}
 
     entry_zone = result.get("entry_zone") or []
-    entry = float(entry_zone[0] if entry_zone else result.get("current_price") or 3310)
+    price_now  = float(result.get("current_price") or current_price or 3310)
+    entry = float(entry_zone[0] if entry_zone else price_now)
     sl    = float(result.get("stop_loss")  or entry - 10)
     tp    = float(result.get("take_profit") or entry + 23)
     rr    = float(result.get("rr_ratio")   or 0)
@@ -294,6 +328,26 @@ def _map_supervisor_result(result: dict) -> dict:
     news_stage = stages.get("news") or {}
     risk_stage = stages.get("risk") or {}
     reason = result.get("reasoning") or result.get("reject_reason", "")
+
+    # ── Update live state ──────────────────────────────────────────────────
+    if price_now:
+        current_price = price_now
+
+    htf_bias = {
+        "overall": bias_stage.get("overall_bias") or bias_stage.get("overall") or "?",
+        "h4":      bias_stage.get("h4_bias")      or "?",
+        "h1":      bias_stage.get("h1_bias")      or "?",
+        "daily":   bias_stage.get("daily_bias")   or bias_stage.get("overall_bias") or "?",
+    }
+
+    ob_lo = float(entry_zone[0]) if len(entry_zone) > 0 else entry
+    ob_hi = float(entry_zone[1]) if len(entry_zone) > 1 else entry
+    ob_mid = (ob_lo + ob_hi) / 2
+    ob_dist = round(abs(price_now - ob_mid) * 10, 1) if ob_mid else 0
+    nearest_ob = {
+        "type": "BULL" if direction == "BUY" else "BEAR",
+        "lo": ob_lo, "hi": ob_hi, "dist": ob_dist,
+    }
 
     return {
         "approved": approved,
@@ -314,6 +368,9 @@ def _map_supervisor_result(result: dict) -> dict:
             "reason": reason,
         },
         "reason": result.get("reject_reason", ""),
+        "htf_bias": htf_bias,
+        "nearest_ob": nearest_ob,
+        "price": current_price,
     }
 
 

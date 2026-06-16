@@ -1047,7 +1047,30 @@ void CheckPairGuardDir(ENUM_POSITION_TYPE dir)
          if(trade.PositionModify(tickets[iB],sls[iB],tp))
             Print("PairGuard[",dTag,"] Pair[",p,"] B:",tickets[iB]," TP:",NormalizeDouble(tp,digits));
    }
-   // odd excess: sortIdx[numPairs] — รอคู่ ไม่ set TP
+   //--- odd excess: set solo TP (ให้ไม้เดี่ยวมี target แทนรอคู่)
+   if(excess % 2 == 1 && numPairs < excess)
+   {
+      int oddIdx = sortIdx[numPairs];
+      if(posInfo.SelectByTicket(tickets[oddIdx]))
+      {
+         double lotOdd  = lots[oddIdx];
+         double soloTP  = (dir == POSITION_TYPE_BUY)
+            ? NormalizeDouble(opens[oddIdx] + g_PairGuardTarget / (vpp * lotOdd), digits)
+            : NormalizeDouble(opens[oddIdx] - g_PairGuardTarget / (vpp * lotOdd), digits);
+         double curPrice = (dir == POSITION_TYPE_BUY) ? bid : ask;
+         bool past = (dir == POSITION_TYPE_BUY) ? (curPrice >= soloTP) : (curPrice <= soloTP);
+         if(past)
+         {
+            trade.PositionClose(tickets[oddIdx]);
+            Print("PairGuard[",dTag,"] Odd market close | tk:",tickets[oddIdx]);
+         }
+         else if(MathAbs(posInfo.TakeProfit() - soloTP) > point * 2)
+         {
+            if(trade.PositionModify(tickets[oddIdx], sls[oddIdx], soloTP))
+               Print("PairGuard[",dTag,"] Odd soloTP | tk:",tickets[oddIdx]," TP:",NormalizeDouble(soloTP,digits));
+         }
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1612,6 +1635,9 @@ void CheckTrailingStop()
    double tickSize = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
    int    digits   = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    if(tickSize == 0) return;
+   double point    = SymbolInfoDouble(sym, SYMBOL_POINT);
+   long   stopLvl  = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist  = stopLvl * point;
 
    double bePrice, netLots, cur, curTicks;
    if(!ComputeCombinedBE(bePrice, netLots, cur, curTicks)) return;
@@ -1627,13 +1653,26 @@ void CheckTrailingStop()
    double step      = g_TrailStepTicks;
    double stepsGone = MathFloor((g_trailCombinedHigh - g_BETriggerTicks) / step) + 1;
 
-   //--- SL รวมใหม่ = bePrice + (lock + stepsGone × step) ticks (ทิศ net)
-   double newSLTicks = g_BELockTicks + stepsGone * step;
+   //--- SL รวมใหม่ = bePrice + (BETrig + (stepsGone-1)×step + lock) ticks
+   //--- ทำให้ SL อยู่ที่ "lock ticks เหนือ trigger ของ step นั้น" ไม่ใช่ใกล้ราคาปัจจุบัน
+   double newSLTicks = g_BETriggerTicks + (stepsGone - 1) * step + g_BELockTicks;
    double newSL = (netLots > 0)
       ? NormalizeDouble(bePrice + newSLTicks * tickSize, digits)
       : NormalizeDouble(bePrice - newSLTicks * tickSize, digits);
 
-   //--- SL ต้องอยู่ฝั่งขาดทุน
+   //--- ถ้า SL เกินราคาปัจจุบัน (price ยังไม่ถึง step นั้น) → fallback ลง step ต่ำกว่า
+   //--- กันกรณี price กระโดดข้าม step แล้ว high-water mark สูงเกิน
+   while(stepsGone > 0 && ((netLots > 0 && newSL >= cur) || (netLots < 0 && newSL <= cur)))
+   {
+      stepsGone--;
+      newSLTicks = g_BELockTicks + stepsGone * step;
+      newSL = (netLots > 0)
+         ? NormalizeDouble(bePrice + newSLTicks * tickSize, digits)
+         : NormalizeDouble(bePrice - newSLTicks * tickSize, digits);
+   }
+
+   //--- ตรวจขั้นสุดท้าย
+   if(stepsGone <= 0) return;   // ทุก step ยังอยู่เหนือราคา → ไม่ set
    if(netLots > 0 && newSL >= cur) return;
    if(netLots < 0 && newSL <= cur) return;
 
@@ -1648,14 +1687,35 @@ void CheckTrailingStop()
       double existSL = posInfo.StopLoss();
       bool needMove = (netLots > 0 && newSL > existSL)
                    || (netLots < 0 && (existSL == 0 || newSL < existSL));
-      if(needMove)
+      if(!needMove) continue;
+
+      //--- ตรวจ broker minimum stop distance
+      double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+      double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+      double validSL = newSL;
+      if(netLots > 0)
       {
-         if(trade.PositionModify(tk, newSL, posInfo.TakeProfit()))
-            anySet = true;
-         else
-            Print("Trail FAIL | tk:", tk, " err:", trade.ResultRetcode(),
-                  " newSL:", newSL, " existSL:", existSL, " cur:", cur);
+         double slMax = NormalizeDouble(bid - minDist - point, digits);
+         if(validSL > slMax)
+         {
+            Print("Trail SKIP | SL too close to price slMax:", slMax, " newSL:", newSL);
+            continue;
+         }
       }
+      else
+      {
+         double slMin = NormalizeDouble(ask + minDist + point, digits);
+         if(validSL < slMin)
+         {
+            Print("Trail SKIP | SL too close to price slMin:", slMin, " newSL:", newSL);
+            continue;
+         }
+      }
+      if(trade.PositionModify(tk, validSL, posInfo.TakeProfit()))
+         anySet = true;
+      else
+         Print("Trail FAIL | tk:", tk, " err:", trade.ResultRetcode(),
+               " newSL:", validSL, " existSL:", existSL, " cur:", cur);
    }
    if(anySet)
       Print("Trail Combined | step#", (int)stepsGone, " SL=", newSL,

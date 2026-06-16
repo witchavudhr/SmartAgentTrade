@@ -58,6 +58,52 @@
   let messages = [{ role:'ai', text:'สวัสดีครับ — พร้อมแล้ว' }];
   let msgsEl;
 
+  // ── Live market data ───────────────────────────────────────────────────────
+  let price = 0;
+  let htfBias = { overall:'?', h4:'?', h1:'?', daily:'?' };
+  let nearestOb = { type:'?', lo:0, hi:0, dist:0 };
+  let nextScanMins = 0;
+
+  // Scan windows in Thai time (UTC+7) [startH, startM, endH, endM]
+  const SCAN_WINS = [
+    [6,30,8,30],[10,30,12,0],[13,45,14,30],[15,45,16,15],
+    [16,30,17,30],[19,0,21,45],[22,0,23,0],[23,15,23,45],[1,0,2,0],
+  ];
+
+  function calcNextScan() {
+    const n = new Date();
+    const nowM = n.getHours()*60 + n.getMinutes();
+    let best = Infinity;
+    for (const [sh,sm,eh,em] of SCAN_WINS) {
+      const s = sh*60+sm, e = eh*60+em;
+      // next 15-min slot inside this window
+      let slot = Math.ceil((nowM+1)/15)*15;
+      while (slot <= e) {
+        if (slot >= s) { const d = slot - nowM; if (d > 0 && d < best) best = d; break; }
+        slot += 15;
+      }
+      // or window start itself (next day wrap)
+      const ds = s > nowM ? s - nowM : s + 1440 - nowM;
+      if (ds < best) best = ds;
+    }
+    nextScanMins = best === Infinity ? 0 : best;
+  }
+
+  function biasArrow(v) {
+    if (!v || v === '?') return '—';
+    const lc = v.toLowerCase();
+    if (lc.includes('bull') || lc === 'up' || lc === 'long') return '▲';
+    if (lc.includes('bear') || lc === 'down' || lc === 'short') return '▼';
+    return '—';
+  }
+  function biasColor(v) {
+    if (!v || v === '?') return '#4b5563';
+    const lc = v.toLowerCase();
+    if (lc.includes('bull') || lc === 'up') return '#22c55e';
+    if (lc.includes('bear') || lc === 'down') return '#ef4444';
+    return '#9ca3af';
+  }
+
   function sessionLabel() {
     const h = new Date().getHours();
     if (h >= 8 && h < 17) return 'London Session';
@@ -139,6 +185,16 @@
         if (msg.signal)   signal  = msg.signal;
         if (msg.scan_log) scanLog = msg.scan_log;
         if (msg.stats)    stats   = {...stats, ...msg.stats};
+        if (msg.price)       price      = msg.price;
+        if (msg.htf_bias)    htfBias    = msg.htf_bias;
+        if (msg.nearest_ob)  nearestOb  = msg.nearest_ob;
+      } else if (msg.type==='market_update') {
+        if (msg.price)      price     = msg.price;
+        if (msg.htf_bias)   htfBias   = msg.htf_bias;
+        if (msg.nearest_ob) nearestOb = msg.nearest_ob;
+      } else if (msg.type==='price_update') {
+        if (msg.price) price = msg.price;
+        if (msg.ob)    nearestOb = msg.ob;
       } else if (msg.type==='signal') {
         signal = msg.data;
       } else if (msg.type==='scan_log') {
@@ -195,7 +251,8 @@
   onMount(() => {
     initWs(); startPatrol();
     AGENTS_DEF.forEach((a,i) => setTimeout(()=>showBubble(i,a.idle[0],2400), i*500+600));
-    setInterval(() => { timeStr=nowHHMM(); sessStr=sessionLabel(); sessHrs=sessionHours(); }, 30000);
+    calcNextScan();
+    setInterval(() => { timeStr=nowHHMM(); sessStr=sessionLabel(); sessHrs=sessionHours(); calcNextScan(); }, 30000);
   });
   onDestroy(() => { clearInterval(patrolTimer); if(ws) ws.close(); });
 </script>
@@ -205,8 +262,23 @@
   <!-- ── TOP BAR ────────────────────────────────────────────────────── -->
   <header class="topbar">
     <span class="tb-brand">SmartAgentTrade — War Room</span>
+    <span class="tb-price">
+      {#if price > 0}
+        XAUUSD <b>{price.toFixed(2)}</b>
+        {#if nearestOb.lo > 0}
+          &nbsp;·&nbsp;<span class="ob-tag" style="color:{nearestOb.type==='BULL'?'#22c55e':'#ef4444'}">{nearestOb.type} OB</span>
+          &nbsp;{nearestOb.lo}–{nearestOb.hi}
+          &nbsp;<span class="ob-dist">({nearestOb.dist}p away)</span>
+        {/if}
+      {:else}
+        <span style="color:#374151">XAUUSD —</span>
+      {/if}
+    </span>
     <span class="tb-status">{statusText}</span>
     <div class="tb-right">
+      {#if nextScanMins > 0}
+        <span class="tb-scan-cd">next scan {nextScanMins}m</span>
+      {/if}
       <div class="ldot" class:live={connected}></div>
       <button class="scanbtn" disabled={scanRunning} on:click={triggerScan}>
         {scanRunning ? '⏳ Scanning...' : '⚡ Scan now'}
@@ -266,6 +338,26 @@
         <div class="sess-news">
           <span class="news-pill">News: clear</span>
           <span class="news-pill">Next: CPI 21:30</span>
+        </div>
+      </div>
+
+      <div class="sh">HTF BIAS</div>
+      <div class="htf-row">
+        <div class="htf-item">
+          <div class="htf-label">Daily</div>
+          <div class="htf-val" style="color:{biasColor(htfBias.daily)}">{biasArrow(htfBias.daily)}</div>
+        </div>
+        <div class="htf-item">
+          <div class="htf-label">H4</div>
+          <div class="htf-val" style="color:{biasColor(htfBias.h4)}">{biasArrow(htfBias.h4)}</div>
+        </div>
+        <div class="htf-item">
+          <div class="htf-label">H1</div>
+          <div class="htf-val" style="color:{biasColor(htfBias.h1)}">{biasArrow(htfBias.h1)}</div>
+        </div>
+        <div class="htf-item htf-overall">
+          <div class="htf-label">Overall</div>
+          <div class="htf-val" style="color:{biasColor(htfBias.overall)}">{biasArrow(htfBias.overall)}</div>
         </div>
       </div>
 
@@ -566,4 +658,18 @@
   .sli-no .sli-top{color:#fca5a5}
 
   .foot{padding:5px 10px;font-size:9px;color:#374151;border-top:1px solid rgba(255,255,255,.05);flex-shrink:0;background:#0c0c14}
+
+  /* ── TOP BAR: price + OB ─────────────────────────────────── */
+  .tb-price{font-size:11px;color:#9ca3af;white-space:nowrap;padding:0 8px;border-left:1px solid rgba(255,255,255,.08);border-right:1px solid rgba(255,255,255,.08)}
+  .tb-price b{color:#f3f4f6;font-weight:600}
+  .ob-tag{font-weight:600;font-size:10px}
+  .ob-dist{font-size:10px;color:#6b7280}
+  .tb-scan-cd{font-size:9.5px;color:#4b5563;white-space:nowrap}
+
+  /* ── LEFT: HTF BIAS ─────────────────────────────────────── */
+  .htf-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:rgba(255,255,255,.06);flex-shrink:0}
+  .htf-item{background:#0f0f17;padding:6px 4px;text-align:center}
+  .htf-overall{background:#131320}
+  .htf-label{font-size:8.5px;color:#4b5563;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em}
+  .htf-val{font-size:16px;font-weight:700;line-height:1}
 </style>
