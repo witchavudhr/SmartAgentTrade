@@ -479,17 +479,26 @@ MARKET DATA
 - ถ้าราคาถึง OB ฝั่งตรงข้ามแล้ว → trade ที่ OB ได้เลย (นั่นคือ supply/demand จริงๆ)
 
 ════════════════════════════════════════════
-⚠️ MACRO OVERRIDE — อ่านก่อน STEP 1 เสมอ (ใช้ทุกกรณี ไม่มีข้อยกเว้น)
+📌 หลักการหลัก: ซื้อแนวรับ ขายแนวต้าน
 ════════════════════════════════════════════
-กฎเหล็ก: ถ้า H4 BULL + H1 BULL (หรือ H4 BULL + Daily BULL):
-  → ห้าม SELL เด็ดขาด ไม่ว่าจะเห็น EQH sweep, rejection candle, bearish signal ใดๆ
-  → EQH sweep = AMD Upthrust ใน uptrend เท่านั้น (ดูด stops ก่อนขึ้นต่อ)
-  → vote BUY ที่ Bull OB ที่ใกล้ที่สุด หรือ BUY_WAIT ถ้ายังไม่ถึง OB
-  → ถ้าไม่มี setup BUY ที่ชัดเจน → vote NO (รอ) ดีกว่า SELL เสมอ
-  → SELL จะทำได้ก็ต่อเมื่อ H1 หรือ H4 มี CHoCH bearish ยืนยัน + BOS ลงชัดก่อนเท่านั้น
+กฎข้อ 1 (สำคัญที่สุด): ตัดสินใจจาก OB ที่ราคาอยู่ใกล้ ไม่ใช่จาก macro bias
+  → ราคาอยู่ที่/ใกล้ Bull OB (demand/support) → ดู BUY setup
+  → ราคาอยู่ที่/ใกล้ Bear OB (supply/resistance) → ดู SELL setup
+  → ราคากลางอากาศ (ไม่ถึง OB ไหนเลย) → NO_TRADE รอ
 
-ตัวอย่าง: H4 BULL + H1 BULL + EQH swept ที่ 4318 + ราคา 4312
-  → ถูก: vote BUY ที่ Bull OB ที่ใกล้สุด หรือ NO (รอ OB) | ผิด: vote SELL
+กฎข้อ 2 — Macro bias ใช้ปรับ confidence เท่านั้น:
+  → trade ตาม trend + ตาม OB = confidence สูงสุด (BUY ที่ Bull OB ใน uptrend)
+  → trade สวน trend แต่มี OB รองรับ = confidence ต่ำกว่า (SELL ที่ Bear OB ใน uptrend)
+  → ห้าม trade สวน trend โดยไม่มี OB รองรับ = NO_TRADE
+
+กฎข้อ 3 — ห้าม SELL กลางอากาศ (ไม่มี Bear OB):
+  → H4+H1 BULL + EQH sweep แต่ไม่มี Bear OB ใกล้ → ห้าม SELL (ไม่มี resistance รองรับ)
+  → EQH sweep ใน uptrend โดยไม่มี supply zone = AMD Upthrust → ดู BUY ที่ Bull OB แทน
+
+ตัวอย่าง:
+  H4 BULL + H1 BULL + ราคาที่ Bear OB 4316 → SELL ได้ (resistance จริง) confidence ปานกลาง
+  H4 BULL + H1 BULL + ราคาที่ Bull OB 4300 → BUY ได้ (support + trend ตรงกัน) confidence สูง
+  H4 BULL + H1 BULL + ราคากลางอากาศ 4312 (ไม่มี OB ใกล้) → NO_TRADE รอ OB
 
 ════════════════════════════════════════════
 STEP 1 — Primary OB (code เลือกให้แล้ว)
@@ -576,8 +585,9 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   🔴 C2 — EQH_SWEEP_SELL (ถ้า eqh_sweep_signal ≠ null):
     EQH swept → ดูด buy-side liquidity → ราคา reject ลงมาต่ำกว่า EQH
     เงื่อนไข: eqh_level + sweep_high ชัดเจน + ราคาปัจจุบัน < eqh_level
-    ⛔ ห้ามใช้ C2 เด็ดขาดถ้า: H4 BULL และ H1 BULL (ไม่ต้องรอ Bull OB)
-       → MACRO OVERRIDE มีผลทันที: EQH sweep คือ Upthrust ใน uptrend เสมอ → ดู MACRO OVERRIDE
+    ⛔ ห้ามใช้ C2 ถ้า: H4 BULL และ H1 BULL และ **ไม่มี Bear OB** ใกล้ราคา
+       → กลางอากาศ + uptrend = ไม่มี resistance รองรับ → NO_TRADE ดีกว่า
+       → ถ้ามี Bear OB ใกล้ราคา → SELL ที่ Bear OB ได้ (resistance จริง) แม้ macro จะ BULL
     Entry: ราคาปัจจุบัน (หรือ limit ที่ eqh_level)
     SL: สูงกว่า sweep_high 5-10 จุด
     TP: nearest_swing_low ที่คำนวณโดย code (ด้านล่าง)
@@ -609,9 +619,12 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
 ════════════════════════════════════════════
 STEP 3 — ตัดสินใจและโหวต
 ════════════════════════════════════════════
+หลักการ: ซื้อแนวรับ ขายแนวต้าน — ราคาต้องถึง OB ก่อนเสมอ ไม่ trade กลางอากาศ
+
 ลำดับ priority:
-0. ⚠️ MACRO OVERRIDE (บังคับสูงสุด): H4+H1 BULL → ห้าม SELL เด็ดขาด, ignore EQH sweep, vote BUY ที่ Bull OB หรือ NO (รอ)
-1. ★ OB ใกล้ + ตรง macro trend + ราคาถึง/ใกล้ OB → YES, setup_type=TREND_OB (confidence สูงสุด)
+0. ถ้าไม่มี OB ใกล้ราคา (ทั้ง Bull และ Bear ห่างเกิน 300 จุด) → NO_TRADE รอ
+1. ★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (confidence สูงสุด — support+trend)
+   ★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (confidence สูงสุด — resistance+trend)
 2. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
 3. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
 4. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
