@@ -695,8 +695,6 @@ def get_dashboard_stats() -> dict:
         ORDER BY confidence DESC LIMIT 1
     """, (today,)).fetchone()
 
-    conn.close()
-
     pending_count = conn.execute(
         "SELECT COUNT(*) FROM trades WHERE outcome='pending' AND action='confirmed'"
     ).fetchone()[0]
