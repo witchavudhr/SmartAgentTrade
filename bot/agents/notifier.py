@@ -554,6 +554,149 @@ async def cmd_backfill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_mt5import(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/mt5import [days] — import MT5 closed trades โดยตรงเป็น DB records"""
+    from agents.trade_log import init_db, DB_PATH
+    from datetime import datetime, timedelta
+    import sqlite3
+
+    days = 3
+    if ctx.args:
+        try: days = int(ctx.args[0])
+        except ValueError: pass
+
+    await update.message.reply_text(f"📥 กำลัง import MT5 history ย้อนหลัง {days} วัน...")
+
+    if not mt5_executor.is_available():
+        await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม")
+        return
+
+    ok, _ = mt5_executor._connect()
+    if not ok:
+        await update.message.reply_text("⚠️ เชื่อม MT5 ไม่ได้")
+        return
+
+    try:
+        import MetaTrader5 as mt5
+        date_from = datetime.now() - timedelta(days=days)
+        date_to   = datetime.now() + timedelta(hours=1)
+        all_deals = mt5.history_deals_get(date_from, date_to) or []
+    finally:
+        mt5_executor.disconnect()
+
+    if not all_deals:
+        await update.message.reply_text("⚠️ MT5 ไม่มี deal history ในช่วงนี้")
+        return
+
+    # จับ open/close deals ตาม position_id
+    pos_open  = {}
+    pos_close = {}
+    for d in all_deals:
+        pid = d.position_id
+        if d.entry == 0 and pid not in pos_open:
+            pos_open[pid] = d
+        elif d.entry == 1:
+            if pid not in pos_close or d.time > pos_close[pid].time:
+                pos_close[pid] = d
+
+    # ดู tickets ที่ import แล้ว
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    existing_tickets = {
+        r[0] for r in conn.execute("SELECT mt5_ticket FROM trades WHERE mt5_ticket IS NOT NULL").fetchall()
+    }
+
+    imported = []
+    skipped  = 0
+
+    for pid, cd in pos_close.items():
+        if pid in existing_tickets:
+            skipped += 1
+            continue
+        od = pos_open.get(pid)
+        if not od:
+            continue
+
+        open_dt   = datetime.fromtimestamp(od.time)
+        close_dt  = datetime.fromtimestamp(cd.time)
+        # type: 0=BUY open, 1=SELL open
+        direction = "BUY" if od.type == 0 else "SELL"
+        open_px   = od.price
+        close_px  = cd.price
+        pnl_raw   = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
+        pnl_pips  = round(pnl_raw * 10, 1)
+        outcome   = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+        dur_min   = int((close_dt - open_dt).total_seconds() / 60)
+        lot       = od.volume
+
+        conn.execute("""
+            INSERT INTO trades (
+                timestamp, pair, session, signal, setup_type, lot,
+                entry_low, entry_high, stop_loss,
+                action, outcome, actual_entry, actual_exit,
+                pnl_pips, duration_min, mt5_ticket, notes
+            ) VALUES (?, 'XAUUSD', ?, ?, 'MT5_IMPORT', ?,
+                      ?, ?, NULL,
+                      'mt5_import', ?, ?, ?,
+                      ?, ?, ?, ?)
+        """, (
+            open_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            _get_session_label(open_dt),
+            direction,
+            lot,
+            open_px, open_px,
+            outcome,
+            open_px, close_px,
+            pnl_pips, dur_min,
+            pid,
+            f"MT5 import — ticket {pid}",
+        ))
+        imported.append({
+            "pid": pid, "dir": direction, "outcome": outcome,
+            "pips": pnl_pips, "open_px": open_px, "close_px": close_px,
+            "open_dt": open_dt.strftime("%m-%d %H:%M"), "lot": lot,
+        })
+
+    conn.commit()
+    conn.close()
+
+    if not imported:
+        await update.message.reply_text(
+            f"ℹ️ ไม่มี trade ใหม่ให้ import\n"
+            f"(ข้ามไปแล้ว {skipped} รายการที่ import ก่อนหน้า)"
+        )
+        return
+
+    wins   = sum(1 for u in imported if u["outcome"] == "win")
+    losses = sum(1 for u in imported if u["outcome"] == "loss")
+    be     = sum(1 for u in imported if u["outcome"] == "be")
+    total_pips = sum(u["pips"] for u in imported)
+
+    lines = [
+        f"✅ *Import สำเร็จ {len(imported)} trades*\n"
+        f"W:{wins} L:{losses} BE:{be} | รวม `{total_pips:+.1f} จุด`\n"
+        f"━━━━━━━━━━━━━━━━━"
+    ]
+    for u in imported[:15]:
+        icon = "✅" if u["outcome"] == "win" else "❌" if u["outcome"] == "loss" else "➖"
+        lines.append(f"{icon} `{u['open_dt']} {u['dir']} {u['lot']}L {u['pips']:+.1f}p ({u['open_px']}→{u['close_px']})`")
+    if len(imported) > 15:
+        lines.append(f"_...และอีก {len(imported)-15} trades_")
+    if skipped:
+        lines.append(f"\n_ข้ามไป {skipped} trades ที่ import แล้ว_")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+def _get_session_label(dt: datetime) -> str:
+    """แปล datetime เป็น session label (Asian/London/NY)"""
+    h = dt.hour
+    if 1 <= h < 8:   return "Asian"
+    if 8 <= h < 16:  return "London"
+    if 16 <= h < 23: return "NY"
+    return "Off-hours"
+
+
 async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/pending — แสดง trades ที่ยังรอ outcome"""
     from agents.trade_log import get_pending_trades
@@ -2179,6 +2322,7 @@ def run():
     app.add_handler(CommandHandler("outcome", cmd_outcome))
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("backfill", cmd_backfill))
+    app.add_handler(CommandHandler("mt5import", cmd_mt5import))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))

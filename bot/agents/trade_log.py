@@ -680,7 +680,8 @@ def get_dashboard_stats() -> dict:
 
     today_trades = conn.execute("""
         SELECT outcome, pnl_pips FROM trades
-        WHERE action='confirmed' AND DATE(timestamp)=?
+        WHERE action IN ('confirmed','mt5_import') AND DATE(timestamp)=?
+          AND outcome IN ('win','loss','be')
     """, (today,)).fetchall()
 
     recent_scans = conn.execute("""
@@ -700,10 +701,10 @@ def get_dashboard_stats() -> dict:
         "SELECT COUNT(*) FROM trades WHERE outcome='pending' AND action='confirmed'"
     ).fetchone()[0]
 
-    all_wins   = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='win'").fetchone()[0]
-    all_losses = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='loss'").fetchone()[0]
+    all_wins   = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='win' AND action IN ('confirmed','mt5_import')").fetchone()[0]
+    all_losses = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='loss' AND action IN ('confirmed','mt5_import')").fetchone()[0]
     best_pnl_row = conn.execute(
-        "SELECT MAX(pnl_pips) FROM trades WHERE outcome='win'"
+        "SELECT MAX(pnl_pips) FROM trades WHERE outcome='win' AND action IN ('confirmed','mt5_import')"
     ).fetchone()
 
     conn.close()
