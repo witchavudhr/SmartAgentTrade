@@ -415,6 +415,27 @@ async def cmd_outcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ รูปแบบไม่ถูกต้อง: {e}\nดูวิธีใช้: `/outcome`", parse_mode="Markdown")
 
 
+async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/pending — แสดง trades ที่ยังรอ outcome"""
+    from agents.trade_log import get_pending_trades
+    rows = get_pending_trades()
+    if not rows:
+        await update.message.reply_text("✅ ไม่มี trade ค้าง — ทุกตัว update outcome แล้ว")
+        return
+    lines = [f"📋 *Pending Trades ({len(rows)} รายการ)*\n━━━━━━━━━━━━━━━━━"]
+    for r in rows:
+        t = r["timestamp"][11:16] if r["timestamp"] else "?"
+        entry = f"{r['entry_low']}–{r['entry_high']}" if r["entry_low"] else "?"
+        ticket = f" [T#{r['mt5_ticket']}]" if r["mt5_ticket"] else ""
+        lines.append(
+            f"*#{r['id']}* `{r['signal']} {r['setup_type'] or ''}` {t}{ticket}\n"
+            f"  Entry: `{entry}` SL: `{r['stop_loss'] or '?'}`\n"
+            f"  → `/outcome {r['id']} win/loss [pips]`"
+        )
+    lines.append("\n━━━━━━━━━━━━━━━━━\nใช้ `/outcome [id] win 150` หรือ `/outcome [id] loss -80`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Export trade history เป็น CSV แล้วส่งไฟล์ใน Telegram"""
     await update.message.reply_text("📤 กำลัง export CSV...")
@@ -641,6 +662,11 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
             ot_upd = bot_state.get("open_trade", {})
             ot_upd["mt5_ticket"] = ex["ticket"]
             state_manager.set_field(bot_state, "open_trade", ot_upd)
+            try:
+                from agents.trade_log import update_mt5_ticket
+                update_mt5_ticket(trade_id, ex["ticket"])
+            except Exception:
+                pass
         else:
             mt5_tag = f"\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`"
     else:
@@ -944,6 +970,12 @@ async def _handle_scan_result(result: dict, send_fn):
                     ot_upd = bot_state["open_trade"]
                     ot_upd["mt5_ticket"] = ex["ticket"]
                     state_manager.set_field(bot_state, "open_trade", ot_upd)
+                # บันทึก ticket ใน DB ด้วย
+                try:
+                    from agents.trade_log import update_mt5_ticket
+                    update_mt5_ticket(trade_id, ex["ticket"])
+                except Exception:
+                    pass
             else:
                 mt5_tag = f"\n\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
         elif entry_far:
@@ -2006,6 +2038,7 @@ def run():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("trades", cmd_trades))
     app.add_handler(CommandHandler("outcome", cmd_outcome))
+    app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))

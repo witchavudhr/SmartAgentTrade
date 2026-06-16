@@ -46,7 +46,7 @@
     reason:'Waiting for first scan…',
   };
 
-  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, best_trade:0, trades:[] };
+  let stats = { today_pnl:0, open_pnl:0, win_rate:0, wins:0, losses:0, pending:0, today_only:false, best_trade:0, trades:[] };
 
   // Ask panel
   let askInput = '';
@@ -402,14 +402,14 @@
       <div class="s3s">{fmtPnl(stats.open_pnl)} open</div>
     </div>
     <div class="s3">
-      <div class="s3l">Win rate</div>
+      <div class="s3l">Win rate {stats.today_only ? '' : '(all)'}</div>
       <div class="s3v">{stats.win_rate}%</div>
       <div class="s3s">{stats.wins} of {stats.wins + stats.losses} closed</div>
     </div>
     <div class="s3">
-      <div class="s3l">W / L</div>
+      <div class="s3l">W / L {stats.today_only ? '' : '(all)'}</div>
       <div class="s3v"><span style="color:#15803d">{stats.wins}</span> / <span style="color:#991b1b">{stats.losses}</span></div>
-      <div class="s3s">+1 open</div>
+      <div class="s3s">{stats.pending > 0 ? `+${stats.pending} pending` : stats.open_pnl !== 0 ? `${fmtPnl(stats.open_pnl)} open` : '—'}</div>
     </div>
     <div class="s3">
       <div class="s3l">Best trade</div>

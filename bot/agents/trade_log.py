@@ -127,6 +127,7 @@ def init_db():
         ("actual_entry", "REAL"),
         ("actual_exit",  "REAL"),
         ("duration_min", "INTEGER"),
+        ("mt5_ticket",   "INTEGER"),
     ]
     for col, typ in migrations:
         if col not in existing:
@@ -270,7 +271,7 @@ def get_performance_summary(days: int = 30) -> str:
     return " ".join(lines)
 
 
-def log_trade(analysis: dict, action: str) -> int:
+def log_trade(analysis: dict, action: str, mt5_ticket: int = None) -> int:
     """
     บันทึก trade หลัง user กด Confirm/Skip
     analysis มาจาก supervisor.run() → result["analysis"]
@@ -280,7 +281,6 @@ def log_trade(analysis: dict, action: str) -> int:
 
     entry      = analysis.get("entry_zone") or []
     key_factors = analysis.get("key_factors", [])
-    # รองรับทั้ง rr_ratio (Claude analysis) และ rr (rule-only signal)
     rr_val     = analysis.get("rr_ratio") or analysis.get("rr")
 
     conn = sqlite3.connect(DB_PATH)
@@ -290,13 +290,13 @@ def log_trade(analysis: dict, action: str) -> int:
             confidence, h4_bias,
             entry_low, entry_high, stop_loss, take_profit,
             sl_pips, tp_pips, rr_plan, lot, risk_pct,
-            key_factors, reasoning, action
+            key_factors, reasoning, action, mt5_ticket
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?,
             ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?, ?
+            ?, ?, ?, ?
         )
     """, (
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -320,6 +320,7 @@ def log_trade(analysis: dict, action: str) -> int:
         json.dumps(key_factors, ensure_ascii=False),
         analysis.get("reasoning"),
         action,
+        mt5_ticket,
     ))
     trade_id = cursor.lastrowid
     conn.commit()
@@ -431,6 +432,36 @@ def update_outcome(trade_id: int, outcome: str,
     """, (outcome, pnl_pips, actual_entry, actual_exit, duration_min, notes, trade_id))
     conn.commit()
     conn.close()
+
+
+def update_mt5_ticket(trade_id: int, ticket: int):
+    """บันทึก MT5 ticket ให้กับ trade ใน DB — เรียกหลัง MT5 open_trade() สำเร็จ"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE trades SET mt5_ticket=? WHERE id=?", (ticket, trade_id))
+    conn.commit()
+    conn.close()
+
+
+def get_pending_trades() -> list[dict]:
+    """ดึง confirmed trades ที่ยัง pending outcome (สำหรับ /pending command)"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT id, timestamp, signal, setup_type, entry_low, entry_high, stop_loss, mt5_ticket
+        FROM trades
+        WHERE outcome='pending' AND action='confirmed'
+        ORDER BY id DESC LIMIT 20
+    """).fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        result.append({
+            "id": row[0], "timestamp": row[1], "signal": row[2],
+            "setup_type": row[3], "entry_low": row[4], "entry_high": row[5],
+            "stop_loss": row[6], "mt5_ticket": row[7],
+        })
+    return result
 
 
 # ── Read ──────────────────────────────────────────────────────────
@@ -665,14 +696,32 @@ def get_dashboard_stats() -> dict:
 
     conn.close()
 
-    today_pnl  = sum(r[1] or 0 for r in today_trades)
-    today_wins = sum(1 for r in today_trades if r[0] == "win")
+    pending_count = conn.execute(
+        "SELECT COUNT(*) FROM trades WHERE outcome='pending' AND action='confirmed'"
+    ).fetchone()[0]
+
+    all_wins   = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='win'").fetchone()[0]
+    all_losses = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='loss'").fetchone()[0]
+    best_pnl_row = conn.execute(
+        "SELECT MAX(pnl_pips) FROM trades WHERE outcome='win'"
+    ).fetchone()
+
+    conn.close()
+
+    today_pnl    = sum(r[1] or 0 for r in today_trades)
+    today_wins   = sum(1 for r in today_trades if r[0] == "win")
     today_losses = sum(1 for r in today_trades if r[0] == "loss")
     today_win_pips = [r[1] or 0 for r in today_trades if r[0] == "win"]
 
-    summary = get_summary()
+    has_today = (today_wins + today_losses) > 0
+    display_wins   = today_wins   if has_today else all_wins
+    display_losses = today_losses if has_today else all_losses
+    display_wr = (
+        round(display_wins / (display_wins + display_losses) * 100, 1)
+        if (display_wins + display_losses) > 0 else 0
+    )
+    best_pnl = round(max(today_win_pips, default=0), 2) if has_today else round(best_pnl_row[0] or 0, 2)
 
-    # bars: scan history — green=approved, red=rejected, height=confidence
     trades_bar = []
     for approved, confidence in reversed(recent_scans):
         trades_bar.append({
@@ -681,14 +730,16 @@ def get_dashboard_stats() -> dict:
         })
 
     return {
-        "today_pnl":  round(today_pnl, 2),
-        "open_pnl":   0.0,
-        "win_rate":   round(today_wins / (today_wins + today_losses) * 100, 1) if (today_wins + today_losses) > 0 else summary["win_rate"],
-        "wins":       today_wins,
-        "losses":     today_losses,
-        "best_trade": round(max(today_win_pips, default=0), 2),
-        "best_setup": best_setup_row[0] if best_setup_row else "",
-        "trades":     trades_bar,
+        "today_pnl":   round(today_pnl, 2),
+        "open_pnl":    0.0,
+        "win_rate":    display_wr,
+        "wins":        display_wins,
+        "losses":      display_losses,
+        "pending":     pending_count,
+        "today_only":  has_today,
+        "best_trade":  best_pnl,
+        "best_setup":  best_setup_row[0] if best_setup_row else "",
+        "trades":      trades_bar,
     }
 
 
