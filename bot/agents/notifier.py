@@ -75,6 +75,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📡 *Analysis*\n"
         "/scan — สแกนหา setup (auto-execute ถ้าผ่าน) · 7 windows/day\n"
         "/testscan — ดู vote ทุก agent โดยไม่เปิด trade\n"
+        "/ob — ดู Bull OB / Bear OB ปัจจุบัน (M5 + M15)\n"
         "/bias — ดู HTF direction H1/H4/Daily\n"
         "/news — เช็คข่าว Economic Calendar\n\n"
         "⚙️ *Control*\n"
@@ -442,6 +443,47 @@ async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     news = news_scout.analyze()
     message = news_scout.format_news_message(news)
     await update.message.reply_text(message, parse_mode="Markdown")
+
+async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/ob — แสดง Bull OB และ Bear OB ปัจจุบัน (M5 + M15)"""
+    await update.message.reply_text("📦 กำลังดึง OB zones...")
+    try:
+        from agents.chart_analyst import get_price_data
+        df5, smc = get_price_data()
+        if smc is None:
+            await update.message.reply_text("❌ ดึงข้อมูลราคาไม่ได้")
+            return
+
+        price = smc.get("current_price") or smc.get("price")
+        source = smc.get("price_source", "yfinance")
+        m15 = smc.get("m15") or {}
+
+        m5_bull  = smc.get("active_bull_ob")
+        m5_bear  = smc.get("active_bear_ob")
+        m15_bull = m15.get("active_bull_ob")
+        m15_bear = m15.get("active_bear_ob")
+
+        def _fmt(ob, label):
+            if not ob: return f"{label}: ไม่มี"
+            in_tag = " ← IN OB ✅" if ob.get("in_ob") else ""
+            return f"{label}: `{ob.get('bottom')} – {ob.get('top')}`{in_tag}"
+
+        src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"
+        msg = (
+            f"📦 *Order Blocks*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"📡 Source: {src_icon}\n"
+            f"💰 ราคา: `{price}`\n\n"
+            f"*M5:*\n"
+            f"  🟢 {_fmt(m5_bull, 'Bull OB')}\n"
+            f"  🔴 {_fmt(m5_bear, 'Bear OB')}\n\n"
+            f"*M15:*\n"
+            f"  🟢 {_fmt(m15_bull, 'Bull OB')}\n"
+            f"  🔴 {_fmt(m15_bear, 'Bear OB')}\n"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
 async def cmd_ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     question = " ".join(ctx.args) if ctx.args else ""
@@ -1965,6 +2007,7 @@ def run():
     app.add_handler(CommandHandler("testscan", cmd_testscan))
     app.add_handler(CommandHandler("mt5", cmd_mt5))
     app.add_handler(CommandHandler("posguard", cmd_posguard))
+    app.add_handler(CommandHandler("ob", cmd_ob))
 
     # Callback (ปุ่ม)
     app.add_handler(CallbackQueryHandler(handle_callback))
