@@ -18,14 +18,16 @@ async def start_stats_refresh():
     asyncio.create_task(_stats_refresh_loop())
 
 async def _stats_refresh_loop():
-    """Refresh stats from DB every 60s and broadcast to all clients."""
+    """Refresh stats from DB every 15s and broadcast to all clients."""
     global stats
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(15)
         try:
             from agents.trade_log import get_dashboard_stats
-            stats = get_dashboard_stats()
-            await manager.broadcast({"type": "stats", "data": stats})
+            new_stats = get_dashboard_stats()
+            if new_stats != stats:
+                stats = new_stats
+                await manager.broadcast({"type": "stats", "data": stats})
         except Exception:
             pass
 
@@ -100,8 +102,14 @@ ANALYZE_MSGS = {
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    global stats
     await manager.connect(websocket)
-    # Send current state to new client
+    # Always read fresh stats from DB on connect
+    try:
+        from agents.trade_log import get_dashboard_stats
+        stats = get_dashboard_stats()
+    except Exception:
+        pass
     await websocket.send_text(json.dumps({
         "type": "init",
         "scan_phase": scan_phase,
@@ -146,6 +154,18 @@ def get_debug():
     except Exception as e:
         result["error"] = str(e)
     return result
+
+@app.post("/api/refresh-stats")
+async def refresh_stats():
+    """Force reload stats from DB and broadcast to all clients."""
+    global stats
+    try:
+        from agents.trade_log import get_dashboard_stats, get_recent_scans
+        stats = get_dashboard_stats()
+        await manager.broadcast({"type": "stats", "data": stats})
+        return {"ok": True, "stats": stats}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.get("/api/state")
 def get_state():

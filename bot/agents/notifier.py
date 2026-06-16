@@ -660,6 +660,14 @@ async def cmd_mt5import(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
+    # Force dashboard stats refresh
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{DASHBOARD_URL}/api/refresh-stats", method="POST")
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
+
     if not imported:
         await update.message.reply_text(
             f"ℹ️ ไม่มี trade ใหม่ให้ import\n"
