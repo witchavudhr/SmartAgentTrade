@@ -524,15 +524,14 @@ async def cmd_backfill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for u in updated:
             icon = "✅" if u["outcome"] == "win" else "❌" if u["outcome"] == "loss" else "➖"
             lines.append(
-                f"{icon} *#{u['id']}* `{u['dir']} {u['setup']}` "
-                f"`{u['pips']:+.1f}p` "
-                f"({u['open_px']}→{u['close_px']}, ±{u['diff_sec']}s)"
+                f"{icon} `#{u['id']} {u['dir']} {u['setup']} {u['pips']:+.1f}p`"
+                f" ({u['open_px']}→{u['close_px']}, ±{u['diff_sec']}s)"
             )
     if unmatched:
         lines.append(f"\n⚠️ Match ไม่ได้ {len(unmatched)} trade:")
         for u in unmatched:
             t = u["timestamp"][11:16] if u["timestamp"] else "?"
-            lines.append(f"  `#{u['id']}` {u['signal']} {u['setup_type'] or ''} {t} → ใช้ `/outcome {u['id']} win/loss [pips]`")
+            lines.append(f"  `#{u['id']} {u['signal']} {u['setup_type'] or ''} {t}` → /outcome {u['id']} win/loss pips")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
