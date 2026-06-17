@@ -353,26 +353,26 @@
           <div class="sv" style="color:{stats.today_pnl>=0?'#22c55e':'#ef4444'}">{fmtPnl(stats.today_pnl)}</div>
         </div>
         <div class="sc">
-          {#if hasTradeData}
-            <div class="sl">Win rate</div>
-            <div class="sv">{stats.win_rate}%</div>
-          {:else}
-            <div class="sl">Approval</div>
-            <div class="sv">{stats.approval_rate ?? 0}%</div>
-          {/if}
+          <div class="sl">Win rate</div>
+          <div class="sv" style="color:{hasTradeData?'#e5e7eb':'#374151'}">
+            {hasTradeData ? `${stats.win_rate}%` : '—'}
+          </div>
         </div>
         <div class="sc">
-          {#if hasTradeData}
-            <div class="sl">W / L</div>
-            <div class="sv"><span style="color:#22c55e">{stats.wins}</span> / <span style="color:#ef4444">{stats.losses}</span></div>
-          {:else}
-            <div class="sl">Scans ✓/✗</div>
-            <div class="sv"><span style="color:#22c55e">{stats.scans_approved ?? 0}</span> / <span style="color:#ef4444">{stats.scans_rejected ?? 0}</span></div>
-          {/if}
+          <div class="sl">W / L</div>
+          <div class="sv">
+            <span style="color:#22c55e">{stats.wins ?? 0}</span>
+            <span style="color:#4b5563"> / </span>
+            <span style="color:#ef4444">{stats.losses ?? 0}</span>
+          </div>
         </div>
         <div class="sc">
-          <div class="sl">Best trade</div>
-          <div class="sv" style="color:#22c55e">{fmtPnl(stats.best_trade??0)}</div>
+          <div class="sl">Scans ✓/✗</div>
+          <div class="sv">
+            <span style="color:#22c55e">{stats.scans_approved ?? 0}</span>
+            <span style="color:#4b5563"> / </span>
+            <span style="color:#ef4444">{stats.scans_rejected ?? 0}</span>
+          </div>
         </div>
       </div>
 

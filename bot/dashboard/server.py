@@ -107,6 +107,8 @@ scan_requested = False  # set by /api/scan, cleared by /api/poll-scan
 current_price: float = 0.0
 htf_bias: dict = {"overall": "?", "h4": "?", "h1": "?", "daily": "?"}
 nearest_ob: dict = {"type": "?", "lo": 0.0, "hi": 0.0, "dist": 0}
+# Stats cache per period — populated by bot push (Windows DB), fallback to local DB
+stats_cache: dict = {}  # {"today": {...}, "week": {...}, ...}
 
 GATHER_MSGS = {
     "supervisor":    "Knights, to the table!",
@@ -185,6 +187,9 @@ def get_debug():
 @app.get("/api/stats")
 def get_stats_period(period: str = "today"):
     """Return stats for a specific period: today|week|month|year|all"""
+    # Prefer bot-provided stats (Windows DB) over local DB
+    if period in stats_cache:
+        return stats_cache[period]
     try:
         from agents.trade_log import get_dashboard_stats
         return get_dashboard_stats(period)
@@ -234,13 +239,17 @@ class AskBody(BaseModel):
     question: str
 
 class PushBody(BaseModel):
-    result: dict  # raw supervisor.run() output
+    result: dict            # raw supervisor.run() output
+    stats_all: dict = {}   # {period: stats_dict} from bot's Windows DB
 
 @app.post("/api/push")
 async def push_result(body: PushBody):
     """Bot calls this after every supervisor.run() to update dashboard live."""
-    global latest_signal, scan_log, stats, scan_running
+    global latest_signal, scan_log, stats, scan_running, stats_cache
     scan_running = False  # unblock Scan Now button
+    # Cache bot-provided stats (from Windows DB) — used for all periods
+    if body.stats_all:
+        stats_cache.update(body.stats_all)
     mapped = _map_supervisor_result(body.result)
     sig = mapped["signal"]
     latest_signal = sig
@@ -258,13 +267,16 @@ async def push_result(body: PushBody):
     await manager.broadcast({"type": "market_update", "price": mapped.get("price", 0),
                              "htf_bias": mapped.get("htf_bias", {}),
                              "nearest_ob": mapped.get("nearest_ob", {})})
-    # Refresh stats from real DB
-    try:
-        from agents.trade_log import get_dashboard_stats
-        stats = get_dashboard_stats()
-        await manager.broadcast({"type": "stats", "data": stats})
-    except Exception:
-        pass
+    # Use bot-provided stats if available, else fall back to local DB
+    if "today" in stats_cache:
+        stats = stats_cache["today"]
+    else:
+        try:
+            from agents.trade_log import get_dashboard_stats
+            stats = get_dashboard_stats()
+        except Exception:
+            pass
+    await manager.broadcast({"type": "stats", "data": stats})
     await asyncio.sleep(3)
     await manager.broadcast({"type": "scan_phase", "phase": "idle"})
     return {"ok": True}

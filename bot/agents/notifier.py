@@ -30,15 +30,22 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 DASHBOARD_URL = "http://localhost:8000"
 
 def _push_to_dashboard(result: dict):
-    """Push supervisor result to War Room dashboard (best-effort)."""
+    """Push supervisor result + live stats to War Room dashboard (best-effort)."""
     try:
         import urllib.request
-        data = json.dumps({"result": result}).encode()
+        from agents.trade_log import get_dashboard_stats
+        stats_all = {}
+        for period in ("today", "week", "month", "year", "all"):
+            try:
+                stats_all[period] = get_dashboard_stats(period)
+            except Exception:
+                pass
+        data = json.dumps({"result": result, "stats_all": stats_all}).encode()
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/push",
             data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
-        urllib.request.urlopen(req, timeout=2)
+        urllib.request.urlopen(req, timeout=3)
     except Exception:
         pass
 
