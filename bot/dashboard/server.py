@@ -202,13 +202,9 @@ class StatsSyncBody(BaseModel):
 @app.post("/api/stats-sync")
 async def stats_sync(body: StatsSyncBody):
     """Bot pushes all-period stats without a scan (startup, periodic refresh)."""
-    global stats, stats_cache, transactions_cache
-    stats_cache.update(body.stats_all)
+    global transactions_cache
     if body.transactions_all:
         transactions_cache.update(body.transactions_all)
-    if "today" in body.stats_all:
-        stats = body.stats_all["today"]
-        await manager.broadcast({"type": "stats", "data": stats})
     return {"ok": True}
 
 @app.get("/api/transactions")
@@ -297,15 +293,11 @@ async def push_result(body: PushBody):
     await manager.broadcast({"type": "market_update", "price": mapped.get("price", 0),
                              "htf_bias": mapped.get("htf_bias", {}),
                              "nearest_ob": mapped.get("nearest_ob", {})})
-    # Use bot-provided stats if available, else fall back to local DB
-    if "today" in stats_cache:
-        stats = stats_cache["today"]
-    else:
-        try:
-            from agents.trade_log import get_dashboard_stats
-            stats = get_dashboard_stats()
-        except Exception:
-            pass
+    try:
+        from agents.trade_log import get_dashboard_stats
+        stats = get_dashboard_stats()
+    except Exception:
+        pass
     await manager.broadcast({"type": "stats", "data": stats})
     await asyncio.sleep(3)
     await manager.broadcast({"type": "scan_phase", "phase": "idle"})
