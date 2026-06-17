@@ -441,7 +441,7 @@ def get_session() -> dict:
     return {
         "session": name,
         "emoji": emoji,
-        "tradeable": is_london or is_ny or is_tokyo,  # London + NY + Tokyo
+        "tradeable": is_london or is_ny or is_tokyo or is_sydney,  # London + NY + Tokyo + Sydney
         "is_london": is_london,
         "is_ny": is_ny,
         "is_overlap": is_overlap,
