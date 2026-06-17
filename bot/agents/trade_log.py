@@ -430,6 +430,21 @@ def get_mt5_summary(days: int = 30) -> dict:
     }
 
 
+def get_recent_transactions(limit: int = 15) -> list[dict]:
+    """ดึง mt5_transactions ล่าสุด — ใช้กับคำสั่ง /tx"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT ticket, trade_id, direction, pnl_pips, net_usd,
+               open_price, close_price, close_time
+        FROM mt5_transactions
+        ORDER BY id DESC LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def update_outcome(trade_id: int, outcome: str,
                    pnl_pips: float = None,
                    actual_entry: float = None,

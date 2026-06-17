@@ -1913,22 +1913,35 @@ def _run_mt5_sync(hours: int = 24) -> dict:
     from datetime import datetime
 
     closed = mt5_executor.get_closed_positions(hours)
+    found_tickets = [p["position_id"] for p in closed]
     newly = []
+    skipped_tickets = []
     for pos in closed:
         ticket = pos["position_id"]
         if transaction_exists(ticket):
+            skipped_tickets.append(ticket)
             continue
-        direction = pos["direction"] or "BUY"
+        direction = pos["direction"]
         open_px   = pos["open_price"]
         close_px  = pos["close_price"]
+
+        trade = find_trade_by_ticket(ticket)
+        trade_id = trade["id"] if trade else None
+
+        # fallback: ถ้า MT5 open deal หาย → ใช้ราคา/ทิศจาก trades table
+        if trade:
+            if open_px is None:
+                open_px = trade.get("actual_entry") or trade.get("entry_low")
+            if direction is None:
+                direction = trade.get("signal")
+        direction = direction or "BUY"
+
         if open_px is None or close_px is None:
+            print(f"[mt5_sync] skip ticket={ticket} — open_px/close_px หาย (open={open_px} close={close_px})")
             continue
         pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
         pnl_pips = round(pnl_raw * 10, 1)
         outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
-
-        trade = find_trade_by_ticket(ticket)
-        trade_id = trade["id"] if trade else None
         if trade and trade.get("outcome") is None:
             dur = None
             if pos["open_time"] and pos["close_time"]:
@@ -1952,7 +1965,8 @@ def _run_mt5_sync(hours: int = 24) -> dict:
             "ticket": ticket, "dir": direction, "trade_id": trade_id,
             "pips": pnl_pips, "outcome": outcome, "net": net,
         })
-    return {"newly": newly, "total_closed": len(closed)}
+    return {"newly": newly, "total_closed": len(closed),
+            "found_tickets": found_tickets, "skipped_tickets": skipped_tickets}
 
 
 def _fmt_sync_result(newly: list) -> str:
@@ -1997,15 +2011,37 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, 48)
         newly = res["newly"]
+        # debug: แสดง position_id ที่ MT5 ดึงมาได้ (เทียบกับ MT5 History)
+        found = res.get("found_tickets", [])
+        dbg = (f"\n\n🔍 MT5 ดึง closed positions = {len(found)}\n"
+               f"tickets: `{', '.join(str(t) for t in found[-12:])}`")
         if not newly:
             await update.message.reply_text(
-                f"✅ ไม่มี transaction ใหม่\n"
-                f"(closed positions ใน 48 ชม. = {res['total_closed']} — เก็บครบแล้ว)"
+                f"✅ ไม่มี transaction ใหม่ (เก็บครบแล้ว {res['total_closed']} ไม้ใน 48 ชม.)"
+                f"{dbg}",
+                parse_mode="Markdown",
             )
             return
-        await update.message.reply_text(_fmt_sync_result(newly), parse_mode="Markdown")
+        await update.message.reply_text(_fmt_sync_result(newly) + dbg, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Sync error: `{e}`", parse_mode="Markdown")
+
+
+async def cmd_tx(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/tx — ดู MT5 transactions ล่าสุดที่เก็บใน DB"""
+    from agents.trade_log import get_recent_transactions
+    txs = get_recent_transactions(15)
+    if not txs:
+        await update.message.reply_text("ℹ️ ยังไม่มี transaction ใน DB — ลอง /sync")
+        return
+    lines = ["💼 *MT5 Transactions ล่าสุด*", "━━━━━━━━━━━━━━━━━"]
+    for t in txs:
+        icon = "✅" if (t["pnl_pips"] or 0) > 0 else "❌" if (t["pnl_pips"] or 0) < 0 else "➖"
+        tid = f"#{t['trade_id']}" if t["trade_id"] else f"T#{t['ticket']}"
+        ct  = (t["close_time"] or "")[5:16]
+        net = f"${t['net_usd']:+.2f}" if t["net_usd"] is not None else "?"
+        lines.append(f"{icon} {tid} {t['direction']} `{t['pnl_pips']:+.1f}p` net `{net}` _{ct}_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
@@ -2502,6 +2538,7 @@ def run():
     app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("mt5import", cmd_mt5import))
     app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("tx", cmd_tx))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
