@@ -50,6 +50,7 @@
       const d = await r.json();
       if (!d.error) stats = d;
     } catch(e) {}
+    if (rightTab === 'trades') fetchTransactions(p);
   }
 
   // Ask agents
@@ -57,6 +58,35 @@
   let askLoading = false;
   let messages = [{ role:'ai', text:'สวัสดีครับ — พร้อมแล้ว' }];
   let msgsEl;
+
+  // Right column tab
+  let rightTab = 'scans';  // 'scans' | 'trades'
+  let transactions = [];
+  let txLoading = false;
+
+  async function fetchTransactions(period = activePeriod) {
+    if (txLoading) return;
+    txLoading = true;
+    try {
+      const r = await fetch(`/api/transactions?period=${period}`);
+      const d = await r.json();
+      if (d.transactions) transactions = d.transactions.slice().reverse();
+    } catch(e) {}
+    txLoading = false;
+  }
+  function switchRightTab(tab) {
+    rightTab = tab;
+    if (tab === 'trades' && transactions.length === 0) fetchTransactions();
+  }
+  function fmtTxTime(ts) {
+    if (!ts) return '—';
+    // "2026-06-17 10:30:00" → "10:30"
+    return ts.length >= 16 ? ts.slice(11, 16) : ts;
+  }
+  function fmtTxDate(ts) {
+    if (!ts) return '';
+    return ts.length >= 10 ? ts.slice(5, 10) : ts;
+  }
 
   // ── Live market data ───────────────────────────────────────────────────────
   let price = 0;
@@ -586,7 +616,13 @@
         <button class="sendbtn" on:click={sendAsk}>Send</button>
       </div>
 
-      <div class="sh">SCAN HISTORY</div>
+      <!-- Scan / Trades tab header -->
+      <div class="rtab-hdr">
+        <button class="rtab" class:rtab-on={rightTab==='scans'} on:click={()=>switchRightTab('scans')}>SCANS</button>
+        <button class="rtab" class:rtab-on={rightTab==='trades'} on:click={()=>switchRightTab('trades')}>TRADES</button>
+      </div>
+
+      {#if rightTab === 'scans'}
       <div class="slog">
         {#if !scanLog.length}
           <div style="font-size:10px;color:#374151;padding:8px">No scans yet</div>
@@ -598,6 +634,34 @@
           </div>
         {/each}
       </div>
+      {:else}
+      <div class="slog">
+        {#if txLoading}
+          <div style="font-size:10px;color:#374151;padding:8px">Loading…</div>
+        {:else if !transactions.length}
+          <div style="font-size:10px;color:#374151;padding:8px">No transactions for {activePeriod}</div>
+        {:else}
+          {#each transactions as tx}
+            {@const win = (tx.net_usd ?? tx.pnl_pips ?? 0) > 0}
+            {@const be  = (tx.net_usd ?? tx.pnl_pips ?? 0) === 0}
+            <div class="sli" class:sli-ok={win} class:sli-be={be} class:sli-no={!win && !be}>
+              <div class="sli-top">
+                <span>{fmtTxDate(tx.close_time ?? tx.timestamp)} {fmtTxTime(tx.close_time ?? tx.timestamp)}</span>
+                <span style="margin-left:5px;font-weight:700">{tx.direction ?? '—'}</span>
+                {#if tx.lot}<span style="font-size:9px;opacity:.7"> {tx.lot}L</span>{/if}
+              </div>
+              <div class="sli-sub" style="display:flex;justify-content:space-between">
+                <span>{tx.open_price ?? '—'} → {tx.close_price ?? '—'}</span>
+                <span style="font-weight:600">
+                  {#if tx.pnl_pips != null}{(tx.pnl_pips >= 0 ? '+' : '')}{tx.pnl_pips}p{/if}
+                  &nbsp;{(tx.net_usd >= 0 ? '+' : '')}${(tx.net_usd ?? 0).toFixed(2)}
+                </span>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
+      {/if}
 
       <div class="foot">{todayStr()} · {sessStr} {timeStr}</div>
 
@@ -679,12 +743,6 @@
 
   /* ── CENTER ──────────────────────────────────────────────── */
   .ccol{display:flex;flex-direction:column;overflow:hidden;background:#0a0604}
-  .rt-hdr{
-    font-size:9px;font-weight:600;letter-spacing:.1em;color:#4b5563;
-    text-align:center;padding:5px;text-transform:uppercase;
-    border-bottom:1px solid rgba(255,255,255,.05);flex-shrink:0;
-    background:#0f0f17;
-  }
 
   /* war room */
   .vr-wrap{flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:0}
@@ -755,6 +813,16 @@
   .cin input:focus{border-color:#3b82f6}
   .sendbtn{padding:5px 10px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;font-size:10.5px;cursor:pointer;white-space:nowrap}
 
+  /* ── Right: tab bar ─────────────────────────────────────── */
+  .rtab-hdr{display:flex;gap:0;border-bottom:1px solid rgba(255,255,255,.07);flex-shrink:0}
+  .rtab{
+    flex:1;padding:5px 0;font-size:9px;font-weight:600;letter-spacing:.07em;
+    text-transform:uppercase;background:transparent;border:none;
+    color:#4b5563;cursor:pointer;border-bottom:2px solid transparent;
+  }
+  .rtab:hover{color:#9ca3af}
+  .rtab-on{color:#d97706;border-bottom-color:#d97706}
+
   .slog{flex:1;overflow-y:auto;padding:5px 8px;min-height:0}
   .slog::-webkit-scrollbar{width:3px}
   .slog::-webkit-scrollbar-thumb{background:#2a2a35;border-radius:99px}
@@ -765,6 +833,8 @@
   .sli-ok .sli-top{color:#86efac}
   .sli-no{background:rgba(220,38,38,.1);border:0.5px solid rgba(220,38,38,.25);color:#f87171}
   .sli-no .sli-top{color:#fca5a5}
+  .sli-be{background:rgba(107,114,128,.12);border:0.5px solid rgba(107,114,128,.25);color:#9ca3af}
+  .sli-be .sli-top{color:#d1d5db}
 
   .foot{padding:5px 10px;font-size:9px;color:#374151;border-top:1px solid rgba(255,255,255,.05);flex-shrink:0;background:#0c0c14}
 

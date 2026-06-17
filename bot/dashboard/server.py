@@ -112,6 +112,8 @@ htf_bias: dict = {"overall": "?", "h4": "?", "h1": "?", "daily": "?"}
 nearest_ob: dict = {"type": "?", "lo": 0.0, "hi": 0.0, "dist": 0}
 # Stats cache per period — populated by bot push (Windows DB), fallback to local DB
 stats_cache: dict = {}  # {"today": {...}, "week": {...}, ...}
+# Transaction cache per period — populated by bot push
+transactions_cache: dict = {}  # {"today": [...], "week": [...], ...}
 
 GATHER_MSGS = {
     "supervisor":    "Knights, to the table!",
@@ -200,17 +202,32 @@ def get_stats_period(period: str = "today"):
         return {"error": str(e)}
 
 class StatsSyncBody(BaseModel):
-    stats_all: dict  # {period: stats_dict} from bot's DB
+    stats_all: dict           # {period: stats_dict} from bot's DB
+    transactions_all: dict = {}  # {period: list of tx dicts}
 
 @app.post("/api/stats-sync")
 async def stats_sync(body: StatsSyncBody):
     """Bot pushes all-period stats without a scan (startup, periodic refresh)."""
-    global stats, stats_cache
+    global stats, stats_cache, transactions_cache
     stats_cache.update(body.stats_all)
+    if body.transactions_all:
+        transactions_cache.update(body.transactions_all)
     if "today" in body.stats_all:
         stats = body.stats_all["today"]
         await manager.broadcast({"type": "stats", "data": stats})
     return {"ok": True}
+
+@app.get("/api/transactions")
+def get_transactions(period: str = "today"):
+    """Return MT5 transaction list for a period. Prefers bot-pushed cache."""
+    if period in transactions_cache:
+        return {"transactions": transactions_cache[period], "period": period}
+    try:
+        from agents.trade_log import get_transactions_by_period
+        data = get_transactions_by_period(period)
+        return {"transactions": data["txs"], "period": period}
+    except Exception as e:
+        return {"transactions": [], "error": str(e)}
 
 @app.post("/api/refresh-stats")
 async def refresh_stats():
@@ -257,15 +274,18 @@ class AskBody(BaseModel):
 class PushBody(BaseModel):
     result: dict            # raw supervisor.run() output
     stats_all: dict = {}   # {period: stats_dict} from bot's Windows DB
+    transactions_all: dict = {}  # {period: list of tx dicts}
 
 @app.post("/api/push")
 async def push_result(body: PushBody):
     """Bot calls this after every supervisor.run() to update dashboard live."""
-    global latest_signal, scan_log, stats, scan_running, stats_cache
+    global latest_signal, scan_log, stats, scan_running, stats_cache, transactions_cache
     scan_running = False  # unblock Scan Now button
     # Cache bot-provided stats (from Windows DB) — used for all periods
     if body.stats_all:
         stats_cache.update(body.stats_all)
+    if body.transactions_all:
+        transactions_cache.update(body.transactions_all)
     mapped = _map_supervisor_result(body.result)
     sig = mapped["signal"]
     latest_signal = sig
