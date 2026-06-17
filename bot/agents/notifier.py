@@ -39,17 +39,23 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 DASHBOARD_URL = "http://localhost:8000"
 
 def _sync_stats_to_dashboard():
-    """Push all-period stats to dashboard (best-effort, no scan required)."""
+    """Push all-period stats + transactions to dashboard (best-effort, no scan required)."""
     try:
         import urllib.request
-        from agents.trade_log import get_dashboard_stats
+        from agents.trade_log import get_dashboard_stats, get_transactions_by_period
         stats_all = {}
+        transactions_all = {}
         for period in ("today", "week", "month", "year", "all"):
             try:
                 stats_all[period] = get_dashboard_stats(period)
             except Exception:
                 pass
-        data = json.dumps({"stats_all": stats_all}).encode()
+            try:
+                tx_data = get_transactions_by_period(period)
+                transactions_all[period] = tx_data["txs"]
+            except Exception:
+                pass
+        data = json.dumps({"stats_all": stats_all, "transactions_all": transactions_all}).encode()
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/stats-sync",
             data=data, headers={"Content-Type": "application/json"}, method="POST"
@@ -59,17 +65,23 @@ def _sync_stats_to_dashboard():
         pass
 
 def _push_to_dashboard(result: dict):
-    """Push supervisor result + live stats to War Room dashboard (best-effort)."""
+    """Push supervisor result + live stats + transactions to War Room dashboard (best-effort)."""
     try:
         import urllib.request
-        from agents.trade_log import get_dashboard_stats
+        from agents.trade_log import get_dashboard_stats, get_transactions_by_period
         stats_all = {}
+        transactions_all = {}
         for period in ("today", "week", "month", "year", "all"):
             try:
                 stats_all[period] = get_dashboard_stats(period)
             except Exception:
                 pass
-        data = json.dumps({"result": result, "stats_all": stats_all}).encode()
+            try:
+                tx_data = get_transactions_by_period(period)
+                transactions_all[period] = tx_data["txs"]
+            except Exception:
+                pass
+        data = json.dumps({"result": result, "stats_all": stats_all, "transactions_all": transactions_all}).encode()
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/push",
             data=data, headers={"Content-Type": "application/json"}, method="POST"
@@ -107,47 +119,47 @@ bot_state = state_manager.load()
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg1 = (
-        "🏢 *SmartAgentTrade* พร้อมแล้ว!\n\n"
-        "📡 *Analysis*\n"
+        "🏢 <b>SmartAgentTrade</b> พร้อมแล้ว!\n\n"
+        "📡 <b>Analysis</b>\n"
         "/scan — สแกนหา setup (auto-execute ถ้าผ่าน) · 7 windows/day\n"
         "/testscan — ดู vote ทุก agent โดยไม่เปิด trade\n"
         "/ob — ดู Bull OB / Bear OB ปัจจุบัน (M5 + M15)\n"
         "/bias — ดู HTF direction H1/H4/Daily\n"
         "/news — เช็คข่าว Economic Calendar + ข่าวถัดไป\n\n"
-        "⚙️ *Control*\n"
+        "⚙️ <b>Control</b>\n"
         "/status — ดูสถานะ bot + win/loss summary\n"
         "/mt5 — ดู MT5 account balance + open positions\n"
         "/posguard — ดู POS Guard config + force check\n"
         "/pause — หยุด auto-scan ชั่วคราว\n"
         "/resume — เริ่ม auto-scan ใหม่\n"
-        "/closetrade [exit\\_price] — ปิด trailing monitor + บันทึกผล\n\n"
-        "📊 *Report & P&L*\n"
-        "/report — สรุป trade จริง + P&L รายวัน\n"
-        "/txreport [today|week|month|year] — MT5 transactions + net P&L แยกช่วง\n"
+        "/closetrade &lt;exit_price&gt; — ปิด trailing monitor + บันทึกผล\n\n"
+        "📊 <b>Report &amp; P&amp;L</b>\n"
+        "/report — สรุป trade จริง + P&amp;L รายวัน\n"
+        "/txreport today|week|month|year — MT5 transactions + net P&amp;L\n"
         "/tx — transactions ล่าสุด 15 รายการ\n"
         "/trades — ดู trade log ทั้งหมด\n"
         "/pending — trades ที่ยังรอบันทึก outcome\n"
-        "/pnl — สรุป P&L + win rate (paper trade)\n"
+        "/pnl — สรุป P&amp;L + win rate (paper trade)\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
     )
     msg2 = (
-        "🗂 *Data & Sync*\n"
+        "🗂 <b>Data &amp; Sync</b>\n"
         "/sync — sync MT5 transactions ทันที (debug)\n"
-        "/outcome [id] [win/loss/be] [จุด] [exit] — บันทึกผลหลังเทรด\n"
+        "/outcome &lt;id&gt; &lt;win|loss|be&gt; &lt;จุด&gt; &lt;exit&gt; — บันทึกผลหลังเทรด\n"
         "/backfill — ดึง MT5 deal history แล้ว match กับ pending trades\n"
-        "/mt5import [days] — import MT5 closed trades เข้า DB\n\n"
-        "🧮 *Tools*\n"
-        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry scale-in\n"
-        "/ask [คำถาม] — ถาม AI อะไรก็ได้เกี่ยวกับตลาด\n\n"
-        "📝 *Paper Trade*\n"
+        "/mt5import &lt;days&gt; — import MT5 closed trades เข้า DB\n\n"
+        "🧮 <b>Tools</b>\n"
+        "/scalein &lt;top&gt; &lt;bot&gt; &lt;bull|bear&gt; &lt;balance&gt; — คำนวณ entry scale-in\n"
+        "/ask &lt;คำถาม&gt; — ถาม AI อะไรก็ได้เกี่ยวกับตลาด\n\n"
+        "📝 <b>Paper Trade</b>\n"
         "/paper buy 3300 sl 3280 tp 3340 — เปิด Long\n"
         "/paper sell 3350 sl 3370 tp 3300 — เปิด Short\n"
         "/paper status — ดู open paper trades\n"
-        "/paper close [id] [price] — ปิด paper trade\n\n"
+        "/paper close &lt;id&gt; &lt;price&gt; — ปิด paper trade\n\n"
         "💬 หรือพิมข้อความถามได้เลยครับ 🤖"
     )
-    await update.message.reply_text(msg1, parse_mode="Markdown")
-    await update.message.reply_text(msg2, parse_mode="Markdown")
+    await update.message.reply_text(msg1, parse_mode="HTML")
+    await update.message.reply_text(msg2, parse_mode="HTML")
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
@@ -1283,24 +1295,24 @@ async def _handle_scan_result(result: dict, send_fn):
             ob_bottom = entry_raw2[0] if isinstance(entry_raw2, list) else entry_price
             setup_type_now = signal.get("setup_type", "")
 
-            # BULL/BEAR_OB_ENTRY = รอ pullback ถึง OB จริงๆ → threshold แคบ (5 pts)
+            # ทุก setup ที่มีชื่อ "OB" = ต้องรอให้ราคาถึง OB ก่อน → threshold แคบ (10 pts)
             # setup อื่น เช่น SWEEP_REJECT = เข้าได้ทันที → threshold กว้าง (25 pts)
-            FAR_THRESHOLD = 5 if "OB_ENTRY" in setup_type_now else 25
+            FAR_THRESHOLD = 10 if "OB" in setup_type_now else 25
 
             if direction == "BUY" and (current_mkt - ob_top) > FAR_THRESHOLD:
                 dist_usd = round(current_mkt - ob_top, 2)
                 entry_far = True
                 entry_far_msg = (
-                    f"⏳ *รอ Pullback*\n"
-                    f"ราคาตลาด `{current_mkt}` สูงกว่า OB top `{ob_top}` อยู่ `${dist_usd}`\n"
+                    f"⏳ *รอ Pullback — ราคายังไม่ถึง OB*\n"
+                    f"ราคาตลาด `{current_mkt}` สูงกว่า OB top `{ob_top}` อยู่ `${dist_usd}` ({round(dist_usd*10)}p)\n"
                     f"_ตั้ง BUY LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาลงมาถึงก่อน_"
                 )
             elif direction == "SELL" and (ob_bottom - current_mkt) > FAR_THRESHOLD:
                 dist_usd = round(ob_bottom - current_mkt, 2)
                 entry_far = True
                 entry_far_msg = (
-                    f"⏳ *รอ Rally*\n"
-                    f"ราคาตลาด `{current_mkt}` ต่ำกว่า OB bottom `{ob_bottom}` อยู่ `${dist_usd}`\n"
+                    f"⏳ *รอ Rally — ราคายังไม่ถึง OB*\n"
+                    f"ราคาตลาด `{current_mkt}` ต่ำกว่า OB bottom `{ob_bottom}` อยู่ `${dist_usd}` ({round(dist_usd*10)}p)\n"
                     f"_ตั้ง SELL LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาขึ้นมาถึงก่อน_"
                 )
 
