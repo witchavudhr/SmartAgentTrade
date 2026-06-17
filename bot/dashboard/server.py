@@ -186,6 +186,18 @@ def get_debug():
         result["error"] = str(e)
     return result
 
+@app.get("/api/debug-mt5")
+def debug_mt5():
+    try:
+        from agents.trade_log import DB_PATH
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("SELECT ticket, close_time, net_usd FROM mt5_transactions ORDER BY id DESC LIMIT 10").fetchall()
+        conn.close()
+        return {"db": str(DB_PATH), "rows": [{"ticket": r[0], "close_time": r[1], "net_usd": r[2]} for r in rows]}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/stats")
 def get_stats_period(period: str = "today"):
     """Return stats for a specific period: today|week|month|year|all — always read DB directly"""
