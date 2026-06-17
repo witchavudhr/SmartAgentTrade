@@ -2297,9 +2297,8 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                 # MT5 connect ล้มเหลว — skip ครั้งนี้ อย่า false-detect ว่าปิดแล้ว
                 return
             open_tickets = {p["ticket"] for p in positions}
-            is_closed = ticket and int(ticket) not in open_tickets
-            if not is_closed and not ticket and not positions:
-                is_closed = True
+            # ถ้า trade ยังไม่มี MT5 ticket (รอ OB zone) → ข้ามไป ไม่ใช่ปิดแล้ว
+            is_closed = bool(ticket and int(ticket) not in open_tickets)
 
             if is_closed:
                 trade_id  = ot.get("trade_id")

@@ -468,6 +468,8 @@ MARKET DATA
   Sweep Low:   {adv.get('recent_sweep_low','–')} ({sweep_l_age} bars ago)
   Sweep High:  {adv.get('recent_sweep_high','–')} ({sweep_h_age} bars ago)
   Confirm:     Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
+  Recent High (5-bar): {adv.get('recent_high_5','?')}  ← sweep candle high — ใช้เป็น SL reference ฝั่ง SELL
+  Recent Low  (5-bar): {adv.get('recent_low_5','?')}   ← sweep candle low  — ใช้เป็น SL reference ฝั่ง BUY
   {momentum_warn}
 
 ⭐ OB Confluence (M5 ∩ M15):
@@ -659,6 +661,13 @@ STEP 3 — ตัดสินใจและโหวต
 9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
 10. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
+⛔ กฎ SL (บังคับ — ห้ามวาง SL แน่นเกิน):
+  SELL: stop_loss ต้องสูงกว่า recent_high_5 (sweep candle high) + 0.5 เสมอ
+        ถ้า recent_high_5 > ob_top → ใช้ recent_high_5 + 0.5 เป็น SL
+        ถ้า recent_high_5 ≤ ob_top → ใช้ ob_top + 0.5 เป็น SL อย่างน้อย
+  BUY:  stop_loss ต้องต่ำกว่า recent_low_5 (sweep candle low) - 0.5 เสมอ
+        เหตุผล: market ดูด liquidity (sweep) ก่อน reverse — SL ต้องพ้น sweep wick
+
 ตอบ JSON เท่านั้น:
 {{
   "vote": "YES/NO",
@@ -714,6 +723,24 @@ STEP 3 — ตัดสินใจและโหวต
 
     result["bull_ob_zone"] = _ob_zone(primary_bull_ob)
     result["bear_ob_zone"] = _ob_zone(primary_bear_ob)
+
+    # ── SL safety fallback: ต้องพ้น sweep wick เสมอ ──────────────────
+    sig = result.get("signal")
+    sl  = result.get("stop_loss")
+    if sig == "SELL" and sl:
+        h5 = adv.get("recent_high_5") or (primary_bear_ob or {}).get("top")
+        if h5:
+            min_sl = round(h5 + 0.5, 2)
+            if sl < min_sl:
+                print(f"[ChartAnalyst] SL adjusted {sl}→{min_sl} (above sweep high {h5})")
+                result["stop_loss"] = min_sl
+    elif sig == "BUY" and sl:
+        l5 = adv.get("recent_low_5") or (primary_bull_ob or {}).get("bottom")
+        if l5:
+            max_sl = round(l5 - 0.5, 2)
+            if sl > max_sl:
+                print(f"[ChartAnalyst] SL adjusted {sl}→{max_sl} (below sweep low {l5})")
+                result["stop_loss"] = max_sl
 
     return result
 

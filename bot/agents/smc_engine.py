@@ -740,6 +740,10 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
         "in_bull_ob": in_bull_ob,
         "in_bear_ob": in_bear_ob,
 
+        # Recent candle high/low (5-bar) — sweep reference for SL placement
+        "recent_high_5": round(recent_high_5, 2),
+        "recent_low_5":  round(recent_low_5,  2),
+
         # Signal
         "long_signal":  long_sig,
         "short_signal": short_sig,
