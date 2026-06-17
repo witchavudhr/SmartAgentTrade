@@ -1845,6 +1845,41 @@ async def cmd_closetrade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+    # ── Re-scan ทันทีหลังปิดไม้ด้วยมือ ──────────────────────
+    if bot_state.get("is_running"):
+        await _rescan_after_close(ctx)
+
+
+async def _rescan_after_close(ctx: ContextTypes.DEFAULT_TYPE):
+    """Re-scan ทันทีหลังไม้ปิด — หา setup ใหม่ทันที ไม่ต้องรอ window ถัดไป"""
+    try:
+        # ไม่ scan ถ้ามีข่าว High Impact
+        blocked, block_reason = news_scout.should_block_trade()
+        if blocked:
+            print(f"[rescan] 📰 News block — {block_reason}")
+            await ctx.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"📰 *Skip re-scan — ข่าว High Impact*\n_{block_reason}_",
+                parse_mode="Markdown",
+            )
+            return
+
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text="🔄 *Re-scan หลังไม้ปิด* — กำลังหา setup ใหม่...",
+            parse_mode="Markdown",
+        )
+        result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
+        log_scan(result)
+        _push_to_dashboard(result)
+
+        async def send(text, **kw):
+            await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
+
+        await _handle_scan_result(result, send)
+    except Exception as e:
+        print(f"[rescan] error: {e}")
+
 
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     """
@@ -1872,11 +1907,14 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                 outcome   = None
                 close_px  = None
 
+                deal = None
                 if ticket:
                     deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
-                else:
-                    # fallback: ไม่รู้ ticket → หา deal ล่าสุดของ XAUUSD ใน 4 ชั่วโมงที่ผ่านมา
+                # fallback: ticket lookup ล้มเหลว หรือไม่มี ticket → หา deal ล่าสุดของ XAUUSD
+                if not deal:
                     deal = mt5_executor.get_latest_closed_deal(hours=4)
+                    if deal and ticket:
+                        print(f"[trade_monitor] ticket={ticket} lookup ล้มเหลว → ใช้ latest deal fallback")
                 if deal:
                     close_px = deal["close_price"]
                     pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
@@ -1910,6 +1948,11 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                     ),
                     parse_mode="Markdown",
                 )
+
+                # ── Re-scan ทันทีหลังไม้ปิด — หา setup ใหม่ ──────────
+                if bot_state.get("is_running"):
+                    await _rescan_after_close(ctx)
+
                 return  # ไม่ต้อง monitor ต่อ
         except Exception as e:
             print(f"[trade_monitor] auto-close detect error: {e}")
