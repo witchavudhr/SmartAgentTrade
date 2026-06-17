@@ -1902,92 +1902,110 @@ async def _rescan_after_close(ctx: ContextTypes.DEFAULT_TYPE):
         print(f"[rescan] error: {e}")
 
 
+def _run_mt5_sync(hours: int = 24) -> dict:
+    """Core MT5 sync — ดึง closed positions แล้วเก็บ transaction + outcome
+    คืน {"newly": [...], "total_closed": N, "error": str|None} (sync, ไม่ส่ง Telegram)
+    """
+    from agents.trade_log import (
+        transaction_exists, find_trade_by_ticket,
+        log_mt5_transaction, update_outcome,
+    )
+    from datetime import datetime
+
+    closed = mt5_executor.get_closed_positions(hours)
+    newly = []
+    for pos in closed:
+        ticket = pos["position_id"]
+        if transaction_exists(ticket):
+            continue
+        direction = pos["direction"] or "BUY"
+        open_px   = pos["open_price"]
+        close_px  = pos["close_price"]
+        if open_px is None or close_px is None:
+            continue
+        pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
+        pnl_pips = round(pnl_raw * 10, 1)
+        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+
+        trade = find_trade_by_ticket(ticket)
+        trade_id = trade["id"] if trade else None
+        if trade and trade.get("outcome") is None:
+            dur = None
+            if pos["open_time"] and pos["close_time"]:
+                dur = int((pos["close_time"] - pos["open_time"]) / 60)
+            update_outcome(trade_id, outcome, pnl_pips,
+                           actual_entry=open_px, actual_exit=close_px,
+                           duration_min=dur)
+
+        deal = {
+            "close_price": close_px, "ticket": ticket,
+            "profit": pos["profit"], "commission": pos["commission"],
+            "swap": pos["swap"], "time": pos["close_time"],
+        }
+        ot = {
+            "entry": open_px, "lot": pos["volume"], "mt5_ticket": ticket,
+            "pair": pos["symbol"],
+            "opened_at": datetime.fromtimestamp(pos["open_time"]).strftime("%Y-%m-%d %H:%M:%S") if pos["open_time"] else None,
+        }
+        net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
+        newly.append({
+            "ticket": ticket, "dir": direction, "trade_id": trade_id,
+            "pips": pnl_pips, "outcome": outcome, "net": net,
+        })
+    return {"newly": newly, "total_closed": len(closed)}
+
+
+def _fmt_sync_result(newly: list) -> str:
+    lines = ["📥 *MT5 Sync — เก็บ transaction ใหม่*", "━━━━━━━━━━━━━━━━━"]
+    for n in newly:
+        icon = "✅" if n["outcome"] == "win" else "❌" if n["outcome"] == "loss" else "➖"
+        tid = f"#{n['trade_id']}" if n["trade_id"] else f"T#{n['ticket']}"
+        net_s = f" | net `${n['net']:+.2f}`" if n["net"] is not None else ""
+        lines.append(f"{icon} {tid} {n['dir']} `{n['pips']:+.1f}p`{net_s}")
+    return "\n".join(lines)
+
+
 async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Background sync ทุก 3 นาที — ดึง closed positions จาก MT5 history
-    แล้วเก็บ transaction + อัปเดต outcome ของทุกไม้ที่ยังไม่บันทึก
-    รับประกันว่าเก็บครบทุกไม้ แม้ auto-close ตอนปิดจะจับพลาด
-    """
+    """Background sync ทุก 3 นาที — เก็บ transaction ครบทุกไม้ แม้ auto-close จับพลาด"""
     if not mt5_executor.is_available():
         return
     try:
-        from agents.trade_log import (
-            transaction_exists, find_trade_by_ticket,
-            log_mt5_transaction, update_outcome,
-        )
-        from datetime import datetime
-
-        closed = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: mt5_executor.get_closed_positions(24)
-        )
-        if not closed:
+        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, 24)
+        newly = res["newly"]
+        if not newly:
             return
-
-        newly = []
-        for pos in closed:
-            ticket = pos["position_id"]
-            if transaction_exists(ticket):
-                continue  # เก็บแล้ว ข้าม
-
-            direction = pos["direction"] or "BUY"
-            open_px   = pos["open_price"]
-            close_px  = pos["close_price"]
-            if open_px is None or close_px is None:
-                continue
-            pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
-            pnl_pips = round(pnl_raw * 10, 1)
-            outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
-
-            # หา trade row ที่ผูกกับ ticket นี้
-            trade = find_trade_by_ticket(ticket)
-            trade_id = trade["id"] if trade else None
-
-            # อัปเดต outcome ถ้ายัง NULL
-            if trade and trade.get("outcome") is None:
-                dur = None
-                if pos["open_time"] and pos["close_time"]:
-                    dur = int((pos["close_time"] - pos["open_time"]) / 60)
-                update_outcome(trade_id, outcome, pnl_pips,
-                               actual_entry=open_px, actual_exit=close_px,
-                               duration_min=dur)
-
-            # บันทึก transaction (กันซ้ำด้วย transaction_exists แล้ว)
-            deal = {
-                "close_price": close_px, "ticket": ticket,
-                "profit": pos["profit"], "commission": pos["commission"],
-                "swap": pos["swap"], "time": pos["close_time"],
-            }
-            ot = {
-                "entry": open_px, "lot": pos["volume"], "mt5_ticket": ticket,
-                "pair": pos["symbol"],
-                "opened_at": datetime.fromtimestamp(pos["open_time"]).strftime("%Y-%m-%d %H:%M:%S") if pos["open_time"] else None,
-            }
-            net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
-            newly.append({
-                "ticket": ticket, "dir": direction, "trade_id": trade_id,
-                "pips": pnl_pips, "outcome": outcome, "net": net,
-            })
-
-        if newly:
-            # state cleanup ถ้าไม้ที่เปิดอยู่เพิ่งถูก sync ว่าปิดแล้ว
-            ot_state = bot_state.get("open_trade")
-            if ot_state:
-                st_ticket = ot_state.get("mt5_ticket")
-                if st_ticket and any(n["ticket"] == int(st_ticket) for n in newly):
-                    state_manager.set_field(bot_state, "open_trade", None)
-
-            lines = ["📥 *MT5 Sync — เก็บ transaction ใหม่*", "━━━━━━━━━━━━━━━━━"]
-            for n in newly:
-                icon = "✅" if n["outcome"] == "win" else "❌" if n["outcome"] == "loss" else "➖"
-                tid = f"#{n['trade_id']}" if n["trade_id"] else f"T#{n['ticket']}"
-                net_s = f" | net `${n['net']:+.2f}`" if n["net"] is not None else ""
-                lines.append(f"{icon} {tid} {n['dir']} `{n['pips']:+.1f}p`{net_s}")
-            await ctx.bot.send_message(
-                chat_id=TELEGRAM_CHAT_ID, text="\n".join(lines), parse_mode="Markdown"
-            )
-            print(f"[mt5_sync] captured {len(newly)} new transactions")
+        # state cleanup ถ้าไม้ที่เปิดอยู่เพิ่งถูก sync ว่าปิดแล้ว
+        ot_state = bot_state.get("open_trade")
+        if ot_state:
+            st_ticket = ot_state.get("mt5_ticket")
+            if st_ticket and any(n["ticket"] == int(st_ticket) for n in newly):
+                state_manager.set_field(bot_state, "open_trade", None)
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID, text=_fmt_sync_result(newly), parse_mode="Markdown"
+        )
+        print(f"[mt5_sync] captured {len(newly)} new transactions")
     except Exception as e:
         print(f"[mt5_sync] error: {e}")
+
+
+async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/sync — ดึง closed positions จาก MT5 มาเก็บ transaction ทันที (manual trigger)"""
+    if not mt5_executor.is_available():
+        await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม")
+        return
+    await update.message.reply_text("🔄 กำลัง sync MT5 transactions...")
+    try:
+        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, 48)
+        newly = res["newly"]
+        if not newly:
+            await update.message.reply_text(
+                f"✅ ไม่มี transaction ใหม่\n"
+                f"(closed positions ใน 48 ชม. = {res['total_closed']} — เก็บครบแล้ว)"
+            )
+            return
+        await update.message.reply_text(_fmt_sync_result(newly), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Sync error: `{e}`", parse_mode="Markdown")
 
 
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
@@ -2483,6 +2501,7 @@ def run():
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("mt5import", cmd_mt5import))
+    app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
