@@ -190,8 +190,15 @@ def get_debug():
 def get_stats_period(period: str = "today"):
     """Return stats for a specific period: today|week|month|year|all — always read DB directly"""
     try:
-        from agents.trade_log import get_dashboard_stats
-        return get_dashboard_stats(period)
+        from agents.trade_log import get_dashboard_stats, DB_PATH
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        count = conn.execute("SELECT COUNT(*) FROM mt5_transactions").fetchone()[0]
+        conn.close()
+        result = get_dashboard_stats(period)
+        result["_debug_db"] = str(DB_PATH)
+        result["_debug_mt5_count"] = count
+        return result
     except Exception as e:
         return {"error": str(e)}
 
