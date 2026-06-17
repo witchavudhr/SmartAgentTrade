@@ -2000,7 +2000,8 @@ def _capture_one_position(pos: dict) -> dict | None:
     }
     net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
     return {"ticket": ticket, "dir": direction, "trade_id": trade_id,
-            "pips": pnl_pips, "outcome": outcome, "net": net}
+            "pips": pnl_pips, "outcome": outcome, "net": net,
+            "close_px": close_px}
 
 
 def _run_mt5_sync(hours: int = 24) -> dict:
@@ -2047,7 +2048,7 @@ def _fmt_sync_result(newly: list) -> str:
 
 
 async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Background sync ทุก 3 นาที — เก็บ transaction เงียบๆ (ไม่โพสต์ Telegram)"""
+    """Background sync ทุก 3 นาที — เก็บ transaction + แจ้ง Telegram เฉพาะไม้ที่บอทรู้จัก"""
     if not mt5_executor.is_available():
         return
     try:
@@ -2055,14 +2056,50 @@ async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
         newly = res["newly"]
         if not newly:
             return
-        # state cleanup ถ้าไม้ที่เปิดอยู่เพิ่งถูก sync ว่าปิดแล้ว
+
+        print(f"[mt5_sync] captured {len(newly)} new transactions")
+
+        # ── ถ้าไม้ที่เปิดอยู่เพิ่งถูก sync ว่าปิดแล้ว → notify + re-scan ──
         ot_state = bot_state.get("open_trade")
         if ot_state:
             st_ticket = ot_state.get("mt5_ticket")
-            if st_ticket and any(n["ticket"] == int(st_ticket) for n in newly):
+            matched = next(
+                (n for n in newly if st_ticket and n["ticket"] == int(st_ticket)),
+                None
+            )
+            if matched:
+                trade_id  = ot_state.get("trade_id")
+                entry_px  = ot_state.get("entry", 0)
+                direction = ot_state.get("direction", "BUY")
+                pnl_pips  = matched.get("pips")
+                outcome   = matched.get("outcome")
+                net_usd   = matched.get("net")
+                close_px  = matched.get("close_px")
+
                 state_manager.set_field(bot_state, "open_trade", None)
-        # ทำงานเงียบ — เก็บลง DB อย่างเดียว ไม่แจ้ง Telegram (กันสแปม)
-        print(f"[mt5_sync] captured {len(newly)} new transactions (silent)")
+
+                icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
+                net_line = f"\nNet (หลัง commission+swap): `${net_usd:+.2f}`" if net_usd is not None else ""
+                try:
+                    await ctx.bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=(
+                            f"{icon} *MT5 ปิด Trade อัตโนมัติ — #{trade_id}*\n"
+                            f"━━━━━━━━━━━━━━━━━\n"
+                            f"{direction} | Entry: `{entry_px}` → Exit: `{close_px or '?'}`\n"
+                            f"P&L: `{pnl_pips:+.1f} จุด`{net_line}\n"
+                            f"บันทึก outcome: `{outcome or 'unknown'}` ใน DB แล้ว"
+                        ) if outcome else (
+                            f"⚠️ *Trade ปิดจาก MT5 แต่ดึง history ไม่ได้*\n"
+                            f"Trade #{trade_id} — ใช้ `/outcome {trade_id} win/loss [จุด]` บันทึกเอง"
+                        ),
+                        parse_mode="Markdown",
+                    )
+                except Exception as e:
+                    print(f"[mt5_sync] send notify error: {e}")
+
+                if bot_state.get("is_running"):
+                    await _rescan_after_close(ctx)
     except Exception as e:
         print(f"[mt5_sync] error: {e}")
 
@@ -2200,6 +2237,9 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
         try:
             ticket = ot.get("mt5_ticket")
             positions = mt5_executor.get_open_positions()
+            if positions is None:
+                # MT5 connect ล้มเหลว — skip ครั้งนี้ อย่า false-detect ว่าปิดแล้ว
+                return
             open_tickets = {p["ticket"] for p in positions}
             is_closed = ticket and int(ticket) not in open_tickets
             if not is_closed and not ticket and not positions:

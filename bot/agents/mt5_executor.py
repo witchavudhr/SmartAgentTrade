@@ -229,11 +229,11 @@ def modify_sl(ticket: int, new_sl: float) -> dict:
     return {"ok": True, "ticket": ticket, "new_sl": new_sl}
 
 
-def get_open_positions() -> list[dict]:
-    """คืน list ของ open positions ปัจจุบัน"""
+def get_open_positions() -> list[dict] | None:
+    """คืน list ของ open positions ปัจจุบัน — คืน None ถ้า connect ล้มเหลว"""
     ok, err = _connect()
     if not ok:
-        return []
+        return None
     positions = mt5.positions_get(symbol=MT5_SYMBOL) or []
     disconnect()
     return [
