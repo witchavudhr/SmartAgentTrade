@@ -76,7 +76,7 @@
   }
   function switchRightTab(tab) {
     rightTab = tab;
-    if (tab === 'trades' && transactions.length === 0) fetchTransactions();
+    if (tab === 'trades') fetchTransactions(activePeriod);
   }
   function fmtTxTime(ts) {
     if (!ts) return '—';

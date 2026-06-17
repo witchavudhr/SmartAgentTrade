@@ -191,10 +191,7 @@ def get_debug():
 
 @app.get("/api/stats")
 def get_stats_period(period: str = "today"):
-    """Return stats for a specific period: today|week|month|year|all"""
-    # Prefer bot-provided stats (Windows DB) over local DB
-    if period in stats_cache:
-        return stats_cache[period]
+    """Return stats for a specific period: today|week|month|year|all — always read DB directly"""
     try:
         from agents.trade_log import get_dashboard_stats
         return get_dashboard_stats(period)
