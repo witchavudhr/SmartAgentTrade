@@ -1,5 +1,5 @@
 # SmartAgentTrade — Project Tracker
-> Last updated: 2026-06-16
+> Last updated: 2026-06-17
 
 ---
 
@@ -8,10 +8,10 @@
 ```
 Phase 1 — Foundation         [100% ] ██████████ ✅
 Phase 2 — Full Voting        [100% ] ██████████ ✅
-Phase 3 — MT5 Live Execution [75%  ] ███████░░░ 🔄
+Phase 3 — MT5 Live Execution [85%  ] ████████░░ 🔄
 Phase 4 — Self-Improvement   [ 0%  ] ░░░░░░░░░░
 
-TOTAL                        [ 68% ] ███████░░░
+TOTAL                        [ 71% ] ███████░░░
 ```
 
 ---
@@ -133,6 +133,10 @@ OB Zone เข้า 3 entries:
 /bias      ✅ ดู H1/H4 direction
 /news      ✅ ข่าววันนี้
 /scalein   ✅ คำนวณ Scale-in OB plan
+/ob        ✅ แสดง Bull OB / Bear OB (M5+M15) ปัจจุบัน
+/outcome   ✅ บันทึก win/loss เอง (ticket + pips)
+/backfill  ✅ ดึง MT5 deal history เติม trade ที่ pending
+/closetrade ✅ ปิด MT5 position + re-scan ทันที
 ```
 
 ### Definition of Done
@@ -160,16 +164,24 @@ OB Zone เข้า 3 entries:
 - [x] AMD pattern detector — จับท่า Spring/Upthrust (Range→Sweep→CHoCH→BOS)
 - [x] Primary OB selector — code เลือก M5/M15 OB ที่ใกล้ที่สุดก่อนส่งให้ Sonnet
 - [x] OB_ENTRY threshold $5 — ป้องกัน miss entry
-- [ ] MT5 data bridge — bot Mac ↔ MT5 Windows (ตอนนี้ใช้ yfinance delay 15 นาที)
-  options: (1) ย้าย bot ไป Windows (ง่ายสุด) (2) MetaAPI
+- [x] bot รันบน Windows เครื่องเดียวกับ MT5 — ใช้ MT5 real-time data (ไม่ delay)
+- [x] MT5 transactions table — เก็บ profit_usd, commission, swap, net_usd ลง SQLite
+- [x] MT5 history fallback — get_latest_closed_deal() + retry 3 ครั้ง + entry type 1/2/3
+- [x] News Scout → ForexFactory JSON feed (ฟรี ไม่ต้อง API key) แทน mock
+- [x] News fail → vote NO (เดิม vote YES = "ปลอดภัย" ทั้งที่ดึงไม่ได้)
+- [x] Scan window gap fix — เพิ่ม 21:00–21:45 (ช่องว่าง NY Session)
+- [x] Re-scan ทันทีหลังไม้ปิด — หา setup ใหม่ ไม่ต้องรอ window ถัดไป
+- [x] /backfill — auto-match MT5 deal history กับ trade ที่ยัง pending
 - [ ] Midnight scan window (00:00–01:00 Thai) — รอ backtest ก่อนเพิ่ม
 - [ ] Daily auto report ทุกเช้า
+- [ ] M15 OB algorithm alignment — Python SMC ≠ TradingView Pine (ยังคลาดเคลื่อน)
+- [ ] Entry direction filter — ราคากำลังเข้า OB (approaching) เข้าได้ / เด้งแล้ว (bounced) ห้ามเข้า
 
 ### Definition of Done
 - [x] bot เปิด trade จริงได้ (demo)
 - [x] EA จัดการ trailing/partial close
-- [ ] data real-time (ไม่ใช่ yfinance delay)
-- [ ] รันต่อเนื่อง 7 วันไม่ crash
+- [x] data real-time (MT5 บน Windows — ไม่ใช้ yfinance delay แล้ว)
+- [ ] รันต่อเนื่อง 7 วันไม่ crash (router พังทำ timeout — ต้อง resilience)
 
 ---
 
@@ -221,12 +233,14 @@ OB Zone เข้า 3 entries:
 ---
 
 ## Next Action
-> 🔄 Phase 3 กำลังรัน live บน demo — pending MT5 data bridge
+> 🔄 Phase 3 กำลังรัน live บน demo (Windows + MT5 real-time)
 
 **ทำทันที:**
-1. ย้าย bot ไปรันบน Windows เครื่องเดียวกับ MT5 → แก้ data delay 15 นาที
-2. Backtest midnight window (00:00–01:00 Thai) ก่อนเพิ่ม
-3. Daily auto report ทุกเช้า
+1. M15 OB algorithm alignment — Python SMC ยังคลาดเคลื่อนจาก TradingView Pine
+2. Entry direction filter — approaching OB เข้าได้ / bounced แล้วห้ามเข้า
+3. Bot resilience — router พัง/timeout ทำ run_daily job หาย → ต้อง catch-up scan
+4. Backtest midnight window (00:00–01:00 Thai) ก่อนเพิ่ม
+5. Daily auto report ทุกเช้า
 
 **Phase 4 (ถัดไป):**
 1. Weekly review agent — อ่าน trade log ปรับ weight
@@ -262,4 +276,10 @@ OB Zone เข้า 3 entries:
 | 2026-06-15 | Primary OB = code เลือก M5/M15 ที่ใกล้ที่สุด ไม่ให้ Sonnet เดาเอง |
 | 2026-06-15 | AMD pattern detector เพิ่มเข้า smc_engine — จับท่า Spring/Upthrust |
 | 2026-06-16 | OB_ENTRY threshold $3→$5 — ป้องกัน miss entry จาก margin เล็กน้อย |
-| 2026-06-16 | MT5 อยู่ Windows คนละเครื่องกับ bot (Mac) → yfinance delay 15 นาที ยังไม่แก้ |
+| 2026-06-16 | bot รันบน Windows เครื่องเดียวกับ MT5 → ใช้ MT5 real-time data |
+| 2026-06-17 | OB-first principle: ราคาที่ OB กำหนด signal, macro bias ปรับแค่ confidence ("ซื้อแนวรับ ขายแนวต้าน") |
+| 2026-06-17 | Breaker Block: Bear OB ที่โดน BOS up ทะลุ → กลายเป็น support บน pullback = BUY |
+| 2026-06-17 | Pyramid SL ใช้ original_sl ของไม้แรกเสมอ — กันไม้ล่าง SL แคบกว่าโดนก่อน |
+| 2026-06-17 | MT5 transactions table — แยกเก็บ net USD (commission+swap) จาก pips |
+| 2026-06-17 | News Scout → ForexFactory JSON feed; ดึงไม่ได้ → vote NO (ปลอดภัยไว้ก่อน) |
+| 2026-06-17 | Re-scan ทันทีหลังไม้ปิด — ไม่ต้องรอ scan window ถัดไป |
