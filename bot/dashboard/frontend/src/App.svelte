@@ -410,8 +410,6 @@
 
     <!-- ─── CENTER ──────────────────────────────────────────────────── -->
     <main class="ccol">
-      <div class="rt-hdr">ROUND TABLE</div>
-
       <!-- War room animation -->
       <div class="vr-wrap">
         <div class="vr">
