@@ -595,23 +595,29 @@ async def cmd_mt5import(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pid = d.position_id
         if d.entry == 0 and pid not in pos_open:
             pos_open[pid] = d
-        elif d.entry == 1:
+        elif d.entry in (1, 2, 3):  # OUT / INOUT / OUT_BY — ครอบ close ทุกแบบ
             if pid not in pos_close or d.time > pos_close[pid].time:
                 pos_close[pid] = d
 
-    # ดู tickets ที่ import แล้ว
+    # ดู tickets ที่ import แล้ว — แยกที่มี outcome แล้ว (skip) จากที่ยัง NULL (update)
     init_db()
     conn = sqlite3.connect(DB_PATH)
-    existing_tickets = {
-        r[0] for r in conn.execute("SELECT mt5_ticket FROM trades WHERE mt5_ticket IS NOT NULL").fetchall()
+    # ticket → (id, outcome) — outcome=NULL แปลว่าเปิดไว้แต่ยังไม่ได้บันทึกผล
+    existing_map = {
+        r[0]: (r[1], r[2])
+        for r in conn.execute(
+            "SELECT mt5_ticket, id, outcome FROM trades WHERE mt5_ticket IS NOT NULL"
+        ).fetchall()
     }
 
     imported = []
+    updated_existing = 0
     skipped  = 0
 
     for pid, cd in pos_close.items():
-        if pid in existing_tickets:
-            skipped += 1
+        existing = existing_map.get(pid)
+        if existing and existing[1] is not None:
+            skipped += 1          # มี outcome แล้ว — ข้าม
             continue
         od = pos_open.get(pid)
         if not od:
@@ -628,6 +634,21 @@ async def cmd_mt5import(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         outcome   = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
         dur_min   = int((close_dt - open_dt).total_seconds() / 60)
         lot       = od.volume
+
+        # ── trade มีอยู่แล้วแต่ outcome ยัง NULL → UPDATE แทน INSERT ──
+        if existing:
+            conn.execute("""
+                UPDATE trades SET outcome=?, actual_entry=?, actual_exit=?,
+                       pnl_pips=?, duration_min=?
+                WHERE id=?
+            """, (outcome, open_px, close_px, pnl_pips, dur_min, existing[0]))
+            updated_existing += 1
+            imported.append({
+                "pid": pid, "dir": direction, "outcome": outcome,
+                "pips": pnl_pips, "open_px": open_px, "close_px": close_px,
+                "open_dt": open_dt.strftime("%m-%d %H:%M"), "lot": lot,
+            })
+            continue
 
         conn.execute("""
             INSERT INTO trades (
@@ -671,7 +692,7 @@ async def cmd_mt5import(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not imported:
         await update.message.reply_text(
             f"ℹ️ ไม่มี trade ใหม่ให้ import\n"
-            f"(ข้ามไปแล้ว {skipped} รายการที่ import ก่อนหน้า)"
+            f"(ข้ามไปแล้ว {skipped} รายการที่บันทึกผลแล้ว)"
         )
         return
 
