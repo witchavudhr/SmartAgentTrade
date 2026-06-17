@@ -263,8 +263,10 @@ def get_last_deal_for_ticket(ticket: int) -> dict | None:
             print(f"[mt5] get_last_deal_for_ticket connect fail (attempt {attempt+1}): {err}")
             _time.sleep(1)
             continue
-        date_from = datetime.now() - timedelta(days=7)
-        date_to   = datetime.now() + timedelta(hours=1)
+        from datetime import timezone as _tz
+        now       = datetime.now(tz=_tz.utc)
+        date_from = now - timedelta(days=7)
+        date_to   = now + timedelta(hours=1)
         deals = mt5.history_deals_get(date_from, date_to) or []
         disconnect()
         close_deals = [
@@ -294,8 +296,10 @@ def get_latest_closed_deal(symbol: str | None = None, hours: int = 4) -> dict | 
             print(f"[mt5] get_latest_closed_deal connect fail (attempt {attempt+1}): {err}")
             _time.sleep(1)
             continue
-        date_from = datetime.now() - timedelta(hours=hours)
-        date_to   = datetime.now() + timedelta(hours=1)
+        from datetime import timezone as _tz
+        now       = datetime.now(tz=_tz.utc)
+        date_from = now - timedelta(hours=hours)
+        date_to   = now + timedelta(hours=1)
         deals = mt5.history_deals_get(date_from, date_to) or []
         disconnect()
         all_closes = [d for d in deals if d.entry in EXIT_TYPES]
@@ -355,13 +359,16 @@ def get_closed_positions(hours: int = 24) -> list[dict]:
     """ดึง closed positions ทั้งหมดใน X ชั่วโมง — จับคู่ open+close deal ตาม position_id
     ใช้สำหรับ background sync เก็บ transaction ทุกไม้ (ไม่พึ่งการจับตอนปิดพอดี)
     """
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     ok, err = _connect()
     if not ok:
         print(f"[mt5] get_closed_positions connect fail: {err}")
         return []
-    date_from = datetime.now() - timedelta(hours=hours)
-    date_to   = datetime.now() + timedelta(hours=1)
+    # ใช้ naive datetime — MT5 broker ใช้ server time (EET = UTC+3) ไม่ใช่ UTC
+    # date_to +10h ครอบ timezone gap ทุก broker (max diff TH-EET = 4h + buffer)
+    now       = datetime.now()
+    date_from = now - timedelta(hours=hours)
+    date_to   = now + timedelta(hours=10)
     deals = mt5.history_deals_get(date_from, date_to) or []
     disconnect()
 
