@@ -11,8 +11,8 @@ from agents.json_utils import safe_json_parse
 _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-smc     = SMCEngine(swing_length=2)   # M5 OB engine — swing สั้น จับ OB entry zone ใกล้ราคา
-smc_m15 = SMCEngine(swing_length=5)  # M15 OB engine — swing ใหญ่ จับ structural OB
+smc     = SMCEngine(swing_length=50)  # M5 OB — ตรงกับ LuxAlgo swingsLengthInput=50
+smc_m15 = SMCEngine(swing_length=50)  # M15 OB — ตรงกับ LuxAlgo swingsLengthInput=50
 
 def _get_mt5_price() -> float | None:
     """ดึงราคา ask/bid ล่าสุดจาก MT5 ถ้าเชื่อมอยู่"""
@@ -92,7 +92,7 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
         df_yf5.columns = [c.lower() for c in df_yf5.columns]
         df5 = df_yf5[['open', 'high', 'low', 'close', 'volume']].dropna()
 
-    # ── M15 summary (swing_length=2 ตรงกับ EA OB_SWING_STR=2) ────────
+    # ── M15 summary (swing_length=50 ตรงกับ LuxAlgo swingsLengthInput=50) ────────
     m15_summary = None
     if df15 is not None and not df15.empty:
         res15 = smc_m15.analyze(df15)

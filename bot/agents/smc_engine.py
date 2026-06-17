@@ -234,78 +234,74 @@ class SMCEngine:
         low  = df['low'].to_numpy()
         close = df['close'].to_numpy()
 
-        # ── 1. ATR(200) + parsedHigh/parsedLow (เหมือน LuxAlgo) ──────────
+        # ── 1. ATR(200) — Wilder's RMA (เหมือน ta.atr ของ LuxAlgo) ──────────
         tr = np.maximum.reduce([
             high[1:] - low[1:],
             np.abs(high[1:] - close[:-1]),
             np.abs(low[1:] - close[:-1]),
         ])
-        atr = np.empty(n)
-        atr[0] = high[0] - low[0]
-        # RMA(200) approximation ด้วย rolling mean (min_periods=1)
         tr_full = np.concatenate([[high[0] - low[0]], tr])
-        atr = pd.Series(tr_full).rolling(200, min_periods=1).mean().to_numpy()
+        alpha = 1.0 / 200  # Wilder's smoothing α = 1/period
+        atr = np.zeros(n)
+        atr[0] = tr_full[0]
+        for _j in range(1, n):
+            atr[_j] = alpha * tr_full[_j] + (1.0 - alpha) * atr[_j - 1]
 
         rng = high - low
         high_vol = rng >= (2.0 * atr)
         parsed_high = np.where(high_vol, low, high)   # LuxAlgo: highVol ? low : high
         parsed_low  = np.where(high_vol, high, low)   # LuxAlgo: highVol ? high : low
 
-        # ── 2. เดินหน้า track swing ล่าสุด + ตรวจ crossover/crossunder ──
+        # ── 2. LuxAlgo pivot detection: one-sided (right side only, str_n bars) ──
+        # LuxAlgo: high[size] > ta.highest(size)  → ต้องสูงกว่า str_n bars ถัดไปทั้งหมด
+        # ไม่มี left-side requirement — confirm delay = str_n bars
         obs = []
-        # pivot ปัจจุบัน: (level, bar_index, crossed)
-        sh_level = sh_idx = None; sh_crossed = True
-        sl_level = sl_idx = None; sl_crossed = True
-
-        # index ของ swing ที่ confirm แล้ว (pivot ยืนยันที่ i+str_n)
-        for i in range(str_n, n - str_n):
-            # confirm swing high/low ที่ bar i (เหมือน pivot ของ LuxAlgo)
-            wh = high[i - str_n: i + str_n + 1]
-            wl = low[i - str_n: i + str_n + 1]
-            if high[i] == wh.max():
-                sh_level, sh_idx, sh_crossed = high[i], i, False
-            if low[i] == wl.min():
-                sl_level, sl_idx, sl_crossed = low[i], i, False
-
-        # เดินอีกรอบเพื่อจับ crossover ตามเวลา — track swing ที่ active ณ แต่ละ bar
-        sh_level = sh_idx = None; sh_crossed = True
-        sl_level = sl_idx = None; sl_crossed = True
+        sh_level = sh_idx = None; sh_crossed = False
+        sl_level = sl_idx = None; sl_crossed = False
 
         for i in range(str_n, n):
-            # อัพเดท swing เมื่อ pivot ก่อนหน้า confirm (pivot ที่ bar i-str_n)
-            p = i - str_n
-            if p >= str_n and p < n - str_n:
-                wh = high[p - str_n: p + str_n + 1]
-                wl = low[p - str_n: p + str_n + 1]
-                if high[p] == wh.max():
+            p = i - str_n   # bar ที่กำลัง confirm (str_n bars ก่อน i)
+
+            # Pivot High: high[p] > all(high[p+1 … p+str_n])
+            if p + str_n < n:
+                right_h = high[p + 1: p + str_n + 1]
+                if len(right_h) == str_n and high[p] > right_h.max():
                     sh_level, sh_idx, sh_crossed = high[p], p, False
-                if low[p] == wl.min():
+
+            # Pivot Low: low[p] < all(low[p+1 … p+str_n])
+            if p + str_n < n:
+                right_l = low[p + 1: p + str_n + 1]
+                if len(right_l) == str_n and low[p] < right_l.min():
                     sl_level, sl_idx, sl_crossed = low[p], p, False
 
             # ── Bullish OB: close crossover swing high ─────────────
             if (sh_level is not None and not sh_crossed
                     and close[i] > sh_level and close[i - 1] <= sh_level):
-                leg_lows = parsed_low[sh_idx: i + 1]
-                ob_idx = sh_idx + int(np.argmin(leg_lows))
-                obs.append(OrderBlock(
-                    top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
-                    bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
-                    kind='bullish',
-                    index=int(ob_idx),
-                ))
+                # LuxAlgo: parsedLows.slice(pivot.barIndex, bar_index) → ไม่รวม bar i
+                leg_lows = parsed_low[sh_idx: i]
+                if len(leg_lows) > 0:
+                    ob_idx = sh_idx + int(np.argmin(leg_lows))
+                    obs.append(OrderBlock(
+                        top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
+                        bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
+                        kind='bullish',
+                        index=int(ob_idx),
+                    ))
                 sh_crossed = True
 
             # ── Bearish OB: close crossunder swing low ─────────────
             if (sl_level is not None and not sl_crossed
                     and close[i] < sl_level and close[i - 1] >= sl_level):
-                leg_highs = parsed_high[sl_idx: i + 1]
-                ob_idx = sl_idx + int(np.argmax(leg_highs))
-                obs.append(OrderBlock(
-                    top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
-                    bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
-                    kind='bearish',
-                    index=int(ob_idx),
-                ))
+                # LuxAlgo: parsedHighs.slice(pivot.barIndex, bar_index) → ไม่รวม bar i
+                leg_highs = parsed_high[sl_idx: i]
+                if len(leg_highs) > 0:
+                    ob_idx = sl_idx + int(np.argmax(leg_highs))
+                    obs.append(OrderBlock(
+                        top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
+                        bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
+                        kind='bearish',
+                        index=int(ob_idx),
+                    ))
                 sl_crossed = True
 
         # ── 5. Mitigation ──────────────────────────────────────────────
