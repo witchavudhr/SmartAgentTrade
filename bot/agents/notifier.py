@@ -1359,11 +1359,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         period = action.split(":", 1)[1]
         data   = get_transactions_by_period(period)
         text, kb = _fmt_txreport(data)
-        try:
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
-        except Exception:
-            plain = text.replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
-            await query.edit_message_text(plain, reply_markup=kb)
+        if len(text) > 4000:
+            # ยาวเกิน — ส่ง message ใหม่แทน edit
+            lines = text.split('\n')
+            sep_idx = next((i for i, l in enumerate(lines[4:], 4) if '━' in l), len(lines)//2)
+            part1 = '\n'.join(lines[:sep_idx+1])
+            part2 = '\n'.join(lines[sep_idx+1:])
+            await query.answer()
+            await query.message.reply_text(part1, parse_mode="Markdown")
+            await query.message.reply_text(part2, parse_mode="Markdown", reply_markup=kb)
+        else:
+            try:
+                await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+            except Exception:
+                plain = text.replace("*","").replace("_","").replace("`","").replace("\\","")
+                await query.edit_message_text(plain, reply_markup=kb)
         return
 
     # ── Pyramid ไม้ 2 callback ────────────────────────────
@@ -2186,11 +2196,7 @@ def _fmt_txreport(data: dict) -> tuple[str, object]:
     if not txs:
         lines.append("_ไม่มี transaction ในช่วงนี้_")
     else:
-        # แสดงสูงสุด 20 รายการ (Telegram 4096 char limit)
-        shown = txs[-20:] if len(txs) > 20 else txs
-        if len(txs) > 20:
-            lines.append(f"_...แสดง 20 ล่าสุดจาก {len(txs)} ทั้งหมด_")
-        for t in shown:
+        for t in txs:
             icon  = "✅" if (t.get('pnl_pips') or 0) > 0 else "❌" if (t.get('pnl_pips') or 0) < 0 else "➖"
             tid   = f"#{t['trade_id']}" if t.get('trade_id') else f"T#{t.get('ticket','?')}"
             ct    = (t.get('close_time') or t.get('timestamp') or "")
@@ -2228,10 +2234,27 @@ async def cmd_txreport(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     period = args[0].lower() if args else 'today'
     data   = get_transactions_by_period(period)
     text, kb = _fmt_txreport(data)
-    await _safe_send(
-        lambda t, **kw: update.message.reply_text(t, **kw),
-        text, parse_mode="Markdown", reply_markup=kb
-    )
+
+    # ถ้ายาวเกิน 4096 chars → split เป็น 2 messages (header + trades)
+    if len(text) > 4000:
+        lines = text.split('\n')
+        # หา separator line (━━━) บรรทัดที่ 2 เพื่อแยก header กับ trades
+        sep_idx = next((i for i, l in enumerate(lines[4:], 4) if '━' in l), len(lines)//2)
+        part1 = '\n'.join(lines[:sep_idx+1])
+        part2 = '\n'.join(lines[sep_idx+1:])
+        await _safe_send(
+            lambda t, **kw: update.message.reply_text(t, **kw),
+            part1, parse_mode="Markdown"
+        )
+        await _safe_send(
+            lambda t, **kw: update.message.reply_text(t, **kw),
+            part2, parse_mode="Markdown", reply_markup=kb
+        )
+    else:
+        await _safe_send(
+            lambda t, **kw: update.message.reply_text(t, **kw),
+            text, parse_mode="Markdown", reply_markup=kb
+        )
 
 
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
