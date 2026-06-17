@@ -509,7 +509,7 @@ def get_transactions_by_period(period: str = 'today') -> dict:
         FROM mt5_transactions
         WHERE CASE
             WHEN typeof(COALESCE(close_time, timestamp)) = 'integer'
-            THEN datetime(COALESCE(close_time, timestamp), 'unixepoch', 'localtime')
+            THEN datetime(COALESCE(close_time, timestamp), 'unixepoch', '+7 hours')
             ELSE COALESCE(close_time, timestamp)
         END >= ?
         ORDER BY COALESCE(close_time, timestamp) ASC
@@ -826,11 +826,15 @@ _PERIOD_FILTER = {
     "all":   "1=1",
 }
 # mt5_transactions ใช้ close_time (อาจเป็น unix int หรือ string)
+def _mt5_col():
+    """close_time เก็บเป็น TH string แล้ว — ถ้าเป็น int ให้แปลง unix→TH (+7h)"""
+    return "CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch','+7 hours') ELSE close_time END"
+
 _MT5_PERIOD_FILTER = {
-    "today": "DATE(datetime(close_time,'unixepoch','localtime')) = DATE('now','localtime') OR DATE(close_time,'localtime') = DATE('now','localtime')",
-    "week":  "DATE(CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch') ELSE close_time END,'localtime') >= DATE('now','localtime','-6 days')",
-    "month": "DATE(CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch') ELSE close_time END,'localtime') >= DATE('now','localtime','start of month')",
-    "year":  "DATE(CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch') ELSE close_time END,'localtime') >= DATE('now','localtime','start of year')",
+    "today": f"DATE({_mt5_col()}) = DATE('now','localtime')",
+    "week":  f"DATE({_mt5_col()}) >= DATE('now','localtime','-6 days')",
+    "month": f"DATE({_mt5_col()}) >= DATE('now','localtime','start of month')",
+    "year":  f"DATE({_mt5_col()}) >= DATE('now','localtime','start of year')",
     "all":   "1=1",
 }
 
