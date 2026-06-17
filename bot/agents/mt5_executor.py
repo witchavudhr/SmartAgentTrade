@@ -311,6 +311,46 @@ def get_latest_closed_deal(symbol: str | None = None, hours: int = 4) -> dict | 
     return None
 
 
+def get_position_deals(ticket: int) -> dict | None:
+    """ดึง deal ทั้งหมดของ position ตาม ticket โดยตรง (position filter)
+    เชื่อถือได้กว่า date-range query — ใช้กับไม้ที่รู้ ticket แน่นอน
+    คืน dict รวม open+close หรือ None ถ้ายังไม่ปิด/ไม่พบ
+    """
+    import time as _time
+    for attempt in range(3):
+        ok, err = _connect()
+        if not ok:
+            print(f"[mt5] get_position_deals connect fail (attempt {attempt+1}): {err}")
+            _time.sleep(1)
+            continue
+        deals = mt5.history_deals_get(position=ticket) or []
+        disconnect()
+        if not deals:
+            print(f"[mt5] get_position_deals: ticket={ticket} ไม่มี deal (attempt {attempt+1})")
+            _time.sleep(2)
+            continue
+
+        od = next((d for d in deals if d.entry == 0), None)
+        closes = [d for d in deals if d.entry in (1, 2, 3)]
+        if not closes:
+            return None  # ยังไม่ปิด
+        last = sorted(closes, key=lambda x: x.time)[-1]
+        return {
+            "position_id": ticket,
+            "symbol":      last.symbol,
+            "direction":   ("BUY" if od.type == 0 else "SELL") if od else None,
+            "open_price":  od.price if od else None,
+            "open_time":   od.time if od else None,
+            "close_price": last.price,
+            "close_time":  last.time,
+            "volume":      od.volume if od else last.volume,
+            "profit":      sum(d.profit for d in closes),
+            "commission":  sum(d.commission for d in deals),
+            "swap":        sum(d.swap for d in deals),
+        }
+    return None
+
+
 def get_closed_positions(hours: int = 24) -> list[dict]:
     """ดึง closed positions ทั้งหมดใน X ชั่วโมง — จับคู่ open+close deal ตาม position_id
     ใช้สำหรับ background sync เก็บ transaction ทุกไม้ (ไม่พึ่งการจับตอนปิดพอดี)

@@ -1902,71 +1902,92 @@ async def _rescan_after_close(ctx: ContextTypes.DEFAULT_TYPE):
         print(f"[rescan] error: {e}")
 
 
-def _run_mt5_sync(hours: int = 24) -> dict:
-    """Core MT5 sync — ดึง closed positions แล้วเก็บ transaction + outcome
-    คืน {"newly": [...], "total_closed": N, "error": str|None} (sync, ไม่ส่ง Telegram)
-    """
+def _capture_one_position(pos: dict) -> dict | None:
+    """เก็บ transaction ของ position 1 ตัว — คืน dict newly หรือ None ถ้าข้าม"""
     from agents.trade_log import (
         transaction_exists, find_trade_by_ticket,
         log_mt5_transaction, update_outcome,
     )
     from datetime import datetime
 
+    ticket = pos["position_id"]
+    if transaction_exists(ticket):
+        return None
+    direction = pos["direction"]
+    open_px   = pos["open_price"]
+    close_px  = pos["close_price"]
+
+    trade = find_trade_by_ticket(ticket)
+    trade_id = trade["id"] if trade else None
+
+    # fallback: ถ้า MT5 open deal หาย → ใช้ราคา/ทิศจาก trades table
+    if trade:
+        if open_px is None:
+            open_px = trade.get("actual_entry") or trade.get("entry_low")
+        if direction is None:
+            direction = trade.get("signal")
+    direction = direction or "BUY"
+
+    if open_px is None or close_px is None:
+        print(f"[mt5_sync] skip ticket={ticket} — open_px/close_px หาย (open={open_px} close={close_px})")
+        return None
+    pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
+    pnl_pips = round(pnl_raw * 10, 1)
+    outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+    if trade and trade.get("outcome") is None:
+        dur = None
+        if pos["open_time"] and pos["close_time"]:
+            dur = int((pos["close_time"] - pos["open_time"]) / 60)
+        update_outcome(trade_id, outcome, pnl_pips,
+                       actual_entry=open_px, actual_exit=close_px,
+                       duration_min=dur)
+
+    deal = {
+        "close_price": close_px, "ticket": ticket,
+        "profit": pos["profit"], "commission": pos["commission"],
+        "swap": pos["swap"], "time": pos["close_time"],
+    }
+    ot = {
+        "entry": open_px, "lot": pos["volume"], "mt5_ticket": ticket,
+        "pair": pos["symbol"],
+        "opened_at": datetime.fromtimestamp(pos["open_time"]).strftime("%Y-%m-%d %H:%M:%S") if pos["open_time"] else None,
+    }
+    net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
+    return {"ticket": ticket, "dir": direction, "trade_id": trade_id,
+            "pips": pnl_pips, "outcome": outcome, "net": net}
+
+
+def _run_mt5_sync(hours: int = 24) -> dict:
+    """Core MT5 sync — 2 pass:
+      1. date-range: ดึง closed positions ทั้งหมดใน X ชม.
+      2. direct: ไม้ที่บอทเปิด (มี ticket) แต่ยังไม่ captured → query position filter ตรง
+         (กัน MT5 date-range query ไม่ครบ deal ล่าสุด)
+    """
+    from agents.trade_log import transaction_exists, get_uncaptured_tickets
+
+    newly = []
+    # ── Pass 1: date-range ────────────────────────────────────
     closed = mt5_executor.get_closed_positions(hours)
     found_tickets = [p["position_id"] for p in closed]
-    newly = []
-    skipped_tickets = []
     for pos in closed:
-        ticket = pos["position_id"]
+        n = _capture_one_position(pos)
+        if n:
+            newly.append(n)
+
+    # ── Pass 2: direct ticket query (ไม้ที่ date-range พลาด) ───
+    direct_found = []
+    for ticket in get_uncaptured_tickets():
         if transaction_exists(ticket):
-            skipped_tickets.append(ticket)
             continue
-        direction = pos["direction"]
-        open_px   = pos["open_price"]
-        close_px  = pos["close_price"]
+        pos = mt5_executor.get_position_deals(int(ticket))
+        if pos:
+            direct_found.append(ticket)
+            n = _capture_one_position(pos)
+            if n:
+                newly.append(n)
 
-        trade = find_trade_by_ticket(ticket)
-        trade_id = trade["id"] if trade else None
-
-        # fallback: ถ้า MT5 open deal หาย → ใช้ราคา/ทิศจาก trades table
-        if trade:
-            if open_px is None:
-                open_px = trade.get("actual_entry") or trade.get("entry_low")
-            if direction is None:
-                direction = trade.get("signal")
-        direction = direction or "BUY"
-
-        if open_px is None or close_px is None:
-            print(f"[mt5_sync] skip ticket={ticket} — open_px/close_px หาย (open={open_px} close={close_px})")
-            continue
-        pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
-        pnl_pips = round(pnl_raw * 10, 1)
-        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
-        if trade and trade.get("outcome") is None:
-            dur = None
-            if pos["open_time"] and pos["close_time"]:
-                dur = int((pos["close_time"] - pos["open_time"]) / 60)
-            update_outcome(trade_id, outcome, pnl_pips,
-                           actual_entry=open_px, actual_exit=close_px,
-                           duration_min=dur)
-
-        deal = {
-            "close_price": close_px, "ticket": ticket,
-            "profit": pos["profit"], "commission": pos["commission"],
-            "swap": pos["swap"], "time": pos["close_time"],
-        }
-        ot = {
-            "entry": open_px, "lot": pos["volume"], "mt5_ticket": ticket,
-            "pair": pos["symbol"],
-            "opened_at": datetime.fromtimestamp(pos["open_time"]).strftime("%Y-%m-%d %H:%M:%S") if pos["open_time"] else None,
-        }
-        net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
-        newly.append({
-            "ticket": ticket, "dir": direction, "trade_id": trade_id,
-            "pips": pnl_pips, "outcome": outcome, "net": net,
-        })
     return {"newly": newly, "total_closed": len(closed),
-            "found_tickets": found_tickets, "skipped_tickets": skipped_tickets}
+            "found_tickets": found_tickets, "direct_found": direct_found}
 
 
 def _fmt_sync_result(newly: list) -> str:
@@ -2013,8 +2034,10 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         newly = res["newly"]
         # debug: แสดง position_id ที่ MT5 ดึงมาได้ (เทียบกับ MT5 History)
         found = res.get("found_tickets", [])
-        dbg = (f"\n\n🔍 MT5 ดึง closed positions = {len(found)}\n"
-               f"tickets: `{', '.join(str(t) for t in found[-12:])}`")
+        direct = res.get("direct_found", [])
+        dbg = (f"\n\n🔍 date-range = {len(found)} ไม้ | direct query = {len(direct)} ไม้")
+        if direct:
+            dbg += f"\ndirect tickets: `{', '.join(str(t) for t in direct)}`"
         if not newly:
             await update.message.reply_text(
                 f"✅ ไม่มี transaction ใหม่ (เก็บครบแล้ว {res['total_closed']} ไม้ใน 48 ชม.)"

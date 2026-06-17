@@ -430,6 +430,22 @@ def get_mt5_summary(days: int = 30) -> dict:
     }
 
 
+def get_uncaptured_tickets() -> list[int]:
+    """ticket ที่บอทเปิด (มี mt5_ticket) แต่ยังไม่มีใน mt5_transactions
+    ใช้ query MT5 ตรงด้วย position filter (กรณี date-range query ไม่ครบ)
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT DISTINCT t.mt5_ticket
+        FROM trades t
+        WHERE t.mt5_ticket IS NOT NULL
+          AND t.mt5_ticket NOT IN (SELECT ticket FROM mt5_transactions WHERE ticket IS NOT NULL)
+    """).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 def get_recent_transactions(limit: int = 15) -> list[dict]:
     """ดึง mt5_transactions ล่าสุด — ใช้กับคำสั่ง /tx"""
     init_db()
