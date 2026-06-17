@@ -278,6 +278,7 @@
 
   function fmtPnl(v) { return (v>=0?'+$':'-$')+Math.abs(v??0).toFixed(2); }
   $: tradeMax = Math.max(...(stats.trades||[]).map(t=>Math.abs(t.p??t.pnl??0)), 1);
+  $: hasTradeData = (stats.wins + stats.losses) > 0;
 
   onMount(() => {
     initWs(); startPatrol();
@@ -338,12 +339,22 @@
           <div class="sv" style="color:{stats.today_pnl>=0?'#22c55e':'#ef4444'}">{fmtPnl(stats.today_pnl)}</div>
         </div>
         <div class="sc">
-          <div class="sl">Win rate</div>
-          <div class="sv">{stats.win_rate}%</div>
+          {#if hasTradeData}
+            <div class="sl">Win rate</div>
+            <div class="sv">{stats.win_rate}%</div>
+          {:else}
+            <div class="sl">Approval</div>
+            <div class="sv">{stats.approval_rate ?? 0}%</div>
+          {/if}
         </div>
         <div class="sc">
-          <div class="sl">W / L</div>
-          <div class="sv"><span style="color:#22c55e">{stats.wins}</span> / <span style="color:#ef4444">{stats.losses}</span></div>
+          {#if hasTradeData}
+            <div class="sl">W / L</div>
+            <div class="sv"><span style="color:#22c55e">{stats.wins}</span> / <span style="color:#ef4444">{stats.losses}</span></div>
+          {:else}
+            <div class="sl">Scans ✓/✗</div>
+            <div class="sv"><span style="color:#22c55e">{stats.scans_approved ?? 0}</span> / <span style="color:#ef4444">{stats.scans_rejected ?? 0}</span></div>
+          {/if}
         </div>
         <div class="sc">
           <div class="sl">Best trade</div>

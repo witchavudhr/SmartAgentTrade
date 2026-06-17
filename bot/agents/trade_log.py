@@ -758,6 +758,14 @@ def get_dashboard_stats(period: str = "today") -> dict:
         ORDER BY id DESC LIMIT 20
     """).fetchall()
 
+    scan_counts = conn.execute(f"""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN approved=1 THEN 1 ELSE 0 END) AS approved,
+            SUM(CASE WHEN approved=0 THEN 1 ELSE 0 END) AS rejected
+        FROM scan_log WHERE {date_filter}
+    """).fetchone()
+
     best_setup_row = conn.execute(f"""
         SELECT setup_type FROM scan_log
         WHERE approved=1 AND {date_filter.replace('timestamp','timestamp')}
@@ -797,17 +805,25 @@ def get_dashboard_stats(period: str = "today") -> dict:
             "r": "w" if approved else "l",
         })
 
+    scans_approved = int(scan_counts[1] or 0) if scan_counts else 0
+    scans_rejected = int(scan_counts[2] or 0) if scan_counts else 0
+    scans_total    = scans_approved + scans_rejected
+    approval_rate  = round(scans_approved / scans_total * 100, 1) if scans_total > 0 else 0
+
     return {
-        "period":      period,
-        "today_pnl":   round(period_pnl, 2),
-        "open_pnl":    0.0,
-        "win_rate":    win_rate,
-        "wins":        period_wins,
-        "losses":      period_losses,
-        "pending":     pending_count,
-        "best_trade":  best_pnl,
-        "best_setup":  best_setup_row[0] if best_setup_row else "",
-        "trades":      trades_bar,
+        "period":         period,
+        "today_pnl":      round(period_pnl, 2),
+        "open_pnl":       0.0,
+        "win_rate":       win_rate,
+        "wins":           period_wins,
+        "losses":         period_losses,
+        "pending":        pending_count,
+        "best_trade":     best_pnl,
+        "best_setup":     best_setup_row[0] if best_setup_row else "",
+        "trades":         trades_bar,
+        "scans_approved": scans_approved,
+        "scans_rejected": scans_rejected,
+        "approval_rate":  approval_rate,
     }
 
 
