@@ -2139,8 +2139,8 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม — เช็ค MT5_ENABLED ใน .env")
         return
 
-    # parse days argument
-    days = 2
+    # parse days argument (default 4 วัน — ครอบคลุม timezone shift + weekend)
+    days = 4
     if ctx.args:
         try:
             days = max(1, min(90, int(ctx.args[0])))
@@ -2160,7 +2160,7 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             dbg += f"\ndirect tickets: `{', '.join(str(t) for t in direct)}`"
         if not newly:
             await update.message.reply_text(
-                f"✅ ไม่มี transaction ใหม่ (เก็บครบแล้ว {res['total_closed']} ไม้ใน {days} วัน)"
+                f"✅ ไม่มี transaction ใหม่ (ดึง {res['total_closed']} ไม้จาก MT5 ใน {days} วัน — เก็บครบแล้ว)"
                 f"{dbg}",
                 parse_mode="Markdown",
             )
