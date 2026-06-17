@@ -84,10 +84,13 @@ class SMCResult:
 # ─── Core Engine ────────────────────────────────────────────────────
 
 class SMCEngine:
-    def __init__(self, swing_length: int = 5, ob_filter_atr: bool = True, eql_threshold: float = 0.1):
+    def __init__(self, swing_length: int = 5, ob_filter_atr: bool = True,
+                 eql_threshold: float = 0.1, ob_mitigation: str = 'highlow'):
         self.swing_length = swing_length
         self.ob_filter_atr = ob_filter_atr
         self.eql_threshold = eql_threshold
+        # 'highlow' = LuxAlgo default (wick ทะลุก็ลบ) | 'close' = ต้อง body close ทะลุ (OB อยู่นานกว่า)
+        self.ob_mitigation = ob_mitigation
 
     def analyze(self, df: pd.DataFrame) -> SMCResult:
         """
@@ -211,98 +214,118 @@ class SMCEngine:
 
     def _find_order_blocks(self, df: pd.DataFrame, structures: list = None):
         """
-        OB detection ที่ match SmartPartialClose EA (DetectOrderBlocks) ทุกขั้นตอน:
+        OB detection ที่ port มาจาก LuxAlgo SMC (storeOrdeBlock + deleteOrderBlocks) ตรงทุกขั้นตอน:
 
-        Algorithm (same as EA):
-          1. Scan newest → oldest หา Swing High/Low (str bars แต่ละด้าน)
-          2. Bullish OB: พบ Swing High → หา Bullish BOS (newer bar ที่ close > swing high)
-                         → หาแท่งแดงสุดท้ายระหว่าง swing ถึง BOS
-          3. Bearish OB: พบ Swing Low  → หา Bearish BOS (newer bar ที่ close < swing low)
-                         → หาแท่งเขียวสุดท้ายระหว่าง swing ถึง BOS
-          4. Zone: high→low ของแท่ง OB (full range เหมือน EA)
-          5. Mitigation: ต้อง CLOSE ทะลุ zone (wick ไม่นับ)
+        Algorithm (เหมือน LuxAlgo Pine ทุกบรรทัด):
+          1. ทุกแท่ง: คำนวณ ATR(200) + parsedHigh/parsedLow (สลับ high↔low ถ้าแท่ง volatility สูง)
+          2. เดินไปข้างหน้า track swing high/low ล่าสุด (level + index) + flag 'crossed'
+          3. Bullish OB: close crossover ขึ้นเหนือ swing High → ในช่วง leg [swingHigh.idx, i]
+                         หาแท่งที่ parsedLow ต่ำสุด → zone = parsedHigh/parsedLow ของแท่งนั้น
+          4. Bearish OB: close crossunder ลงใต้ swing Low → ในช่วง leg [swingLow.idx, i]
+                         หาแท่งที่ parsedHigh สูงสุด → zone = parsedHigh/parsedLow ของแท่งนั้น
+          5. Mitigation (HIGHLOW): Bear OB ลบเมื่อ high > top, Bull OB ลบเมื่อ low < bottom
         """
-        obs   = []
-        n     = len(df)
-        str_n = self.swing_length           # bars each side (M15 ควรใช้ 2 เหมือน EA)
-        lookback = min(150, n - str_n * 2)
-        max_bull = 5
-        max_bear = 5
-        bull_count = 0
-        bear_count = 0
-        seen_idx = set()
+        n = len(df)
+        str_n = self.swing_length
+        if n < str_n * 2 + 2:
+            return []
 
-        # วน newest → oldest (index n-str_n-1 ลงไป)
-        for i in range(n - str_n - 1, max(str_n, n - lookback), -1):
-            if bull_count >= max_bull and bear_count >= max_bear:
-                break
+        high = df['high'].to_numpy()
+        low  = df['low'].to_numpy()
+        close = df['close'].to_numpy()
 
-            hi = df['high'].iloc[i]
-            lo = df['low'].iloc[i]
+        # ── 1. ATR(200) + parsedHigh/parsedLow (เหมือน LuxAlgo) ──────────
+        tr = np.maximum.reduce([
+            high[1:] - low[1:],
+            np.abs(high[1:] - close[:-1]),
+            np.abs(low[1:] - close[:-1]),
+        ])
+        atr = np.empty(n)
+        atr[0] = high[0] - low[0]
+        # RMA(200) approximation ด้วย rolling mean (min_periods=1)
+        tr_full = np.concatenate([[high[0] - low[0]], tr])
+        atr = pd.Series(tr_full).rolling(200, min_periods=1).mean().to_numpy()
 
-            # ── Swing High → Bullish OB ──────────────────────────
-            if bull_count < max_bull:
-                is_sh = (all(hi > df['high'].iloc[i + k] for k in range(1, str_n + 1)) and
-                         all(hi > df['high'].iloc[i - k] for k in range(1, str_n + 1)))
-                if is_sh:
-                    # หา Bullish BOS: bar ที่ newer (j > i) แล้ว close > swing high
-                    for j in range(i + 1, n):
-                        if df['close'].iloc[j] > hi:
-                            # หาแท่งแดงสุดท้ายระหว่าง i+1 ถึง j-1
-                            ob_idx = -1
-                            for k in range(i + 1, j):
-                                if df['close'].iloc[k] < df['open'].iloc[k]:
-                                    ob_idx = k
-                            if ob_idx == -1:
-                                ob_idx = i  # fallback: ใช้แท่ง swing เอง
-                            if ob_idx not in seen_idx:
-                                obs.append(OrderBlock(
-                                    top=df['high'].iloc[ob_idx],
-                                    bottom=df['low'].iloc[ob_idx],
-                                    kind='bullish',
-                                    index=ob_idx
-                                ))
-                                seen_idx.add(ob_idx)
-                                bull_count += 1
-                            break
+        rng = high - low
+        high_vol = rng >= (2.0 * atr)
+        parsed_high = np.where(high_vol, low, high)   # LuxAlgo: highVol ? low : high
+        parsed_low  = np.where(high_vol, high, low)   # LuxAlgo: highVol ? high : low
 
-            # ── Swing Low → Bearish OB ───────────────────────────
-            if bear_count < max_bear:
-                is_sl = (all(lo < df['low'].iloc[i + k] for k in range(1, str_n + 1)) and
-                         all(lo < df['low'].iloc[i - k] for k in range(1, str_n + 1)))
-                if is_sl:
-                    # หา Bearish BOS: bar ที่ newer (j > i) แล้ว close < swing low
-                    for j in range(i + 1, n):
-                        if df['close'].iloc[j] < lo:
-                            # หาแท่งเขียวสุดท้ายระหว่าง i+1 ถึง j-1
-                            ob_idx = -1
-                            for k in range(i + 1, j):
-                                if df['close'].iloc[k] > df['open'].iloc[k]:
-                                    ob_idx = k
-                            if ob_idx == -1:
-                                ob_idx = i
-                            if ob_idx not in seen_idx:
-                                obs.append(OrderBlock(
-                                    top=df['high'].iloc[ob_idx],
-                                    bottom=df['low'].iloc[ob_idx],
-                                    kind='bearish',
-                                    index=ob_idx
-                                ))
-                                seen_idx.add(ob_idx)
-                                bear_count += 1
-                            break
+        # ── 2. เดินหน้า track swing ล่าสุด + ตรวจ crossover/crossunder ──
+        obs = []
+        # pivot ปัจจุบัน: (level, bar_index, crossed)
+        sh_level = sh_idx = None; sh_crossed = True
+        sl_level = sl_idx = None; sl_crossed = True
 
-        # Mitigation: ต้อง CLOSE ทะลุ zone (wick ไม่นับ เหมือน EA)
+        # index ของ swing ที่ confirm แล้ว (pivot ยืนยันที่ i+str_n)
+        for i in range(str_n, n - str_n):
+            # confirm swing high/low ที่ bar i (เหมือน pivot ของ LuxAlgo)
+            wh = high[i - str_n: i + str_n + 1]
+            wl = low[i - str_n: i + str_n + 1]
+            if high[i] == wh.max():
+                sh_level, sh_idx, sh_crossed = high[i], i, False
+            if low[i] == wl.min():
+                sl_level, sl_idx, sl_crossed = low[i], i, False
+
+        # เดินอีกรอบเพื่อจับ crossover ตามเวลา — track swing ที่ active ณ แต่ละ bar
+        sh_level = sh_idx = None; sh_crossed = True
+        sl_level = sl_idx = None; sl_crossed = True
+
+        for i in range(str_n, n):
+            # อัพเดท swing เมื่อ pivot ก่อนหน้า confirm (pivot ที่ bar i-str_n)
+            p = i - str_n
+            if p >= str_n and p < n - str_n:
+                wh = high[p - str_n: p + str_n + 1]
+                wl = low[p - str_n: p + str_n + 1]
+                if high[p] == wh.max():
+                    sh_level, sh_idx, sh_crossed = high[p], p, False
+                if low[p] == wl.min():
+                    sl_level, sl_idx, sl_crossed = low[p], p, False
+
+            # ── Bullish OB: close crossover swing high ─────────────
+            if (sh_level is not None and not sh_crossed
+                    and close[i] > sh_level and close[i - 1] <= sh_level):
+                leg_lows = parsed_low[sh_idx: i + 1]
+                ob_idx = sh_idx + int(np.argmin(leg_lows))
+                obs.append(OrderBlock(
+                    top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
+                    bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
+                    kind='bullish',
+                    index=int(ob_idx),
+                ))
+                sh_crossed = True
+
+            # ── Bearish OB: close crossunder swing low ─────────────
+            if (sl_level is not None and not sl_crossed
+                    and close[i] < sl_level and close[i - 1] >= sl_level):
+                leg_highs = parsed_high[sl_idx: i + 1]
+                ob_idx = sl_idx + int(np.argmax(leg_highs))
+                obs.append(OrderBlock(
+                    top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
+                    bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
+                    kind='bearish',
+                    index=int(ob_idx),
+                ))
+                sl_crossed = True
+
+        # ── 5. Mitigation ──────────────────────────────────────────────
+        # highlow (LuxAlgo default): Bear ลบเมื่อ high>top, Bull ลบเมื่อ low<bottom
+        # close: ต้อง body close ทะลุ (OB อยู่นานกว่า)
+        bull_src = low if self.ob_mitigation == 'highlow' else close
+        bear_src = high if self.ob_mitigation == 'highlow' else close
         for ob in obs:
             for i in range(ob.index + 1, n):
-                if ob.kind == 'bullish' and df['close'].iloc[i] < ob.bottom:
+                if ob.kind == 'bullish' and bull_src[i] < ob.bottom:
                     ob.mitigated = True
                     break
-                elif ob.kind == 'bearish' and df['close'].iloc[i] > ob.top:
+                elif ob.kind == 'bearish' and bear_src[i] > ob.top:
                     ob.mitigated = True
                     break
 
-        return obs
+        # เก็บแค่ 5 OB ล่าสุดต่อฝั่ง (เหมือน maxOrderBlocks ของ LuxAlgo)
+        bulls = [o for o in obs if o.kind == 'bullish'][-5:]
+        bears = [o for o in obs if o.kind == 'bearish'][-5:]
+        return bulls + bears
 
     # ─── Fair Value Gaps ─────────────────────────────────────────
 
