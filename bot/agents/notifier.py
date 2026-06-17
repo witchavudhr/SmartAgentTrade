@@ -106,38 +106,48 @@ bot_state = state_manager.load()
 # ── Commands ──────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    msg1 = (
         "🏢 *SmartAgentTrade* พร้อมแล้ว!\n\n"
         "📡 *Analysis*\n"
         "/scan — สแกนหา setup (auto-execute ถ้าผ่าน) · 7 windows/day\n"
         "/testscan — ดู vote ทุก agent โดยไม่เปิด trade\n"
         "/ob — ดู Bull OB / Bear OB ปัจจุบัน (M5 + M15)\n"
         "/bias — ดู HTF direction H1/H4/Daily\n"
-        "/news — เช็คข่าว Economic Calendar\n\n"
+        "/news — เช็คข่าว Economic Calendar + ข่าวถัดไป\n\n"
         "⚙️ *Control*\n"
-        "/status — ดูสถานะ bot\n"
-        "/mt5 — ดู MT5 account + open positions\n"
+        "/status — ดูสถานะ bot + win/loss summary\n"
+        "/mt5 — ดู MT5 account balance + open positions\n"
         "/posguard — ดู POS Guard config + force check\n"
-        "/pause — หยุดสแกนชั่วคราว\n"
-        "/resume — เริ่มสแกนใหม่\n\n"
-        "📊 *Report & Tools*\n"
+        "/pause — หยุด auto-scan ชั่วคราว\n"
+        "/resume — เริ่ม auto-scan ใหม่\n"
+        "/closetrade [exit\\_price] — ปิด trailing monitor + บันทึกผล\n\n"
+        "📊 *Report & P&L*\n"
         "/report — สรุป trade จริง + P&L รายวัน\n"
-        "/txreport [today|week|month|year] — ดู MT5 transactions + P&L แยกช่วงเวลา\n"
-        "/trades — ดู trade history ทั้งหมด\n"
-        "/outcome [id] [win/loss/be] [จุด] [exit] — บันทึกผลหลังเทรด\n"
+        "/txreport [today|week|month|year] — MT5 transactions + net P&L แยกช่วง\n"
+        "/tx — transactions ล่าสุด 15 รายการ\n"
+        "/trades — ดู trade log ทั้งหมด\n"
+        "/pending — trades ที่ยังรอบันทึก outcome\n"
+        "/pnl — สรุป P&L + win rate (paper trade)\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
-        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry แบบ scale-in\n"
-        "/closetrade [exit_price] — ปิด trailing monitor\n\n"
-        "📝 *Paper Trade (ลงกระดาษ)*\n"
-        "/paper buy 4290 sl 4250 tp 4360 — เปิด Long\n"
-        "/paper sell 4350 sl 4380 tp 4290 — เปิด Short\n"
-        "/paper status — ดู open trades\n"
-        "/paper close [id] [price] — ปิด trade\n"
-        "/pnl — สรุป P&L + win rate\n\n"
-        "/ask [คำถาม] — ถามอะไรก็ได้\n\n"
-        "หรือพิมข้อความถามได้เลยครับ 🤖",
-        parse_mode="Markdown"
     )
+    msg2 = (
+        "🗂 *Data & Sync*\n"
+        "/sync — sync MT5 transactions ทันที (debug)\n"
+        "/outcome [id] [win/loss/be] [จุด] [exit] — บันทึกผลหลังเทรด\n"
+        "/backfill — ดึง MT5 deal history แล้ว match กับ pending trades\n"
+        "/mt5import [days] — import MT5 closed trades เข้า DB\n\n"
+        "🧮 *Tools*\n"
+        "/scalein [top] [bot] [bull/bear] [balance] — คำนวณ entry scale-in\n"
+        "/ask [คำถาม] — ถาม AI อะไรก็ได้เกี่ยวกับตลาด\n\n"
+        "📝 *Paper Trade*\n"
+        "/paper buy 3300 sl 3280 tp 3340 — เปิด Long\n"
+        "/paper sell 3350 sl 3370 tp 3300 — เปิด Short\n"
+        "/paper status — ดู open paper trades\n"
+        "/paper close [id] [price] — ปิด paper trade\n\n"
+        "💬 หรือพิมข้อความถามได้เลยครับ 🤖"
+    )
+    await update.message.reply_text(msg1, parse_mode="Markdown")
+    await update.message.reply_text(msg2, parse_mode="Markdown")
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
