@@ -134,15 +134,19 @@
     return '#9ca3af';
   }
 
-  // News events in Thai time UTC+7 [h, m, label, impact:'high'|'med']
-  const NEWS_EVENTS = [
-    [2,30,'ADP','med'],[3,0,'ISM','med'],
-    [14,30,'CPI','high'],[14,30,'PPI','high'],[14,30,'PCE','high'],
-    [19,30,'NFP','high'],[19,30,'Unemp','high'],
-    [21,0,'Fed','high'],[21,30,'FOMC','high'],
-    [15,0,'Retail Sales','med'],[16,15,'Industrial','med'],
-    [2,0,'BOJ','high'],[3,30,'GDP','med'],
-  ];
+  // Real news from ForexFactory via /api/news (news_scout)
+  let newsData = { next_event: null, upcoming: [], updated_at: null };
+
+  async function fetchNews() {
+    try {
+      const r = await fetch('/api/news');
+      const d = await r.json();
+      if (d && d.updated_at !== undefined) {
+        newsData = d;
+        newsInfo = nextNews();
+      }
+    } catch(e) {}
+  }
 
   // Session windows in Thai time UTC+7
   // Sydney: 05:00–07:00  (ASX open, before Tokyo)
@@ -180,14 +184,15 @@
     return 0;
   }
   function nextNews() {
-    const n = new Date(); const nowM = n.getHours()*60 + n.getMinutes();
-    let best = null, bestD = Infinity;
-    for (const [h,m,label,impact] of NEWS_EVENTS) {
-      const nm = h*60+m;
-      const d = nm > nowM ? nm - nowM : nm + 1440 - nowM;
-      if (d < bestD) { bestD = d; best = {label, impact, mins: d}; }
-    }
-    return best;
+    const nev = newsData.next_event;
+    if (!nev) return null;
+    return {
+      label:    nev.event,
+      timeLabel: nev.time_label,
+      dayLabel:  nev.day_label,
+      impact:   (nev.impact || '').toLowerCase().includes('high') ? 'high' : 'med',
+      mins:     nev.minutes_until ?? 9999,
+    };
   }
   function nowHHMM() {
     const n = new Date();
@@ -321,17 +326,26 @@
   function askKey(e) { if (e.key==='Enter') sendAsk(); }
 
   function fmtPnl(v) { return (v>=0?'+$':'-$')+Math.abs(v??0).toFixed(2); }
-  $: tradeMax = Math.max(...(stats.trades||[]).map(t=>Math.abs(t.p??t.pnl??0)), 1);
+
+  // Bars: prefer MT5 transactions (real P&L), fallback to scan-based stats.trades
+  $: barData = transactions.length
+    ? transactions.map(tx => ({pnl: Math.abs(tx.net_usd ?? 0), r: (tx.net_usd ?? 0) > 0 ? 'w' : (tx.net_usd ?? 0) < 0 ? 'l' : 'b'}))
+    : (stats.trades || []);
+  $: tradeMax = Math.max(...barData.map(t => Math.abs(t.pnl ?? t.p ?? 0)), 1);
   $: hasTradeData = (stats.wins + stats.losses) > 0;
 
   onMount(() => {
     initWs(); startPatrol();
     AGENTS_DEF.forEach((a,i) => setTimeout(()=>showBubble(i,a.idle[0],2400), i*500+600));
     calcNextScan();
+    fetchTransactions(activePeriod);
+    fetchNews();
     setInterval(() => {
       timeStr=nowHHMM(); sessStr=sessionLabel(); sessHrs=sessionHours();
       sessPct=sessionProgress(); newsInfo=nextNews(); calcNextScan();
     }, 30000);
+    // Refresh news from API every 10 min
+    setInterval(fetchNews, 600000);
   });
   onDestroy(() => { clearInterval(patrolTimer); if(ws) ws.close(); });
 </script>
@@ -406,17 +420,41 @@
         </div>
       </div>
 
+      <!-- ── MARKET: price + OB ──────────────────────────────── -->
+      <div class="sh">MARKET</div>
+      <div class="mkt-card">
+        <div class="mkt-price">
+          {#if price > 0}
+            <span class="mkt-sym">XAUUSD</span>
+            <span class="mkt-val">{price.toFixed(2)}</span>
+          {:else}
+            <span class="mkt-sym">XAUUSD</span>
+            <span class="mkt-val-dim">—</span>
+          {/if}
+        </div>
+        {#if nearestOb.lo > 0}
+          <div class="mkt-ob">
+            <span class="mkt-ob-tag" style="color:{nearestOb.type==='BULL'?'#22c55e':'#ef4444'}">{nearestOb.type} OB</span>
+            <span class="mkt-ob-range">{nearestOb.lo} – {nearestOb.hi}</span>
+            <span class="mkt-ob-dist">{nearestOb.dist}p away</span>
+          </div>
+        {:else}
+          <div class="mkt-ob-none">No OB data yet — run scan</div>
+        {/if}
+      </div>
+
       <div class="sh">TRADE HISTORY BARS</div>
       <div class="bars">
-        {#each (stats.trades||[]) as t}
+        {#each barData as t}
           {@const pv = Math.abs(t.pnl ?? t.p ?? 1)}
           {@const h = Math.max(4, Math.round(pv/tradeMax*32))}
-          {@const win = (t.r ?? (t.pnl >= 0 ? 'w' : 'l')) === 'w'}
+          {@const win = t.r === 'w'}
+          {@const be  = t.r === 'b'}
           <div style="display:flex;flex-direction:column;align-items:center;flex:1">
-            <div class="bar" class:bar-w={win} class:bar-l={!win} style="height:{h}px"></div>
+            <div class="bar" class:bar-w={win} class:bar-b={be} class:bar-l={!win&&!be} style="height:{h}px"></div>
           </div>
         {/each}
-        {#if !(stats.trades||[]).length}
+        {#if !barData.length}
           <div style="font-size:10px;color:#374151;width:100%;text-align:center">No trades</div>
         {/if}
       </div>
@@ -426,8 +464,16 @@
         <div class="sess-name">{sessStr}</div>
         <div class="sess-hrs">{sessHrs}</div>
         <div class="sess-news">
-          <span class="news-pill">News: clear</span>
-          <span class="news-pill">Next: CPI 21:30</span>
+          {#if !newsData.updated_at}
+            <span class="news-pill">News: —</span>
+          {:else if newsInfo && newsInfo.mins <= 60}
+            <span class="news-pill" style="color:#f87171;border-color:rgba(220,38,38,.3)">⚠ {newsInfo.label} {newsInfo.mins}m</span>
+          {:else if newsInfo}
+            <span class="news-pill">✓ clear</span>
+            <span class="news-pill">Next: {newsInfo.label} {newsInfo.timeLabel}</span>
+          {:else}
+            <span class="news-pill">✓ clear</span>
+          {/if}
         </div>
       </div>
 
@@ -533,10 +579,12 @@
               <!-- news row -->
               <div class="nb-row">
                 <span class="nb-lbl">News</span>
-                {#if newsInfo && newsInfo.mins <= 60}
+                {#if !newsData.updated_at}
+                  <span class="nb-news-ok" style="color:#4b5563">loading…</span>
+                {:else if newsInfo && newsInfo.mins <= 60}
                   <span class="nb-news-warn">⚠ {newsInfo.label} {newsInfo.mins}m</span>
                 {:else if newsInfo}
-                  <span class="nb-news-ok">✓ clear · {newsInfo.label} {Math.floor(newsInfo.mins/60)}h{newsInfo.mins%60>0?`${newsInfo.mins%60}m`:''}</span>
+                  <span class="nb-news-ok">✓ {newsInfo.label} {newsInfo.timeLabel} {newsInfo.dayLabel}</span>
                 {:else}
                   <span class="nb-news-ok">✓ clear</span>
                 {/if}
@@ -720,11 +768,24 @@
   .sl{font-size:9px;color:#4b5563;margin-bottom:2px}
   .sv{font-size:17px;font-weight:500;color:#e5e7eb}
 
+  /* ── LEFT: MARKET price + OB ────────────────────────────── */
+  .mkt-card{padding:7px 12px 8px;flex-shrink:0}
+  .mkt-price{display:flex;align-items:baseline;gap:7px;margin-bottom:5px}
+  .mkt-sym{font-size:9px;color:#4b5563;font-weight:600;letter-spacing:.07em;text-transform:uppercase}
+  .mkt-val{font-size:20px;font-weight:700;color:#f9d72f;font-family:monospace;letter-spacing:-.5px}
+  .mkt-val-dim{font-size:20px;font-weight:700;color:#374151;font-family:monospace}
+  .mkt-ob{display:flex;align-items:center;gap:6px;background:#131320;border-radius:5px;padding:4px 8px}
+  .mkt-ob-tag{font-size:9.5px;font-weight:700}
+  .mkt-ob-range{font-size:9.5px;color:#d1d5db;font-family:monospace}
+  .mkt-ob-dist{font-size:9px;color:#6b7280;margin-left:auto}
+  .mkt-ob-none{font-size:9px;color:#374151;font-style:italic}
+
   /* ── LEFT: BARS ──────────────────────────────────────────── */
   .bars{display:flex;align-items:flex-end;gap:2px;padding:6px 10px;height:42px;flex-shrink:0}
   .bar{flex:1;border-radius:2px 2px 0 0;background:#1f2937}
   .bar-w{background:#16a34a}
   .bar-l{background:#dc2626}
+  .bar-b{background:#374151}
 
   /* ── LEFT: SESSION ───────────────────────────────────────── */
   .sess-card{padding:8px 12px;flex-shrink:0}

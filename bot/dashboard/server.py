@@ -17,15 +17,30 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def start_stats_refresh():
     asyncio.create_task(_stats_refresh_loop())
     asyncio.create_task(_price_loop())
+    asyncio.create_task(_news_refresh_loop())
 
 async def _price_loop():
-    """Fetch XAUUSD price every 60s via yfinance and broadcast."""
+    """Fetch XAUUSD spot price every 60s via yfinance and broadcast. Fetch immediately on first run."""
     global current_price, nearest_ob
+    first = True
     while True:
-        await asyncio.sleep(60)
+        if not first:
+            await asyncio.sleep(60)
+        first = False
         try:
             import yfinance as yf
-            price = round(float(yf.Ticker("GC=F").fast_info.last_price), 2)
+            # XAUUSD=X = Gold spot price in USD (more accurate than GC=F futures)
+            price = 0.0
+            for ticker in ["XAUUSD=X", "GC=F"]:
+                try:
+                    p = round(float(yf.Ticker(ticker).fast_info.last_price), 2)
+                    if p and p > 1000:
+                        price = p
+                        break
+                except Exception:
+                    continue
+            if not price:
+                continue
             current_price = price
             ob_lo = nearest_ob.get("lo", 0)
             ob_hi = nearest_ob.get("hi", 0)
@@ -35,6 +50,26 @@ async def _price_loop():
             await manager.broadcast({"type": "price_update", "price": price, "ob": nearest_ob})
         except Exception:
             pass
+
+async def _news_refresh_loop():
+    """Refresh news cache every 15 min from ForexFactory via news_scout. Immediate on startup."""
+    global news_cache
+    first = True
+    while True:
+        if not first:
+            await asyncio.sleep(900)  # 15 min
+        first = False
+        try:
+            from agents.news_scout import get_next_event, get_upcoming_news
+            next_ev = get_next_event()
+            upcoming = get_upcoming_news(240) or []
+            news_cache = {
+                "next_event": next_ev,
+                "upcoming": upcoming[:6],
+                "updated_at": datetime.now().strftime("%H:%M"),
+            }
+        except Exception as e:
+            print(f"[news] refresh error: {e}")
 
 async def _stats_refresh_loop():
     """Broadcast stats every 15s — always read from DB directly."""
@@ -111,6 +146,8 @@ nearest_ob: dict = {"type": "?", "lo": 0.0, "hi": 0.0, "dist": 0}
 stats_cache: dict = {}  # {"today": {...}, "week": {...}, ...}
 # Transaction cache per period — populated by bot push
 transactions_cache: dict = {}  # {"today": [...], "week": [...], ...}
+# News cache — populated by _news_refresh_loop every 15 min
+news_cache: dict = {}  # {"next_event": {...}, "upcoming": [...], "updated_at": "HH:MM"}
 
 GATHER_MSGS = {
     "supervisor":    "Knights, to the table!",
@@ -217,14 +254,61 @@ def get_stats_period(period: str = "today"):
 class StatsSyncBody(BaseModel):
     stats_all: dict           # {period: stats_dict} from bot's DB
     transactions_all: dict = {}  # {period: list of tx dicts}
+    current_price: float = 0.0   # current MT5 XAUUSD mid-price
 
 @app.post("/api/stats-sync")
 async def stats_sync(body: StatsSyncBody):
     """Bot pushes all-period stats without a scan (startup, periodic refresh)."""
-    global transactions_cache
+    global stats, stats_cache, transactions_cache, current_price, nearest_ob
+    stats_cache.update(body.stats_all)
     if body.transactions_all:
         transactions_cache.update(body.transactions_all)
+    # Real MT5 price overrides yfinance
+    if body.current_price and body.current_price > 1000:
+        current_price = body.current_price
+        ob_lo = nearest_ob.get("lo", 0)
+        ob_hi = nearest_ob.get("hi", 0)
+        ob_mid = (ob_lo + ob_hi) / 2 if ob_lo else 0
+        dist = round(abs(current_price - ob_mid) * 10, 1) if ob_mid else 0
+        await manager.broadcast({"type": "price_update", "price": current_price,
+                                  "ob": {**nearest_ob, "dist": dist}})
+    if "today" in body.stats_all:
+        stats = body.stats_all["today"]
+        await manager.broadcast({"type": "stats", "data": stats})
     return {"ok": True}
+
+@app.post("/api/scan-start")
+async def scan_start():
+    """Bot calls this at start of a real scan — triggers gathering animation on dashboard."""
+    global scan_running, scan_phase
+    if scan_running:
+        return {"ok": False, "msg": "scan already running"}
+    scan_running = True
+    asyncio.create_task(_run_gather_animate())
+    return {"ok": True}
+
+async def _run_gather_animate():
+    """Runs gathering + scanning animation while bot does the real scan."""
+    global scan_phase
+    agents = ["supervisor", "chart_analyst", "bias_analyst", "news_scout", "risk_manager"]
+    scan_phase = "gathering"
+    await manager.broadcast({"type": "scan_phase", "phase": "gathering"})
+    for a in agents:
+        await manager.broadcast({"type": "agent_bubble", "agent": a, "text": GATHER_MSGS[a]})
+        await asyncio.sleep(0.35)
+    await asyncio.sleep(1.4)
+    scan_phase = "scanning"
+    await manager.broadcast({"type": "scan_phase", "phase": "scanning"})
+    for a in agents:
+        await manager.broadcast({"type": "agent_bubble", "agent": a, "text": ANALYZE_MSGS[a]})
+        await asyncio.sleep(0.3)
+    # Result arrives via /api/push — scan_running cleared there
+    asyncio.create_task(_scan_timeout(120))
+
+@app.get("/api/news")
+def get_news():
+    """Return cached news from ForexFactory (via news_scout). Refreshes every 15 min."""
+    return news_cache if news_cache else {"next_event": None, "upcoming": [], "updated_at": None}
 
 @app.get("/api/transactions")
 def get_transactions(period: str = "today"):
@@ -284,17 +368,21 @@ class PushBody(BaseModel):
     result: dict            # raw supervisor.run() output
     stats_all: dict = {}   # {period: stats_dict} from bot's Windows DB
     transactions_all: dict = {}  # {period: list of tx dicts}
+    current_price: float = 0.0   # MT5 mid price at push time
 
 @app.post("/api/push")
 async def push_result(body: PushBody):
     """Bot calls this after every supervisor.run() to update dashboard live."""
-    global latest_signal, scan_log, stats, scan_running, stats_cache, transactions_cache
+    global latest_signal, scan_log, stats, scan_running, stats_cache, transactions_cache, current_price
     scan_running = False  # unblock Scan Now button
     # Cache bot-provided stats (from Windows DB) — used for all periods
     if body.stats_all:
         stats_cache.update(body.stats_all)
     if body.transactions_all:
         transactions_cache.update(body.transactions_all)
+    # Use real MT5 price from bot (takes priority over supervisor result & yfinance)
+    if body.current_price and body.current_price > 1000:
+        current_price = body.current_price
     mapped = _map_supervisor_result(body.result)
     sig = mapped["signal"]
     latest_signal = sig

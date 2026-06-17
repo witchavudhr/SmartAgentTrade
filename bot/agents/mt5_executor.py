@@ -41,6 +41,18 @@ def disconnect():
         mt5.shutdown()
 
 
+def get_current_price() -> float:
+    """ดึงราคาปัจจุบันของ MT5_SYMBOL (mid price) — คืน 0.0 ถ้าเชื่อมไม่ได้"""
+    ok, _ = _connect()
+    if not ok:
+        return 0.0
+    tick = mt5.symbol_info_tick(MT5_SYMBOL)
+    disconnect()
+    if tick is None:
+        return 0.0
+    return round((tick.bid + tick.ask) / 2, 2)
+
+
 def get_account_info() -> dict:
     """ดูข้อมูล account (balance, equity, margin)"""
     ok, err = _connect()

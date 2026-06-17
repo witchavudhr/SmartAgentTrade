@@ -39,7 +39,7 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 DASHBOARD_URL = "http://localhost:8000"
 
 def _sync_stats_to_dashboard():
-    """Push all-period stats + transactions to dashboard (best-effort, no scan required)."""
+    """Push all-period stats + transactions + current MT5 price to dashboard (best-effort)."""
     try:
         import urllib.request
         from agents.trade_log import get_dashboard_stats, get_transactions_by_period
@@ -55,12 +55,36 @@ def _sync_stats_to_dashboard():
                 transactions_all[period] = tx_data["txs"]
             except Exception:
                 pass
-        data = json.dumps({"stats_all": stats_all, "transactions_all": transactions_all}).encode()
+        current_price = 0.0
+        try:
+            from agents.mt5_executor import get_current_price
+            current_price = get_current_price()
+        except Exception:
+            pass
+        data = json.dumps({
+            "stats_all": stats_all,
+            "transactions_all": transactions_all,
+            "current_price": current_price,
+        }).encode()
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/stats-sync",
             data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
         urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
+
+def _notify_scan_start():
+    """แจ้ง dashboard ให้เริ่ม gathering animation ก่อน scan จริง (best-effort)."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{DASHBOARD_URL}/api/scan-start",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2)
     except Exception:
         pass
 
@@ -81,7 +105,18 @@ def _push_to_dashboard(result: dict):
                 transactions_all[period] = tx_data["txs"]
             except Exception:
                 pass
-        data = json.dumps({"result": result, "stats_all": stats_all, "transactions_all": transactions_all}).encode()
+        current_price = 0.0
+        try:
+            from agents.mt5_executor import get_current_price
+            current_price = get_current_price()
+        except Exception:
+            pass
+        data = json.dumps({
+            "result": result,
+            "stats_all": stats_all,
+            "transactions_all": transactions_all,
+            "current_price": current_price,
+        }).encode()
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/push",
             data=data, headers={"Content-Type": "application/json"}, method="POST"
@@ -163,6 +198,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
+    _notify_scan_start()
     result = supervisor.run(force_session=True)  # manual scan ข้าม session filter
     log_scan(result)
     _push_to_dashboard(result)
@@ -1651,7 +1687,7 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     แสดงผล vote ของแต่ละ agent + reasoning เพื่อ debug
     """
     await update.message.reply_text("🔬 *Test Scan* — รัน pipeline (ไม่เปิด trade จริง)...", parse_mode="Markdown")
-
+    _notify_scan_start()
     result = supervisor.run()
     _push_to_dashboard(result)
 
@@ -1980,6 +2016,7 @@ async def _rescan_after_close(ctx: ContextTypes.DEFAULT_TYPE):
             text="🔄 *Re-scan หลังไม้ปิด* — กำลังหา setup ใหม่...",
             parse_mode="Markdown",
         )
+        _notify_scan_start()
         result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
         log_scan(result)
         _push_to_dashboard(result)
@@ -2700,6 +2737,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+    _notify_scan_start()
     result = supervisor.run()
     log_scan(result)
     _push_to_dashboard(result)
