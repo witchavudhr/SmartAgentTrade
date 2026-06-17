@@ -104,17 +104,46 @@
     return '#9ca3af';
   }
 
+  // News events in Thai time UTC+7 [h, m, label, impact:'high'|'med']
+  const NEWS_EVENTS = [
+    [2,30,'ADP','med'],[3,0,'ISM','med'],
+    [14,30,'CPI','high'],[14,30,'PPI','high'],[14,30,'PCE','high'],
+    [19,30,'NFP','high'],[19,30,'Unemp','high'],
+    [21,0,'Fed','high'],[21,30,'FOMC','high'],
+    [15,0,'Retail Sales','med'],[16,15,'Industrial','med'],
+    [2,0,'BOJ','high'],[3,30,'GDP','med'],
+  ];
+
   function sessionLabel() {
     const h = new Date().getHours();
-    if (h >= 8 && h < 17) return 'London Session';
-    if (h >= 13 && h < 22) return 'NY Session';
+    if (h >= 8 && h < 17) return 'London';
+    if (h >= 13 && h < 22) return 'New York';
+    if (h >= 1  && h < 8)  return 'Asia';
     return 'Off-hours';
   }
   function sessionHours() {
     const h = new Date().getHours();
-    if (h >= 8 && h < 17) return '15:30 → 21:00 UTC+7';
-    if (h >= 13 && h < 22) return '20:00 → 03:00 UTC+7';
+    if (h >= 8 && h < 17) return '15:30→21:00';
+    if (h >= 13 && h < 22) return '20:00→03:00';
     return '—';
+  }
+  function sessionProgress() {
+    const n = new Date(); const nowM = n.getHours()*60 + n.getMinutes();
+    const windows = [[8*60,17*60],[13*60,22*60],[1*60,8*60]];
+    for (const [s,e] of windows) {
+      if (nowM >= s && nowM < e) return Math.round((nowM-s)/(e-s)*100);
+    }
+    return 0;
+  }
+  function nextNews() {
+    const n = new Date(); const nowM = n.getHours()*60 + n.getMinutes();
+    let best = null, bestD = Infinity;
+    for (const [h,m,label,impact] of NEWS_EVENTS) {
+      const nm = h*60+m;
+      const d = nm > nowM ? nm - nowM : nm + 1440 - nowM;
+      if (d < bestD) { bestD = d; best = {label, impact, mins: d}; }
+    }
+    return best;
   }
   function nowHHMM() {
     const n = new Date();
@@ -124,9 +153,11 @@
     const n = new Date();
     return `${n.toLocaleDateString('en-US',{month:'short'})} ${n.getDate()}`;
   }
-  let timeStr = nowHHMM();
-  let sessStr = sessionLabel();
-  let sessHrs = sessionHours();
+  let timeStr   = nowHHMM();
+  let sessStr   = sessionLabel();
+  let sessHrs   = sessionHours();
+  let sessPct   = sessionProgress();
+  let newsInfo  = nextNews();
 
   // ── Knights ───────────────────────────────────────────────────────────────
   function showBubble(idx, txt, dur=2500) {
@@ -252,7 +283,10 @@
     initWs(); startPatrol();
     AGENTS_DEF.forEach((a,i) => setTimeout(()=>showBubble(i,a.idle[0],2400), i*500+600));
     calcNextScan();
-    setInterval(() => { timeStr=nowHHMM(); sessStr=sessionLabel(); sessHrs=sessionHours(); calcNextScan(); }, 30000);
+    setInterval(() => {
+      timeStr=nowHHMM(); sessStr=sessionLabel(); sessHrs=sessionHours();
+      sessPct=sessionProgress(); newsInfo=nextNews(); calcNextScan();
+    }, 30000);
   });
   onDestroy(() => { clearInterval(patrolTimer); if(ws) ws.close(); });
 </script>
@@ -412,6 +446,57 @@
             <g transform="translate(110,82) rotate(198)"><circle cx="-8" cy="0" r="3" fill="#F57F17"/><rect x="-7" y="-1.8" width="11" height="3.6" rx="1.2" fill="#6A3600"/><rect x="3.5" y="-5" width="3" height="10" rx="1" fill="#F9A825"/><rect x="6" y="-1" width="44" height="2" rx="1" fill="#D4C040"/><polygon points="50,-1 50,1 56,0" fill="#E0D050"/></g>
           </svg>
           <div class="vbn" class:on={vbnVisible}>{vbnText}</div>
+
+          <!-- ── Notice board (left wall) ────────────────────── -->
+          <div class="nboard">
+            <svg class="nb-bg" width="128" height="56" viewBox="0 0 128 56" xmlns="http://www.w3.org/2000/svg">
+              <!-- frame shadow -->
+              <rect x="2" y="2" width="124" height="52" rx="4" fill="rgba(0,0,0,.5)"/>
+              <!-- wood body -->
+              <rect x="0" y="0" width="124" height="52" rx="4" fill="#3D1F08" stroke="#7B4920" stroke-width="1.2"/>
+              <rect x="3" y="3" width="118" height="46" rx="3" fill="#2A1408"/>
+              <!-- grain lines -->
+              <line x1="3" y1="14" x2="121" y2="14" stroke="#361A09" stroke-width=".7"/>
+              <line x1="3" y1="26" x2="121" y2="26" stroke="#361A09" stroke-width=".7"/>
+              <line x1="3" y1="38" x2="121" y2="38" stroke="#361A09" stroke-width=".7"/>
+              <!-- pin left & right -->
+              <circle cx="10" cy="6" r="3.5" fill="#C4980E" stroke="#8B6914" stroke-width=".8"/>
+              <circle cx="114" cy="6" r="3.5" fill="#C4980E" stroke="#8B6914" stroke-width=".8"/>
+            </svg>
+            <div class="nb-content">
+              <div class="nb-title">WAR ROOM</div>
+
+              <!-- session row -->
+              <div class="nb-row">
+                <span class="nb-lbl">Session</span>
+                <span class="nb-val">{sessStr}</span>
+              </div>
+              {#if sessPct > 0}
+              <div class="nb-prog-wrap">
+                <div class="nb-prog-bar" style="width:{sessPct}%"></div>
+              </div>
+              {/if}
+
+              <!-- news row -->
+              <div class="nb-row">
+                <span class="nb-lbl">News</span>
+                {#if newsInfo && newsInfo.mins <= 60}
+                  <span class="nb-news-warn">⚠ {newsInfo.label} {newsInfo.mins}m</span>
+                {:else if newsInfo}
+                  <span class="nb-news-ok">✓ clear · {newsInfo.label} {Math.floor(newsInfo.mins/60)}h{newsInfo.mins%60>0?`${newsInfo.mins%60}m`:''}</span>
+                {:else}
+                  <span class="nb-news-ok">✓ clear</span>
+                {/if}
+              </div>
+
+              <!-- next scan row -->
+              <div class="nb-row">
+                <span class="nb-lbl">Scan</span>
+                <span class="nb-val">in {nextScanMins}m</span>
+              </div>
+            </div>
+          </div>
+
           {#each knights as k, i}
             <div class="kn" class:mv={k.moving} class:fl={k.flip}
                  style="left:{k.pos.l}px;top:{k.pos.t}px"
@@ -666,6 +751,25 @@
   .ob-tag{font-weight:600;font-size:10px}
   .ob-dist{font-size:10px;color:#6b7280}
   .tb-scan-cd{font-size:9.5px;color:#4b5563;white-space:nowrap}
+
+  /* ── WAR ROOM: Notice board ─────────────────────────────── */
+  .nboard{position:absolute;left:68px;top:3px;z-index:7;width:124px}
+  .nb-bg{display:block}
+  .nb-content{
+    position:absolute;top:5px;left:5px;right:5px;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
+  .nb-title{
+    font-size:7px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+    color:#C4980E;text-align:center;margin-bottom:3px;
+  }
+  .nb-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;line-height:1.1}
+  .nb-lbl{font-size:7.5px;color:#5a3a1a;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+  .nb-val{font-size:8px;color:#d4a868;font-weight:500}
+  .nb-news-warn{font-size:7.5px;color:#f87171;font-weight:600}
+  .nb-news-ok{font-size:7.5px;color:#4ade80}
+  .nb-prog-wrap{height:3px;background:rgba(255,255,255,.08);border-radius:99px;margin-bottom:3px;overflow:hidden}
+  .nb-prog-bar{height:100%;border-radius:99px;background:linear-gradient(90deg,#d97706,#f59e0b);transition:width 1s}
 
   /* ── LEFT: HTF BIAS ─────────────────────────────────────── */
   .htf-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:rgba(255,255,255,.06);flex-shrink:0}
