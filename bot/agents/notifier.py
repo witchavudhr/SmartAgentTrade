@@ -2129,6 +2129,44 @@ async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
         print(f"[mt5_sync] error: {e}")
 
 
+async def cmd_resetmt5(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/resetmt5 [days] — ลบ mt5_transactions ทั้งหมด แล้ว sync ใหม่จาก MT5 (default 30 วัน)"""
+    if not mt5_executor.is_available():
+        await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม — เช็ค MT5_ENABLED ใน .env")
+        return
+
+    days = 30
+    if ctx.args:
+        try:
+            days = max(1, min(90, int(ctx.args[0])))
+        except ValueError:
+            pass
+
+    await update.message.reply_text(f"🗑 กำลังล้าง mt5_transactions แล้ว sync ใหม่ {days} วัน...")
+
+    try:
+        import sqlite3
+        from agents.trade_log import DB_PATH, init_db
+        init_db()
+        conn = sqlite3.connect(DB_PATH)
+        deleted = conn.execute("DELETE FROM mt5_transactions").rowcount
+        conn.commit()
+        conn.close()
+
+        hours = days * 24
+        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, hours)
+        newly = res["newly"]
+
+        msg = _fmt_sync_result(res)
+        await update.message.reply_text(
+            f"✅ ล้างไป {deleted} records\n{msg}",
+            parse_mode="Markdown"
+        )
+        _sync_stats_to_dashboard()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/sync [days] — ดึง closed positions จาก MT5 มาเก็บ transaction (default 2 วัน, max 90 วัน)
     ตัวอย่าง: /sync       → ย้อนหลัง 2 วัน
@@ -2776,6 +2814,7 @@ def run():
     app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("mt5import", cmd_mt5import))
     app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("resetmt5", cmd_resetmt5))
     app.add_handler(CommandHandler("tx", cmd_tx))
     app.add_handler(CommandHandler("txreport", cmd_txreport))
     app.add_handler(CommandHandler("export", cmd_export))
