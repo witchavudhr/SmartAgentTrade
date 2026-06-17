@@ -29,6 +29,26 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 DASHBOARD_URL = "http://localhost:8000"
 
+def _sync_stats_to_dashboard():
+    """Push all-period stats to dashboard (best-effort, no scan required)."""
+    try:
+        import urllib.request
+        from agents.trade_log import get_dashboard_stats
+        stats_all = {}
+        for period in ("today", "week", "month", "year", "all"):
+            try:
+                stats_all[period] = get_dashboard_stats(period)
+            except Exception:
+                pass
+        data = json.dumps({"stats_all": stats_all}).encode()
+        req = urllib.request.Request(
+            f"{DASHBOARD_URL}/api/stats-sync",
+            data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
+
 def _push_to_dashboard(result: dict):
     """Push supervisor result + live stats to War Room dashboard (best-effort)."""
     try:
@@ -2693,6 +2713,12 @@ def run():
 
     # MT5 transaction sync — ทุก 3 นาที เก็บ transaction ทุกไม้ (กันจับพลาดตอนปิด)
     app.job_queue.run_repeating(mt5_sync_job, interval=180, first=90)
+
+    # Dashboard stats sync — push stats ทุก 3 นาที + ทันทีตอน startup (first=5)
+    async def _stats_sync_job(ctx):
+        import asyncio
+        await asyncio.get_event_loop().run_in_executor(None, _sync_stats_to_dashboard)
+    app.job_queue.run_repeating(_stats_sync_job, interval=180, first=5)
 
     # POS Guard — เช็ค SL ของทุก open position ทุก N วินาที
     if pos_guard.POSGUARD_ENABLED:

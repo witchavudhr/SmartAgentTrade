@@ -37,13 +37,16 @@ async def _price_loop():
             pass
 
 async def _stats_refresh_loop():
-    """Refresh stats from DB every 15s and broadcast to all clients."""
+    """Broadcast stats every 15s — prefer bot-pushed cache over local DB."""
     global stats
     while True:
         await asyncio.sleep(15)
         try:
-            from agents.trade_log import get_dashboard_stats
-            new_stats = get_dashboard_stats()
+            if "today" in stats_cache:
+                new_stats = stats_cache["today"]
+            else:
+                from agents.trade_log import get_dashboard_stats
+                new_stats = get_dashboard_stats()
             if new_stats != stats:
                 stats = new_stats
                 await manager.broadcast({"type": "stats", "data": stats})
@@ -195,6 +198,19 @@ def get_stats_period(period: str = "today"):
         return get_dashboard_stats(period)
     except Exception as e:
         return {"error": str(e)}
+
+class StatsSyncBody(BaseModel):
+    stats_all: dict  # {period: stats_dict} from bot's DB
+
+@app.post("/api/stats-sync")
+async def stats_sync(body: StatsSyncBody):
+    """Bot pushes all-period stats without a scan (startup, periodic refresh)."""
+    global stats, stats_cache
+    stats_cache.update(body.stats_all)
+    if "today" in body.stats_all:
+        stats = body.stats_all["today"]
+        await manager.broadcast({"type": "stats", "data": stats})
+    return {"ok": True}
 
 @app.post("/api/refresh-stats")
 async def refresh_stats():
