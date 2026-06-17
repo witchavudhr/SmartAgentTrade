@@ -144,7 +144,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     msg2 = (
         "🗂 <b>Data &amp; Sync</b>\n"
-        "/sync — sync MT5 transactions ทันที (debug)\n"
+        "/sync [วัน] — sync MT5 transactions (default 2 วัน, /sync 30 = ย้อนหลัง 30 วัน)\n"
         "/outcome &lt;id&gt; &lt;win|loss|be&gt; &lt;จุด&gt; &lt;exit&gt; — บันทึกผลหลังเทรด\n"
         "/backfill — ดึง MT5 deal history แล้ว match กับ pending trades\n"
         "/mt5import &lt;days&gt; — import MT5 closed trades เข้า DB\n\n"
@@ -1284,9 +1284,8 @@ async def _handle_scan_result(result: dict, send_fn):
         current_mkt = result.get("current_price") or 0
 
         # ตรวจว่า entry zone valid สำหรับ market order
-        # ใช้ OB top/bottom (ไม่ใช่ midpoint) เปรียบกับราคาตลาด
-        # BUY: ราคาต้องไม่สูงกว่า OB_top เกิน $25 (มิฉะนั้น = ยังไม่ pullback ถึง OB)
-        # SELL: ราคาต้องไม่ต่ำกว่า OB_bottom เกิน $25
+        # OB setup: ราคาต้องอยู่ใน OB zone (bottom-3 <= price <= top+3) จึง execute
+        # Non-OB setup (SWEEP_REJECT ฯลฯ): เข้าได้ทันที threshold 25pts
         entry_far = False
         entry_far_msg = ""
         if entry_price and current_mkt:
@@ -1294,27 +1293,40 @@ async def _handle_scan_result(result: dict, send_fn):
             ob_top    = entry_raw2[1] if isinstance(entry_raw2, list) else entry_price
             ob_bottom = entry_raw2[0] if isinstance(entry_raw2, list) else entry_price
             setup_type_now = signal.get("setup_type", "")
+            is_ob_setup = "OB" in setup_type_now
 
-            # ทุก setup ที่มีชื่อ "OB" = ต้องรอให้ราคาถึง OB ก่อน → threshold แคบ (10 pts)
-            # setup อื่น เช่น SWEEP_REJECT = เข้าได้ทันที → threshold กว้าง (25 pts)
-            FAR_THRESHOLD = 10 if "OB" in setup_type_now else 25
-
-            if direction == "BUY" and (current_mkt - ob_top) > FAR_THRESHOLD:
-                dist_usd = round(current_mkt - ob_top, 2)
-                entry_far = True
-                entry_far_msg = (
-                    f"⏳ *รอ Pullback — ราคายังไม่ถึง OB*\n"
-                    f"ราคาตลาด `{current_mkt}` สูงกว่า OB top `{ob_top}` อยู่ `${dist_usd}` ({round(dist_usd*10)}p)\n"
-                    f"_ตั้ง BUY LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาลงมาถึงก่อน_"
-                )
-            elif direction == "SELL" and (ob_bottom - current_mkt) > FAR_THRESHOLD:
-                dist_usd = round(ob_bottom - current_mkt, 2)
-                entry_far = True
-                entry_far_msg = (
-                    f"⏳ *รอ Rally — ราคายังไม่ถึง OB*\n"
-                    f"ราคาตลาด `{current_mkt}` ต่ำกว่า OB bottom `{ob_bottom}` อยู่ `${dist_usd}` ({round(dist_usd*10)}p)\n"
-                    f"_ตั้ง SELL LIMIT ที่ OB zone `{ob_bottom}–{ob_top}` หรือรอราคาขึ้นมาถึงก่อน_"
-                )
+            if is_ob_setup:
+                # ราคาต้องอยู่ใน OB zone (เผื่อ spread 3pts)
+                in_ob_zone = (ob_bottom - 3) <= current_mkt <= (ob_top + 3)
+                if not in_ob_zone:
+                    entry_far = True
+                    dist_p = round(abs(ob_bottom - current_mkt) * 10) if current_mkt < ob_bottom else round(abs(current_mkt - ob_top) * 10)
+                    if direction == "SELL":
+                        entry_far_msg = (
+                            f"⏳ *รอ Rally — ราคายังไม่ถึง Bear OB*\n"
+                            f"ราคา `{current_mkt}` ห่าง OB `{ob_bottom}–{ob_top}` อยู่ `{dist_p}p`\n"
+                            f"_รอราคาขึ้นมาใน OB zone ก่อน_"
+                        )
+                    else:
+                        entry_far_msg = (
+                            f"⏳ *รอ Pullback — ราคายังไม่ถึง Bull OB*\n"
+                            f"ราคา `{current_mkt}` ห่าง OB `{ob_bottom}–{ob_top}` อยู่ `{dist_p}p`\n"
+                            f"_รอราคาลงมาใน OB zone ก่อน_"
+                        )
+            else:
+                # Non-OB setup: threshold กว้าง 25pts
+                if direction == "BUY" and (current_mkt - ob_top) > 25:
+                    entry_far = True
+                    entry_far_msg = (
+                        f"⏳ *รอ Pullback*\n"
+                        f"ราคา `{current_mkt}` สูงกว่า entry `{ob_top}` อยู่ `{round((current_mkt-ob_top)*10)}p`\n"
+                    )
+                elif direction == "SELL" and (ob_bottom - current_mkt) > 25:
+                    entry_far = True
+                    entry_far_msg = (
+                        f"⏳ *รอ Rally*\n"
+                        f"ราคา `{current_mkt}` ต่ำกว่า entry `{ob_bottom}` อยู่ `{round((ob_bottom-current_mkt)*10)}p`\n"
+                    )
 
         if mt5_executor.is_available() and entry_price and sl_price and direction in ("BUY","SELL") and not entry_far:
             lot_val = signal.get("lot") or 0.01
@@ -2070,12 +2082,29 @@ def _run_mt5_sync(hours: int = 24) -> dict:
 
 
 def _fmt_sync_result(newly: list) -> str:
-    lines = ["📥 *MT5 Sync — เก็บ transaction ใหม่*", "━━━━━━━━━━━━━━━━━"]
-    for n in newly:
+    wins   = [n for n in newly if n["outcome"] == "win"]
+    losses = [n for n in newly if n["outcome"] == "loss"]
+    be_    = [n for n in newly if n["outcome"] == "be"]
+    total_net = sum((n["net"] or 0) for n in newly)
+    total_pips = sum((n["pips"] or 0) for n in newly)
+    wr = round(len(wins) / (len(wins) + len(losses)) * 100) if (wins or losses) else 0
+
+    lines = [
+        f"📥 *MT5 Sync — เก็บ {len(newly)} transaction ใหม่*",
+        "━━━━━━━━━━━━━━━━━",
+        f"W`{len(wins)}` / L`{len(losses)}` / BE`{len(be_)}`  WR `{wr}%`",
+        f"P&L: `{total_pips:+.1f} pips`  Net: `${total_net:+.2f}`",
+        "━━━━━━━━━━━━━━━━━",
+    ]
+    # แสดงรายละเอียดสูงสุด 30 ไม้
+    show = newly[:30]
+    for n in show:
         icon = "✅" if n["outcome"] == "win" else "❌" if n["outcome"] == "loss" else "➖"
         tid = f"#{n['trade_id']}" if n["trade_id"] else f"T#{n['ticket']}"
-        net_s = f" | net `${n['net']:+.2f}`" if n["net"] is not None else ""
+        net_s = f" net`${n['net']:+.2f}`" if n["net"] is not None else ""
         lines.append(f"{icon} {tid} {n['dir']} `{n['pips']:+.1f}p`{net_s}")
+    if len(newly) > 30:
+        lines.append(f"_...และอีก {len(newly)-30} รายการ_")
     return "\n".join(lines)
 
 
@@ -2137,28 +2166,46 @@ async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/sync — ดึง closed positions จาก MT5 มาเก็บ transaction ทันที (manual trigger)"""
+    """/sync [days] — ดึง closed positions จาก MT5 มาเก็บ transaction (default 2 วัน, max 90 วัน)
+    ตัวอย่าง: /sync       → ย้อนหลัง 2 วัน
+              /sync 14    → ย้อนหลัง 14 วัน
+              /sync 90    → ย้อนหลัง 90 วัน (full history)
+    """
     if not mt5_executor.is_available():
-        await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม")
+        await update.message.reply_text("⚠️ MT5 ไม่ได้เชื่อม — เช็ค MT5_ENABLED ใน .env")
         return
-    await update.message.reply_text("🔄 กำลัง sync MT5 transactions...")
+
+    # parse days argument
+    days = 2
+    if ctx.args:
+        try:
+            days = max(1, min(90, int(ctx.args[0])))
+        except ValueError:
+            await update.message.reply_text("⚠️ argument ต้องเป็นตัวเลข เช่น `/sync 14`", parse_mode="Markdown")
+            return
+
+    hours = days * 24
+    await update.message.reply_text(f"🔄 กำลัง sync MT5 transactions ย้อนหลัง {days} วัน...")
     try:
-        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, 48)
+        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, hours)
         newly = res["newly"]
-        # debug: แสดง position_id ที่ MT5 ดึงมาได้ (เทียบกับ MT5 History)
         found = res.get("found_tickets", [])
         direct = res.get("direct_found", [])
-        dbg = (f"\n\n🔍 date-range = {len(found)} ไม้ | direct query = {len(direct)} ไม้")
+        dbg = f"\n\n🔍 date-range = {len(found)} ไม้ | direct query = {len(direct)} ไม้"
         if direct:
             dbg += f"\ndirect tickets: `{', '.join(str(t) for t in direct)}`"
         if not newly:
             await update.message.reply_text(
-                f"✅ ไม่มี transaction ใหม่ (เก็บครบแล้ว {res['total_closed']} ไม้ใน 48 ชม.)"
+                f"✅ ไม่มี transaction ใหม่ (เก็บครบแล้ว {res['total_closed']} ไม้ใน {days} วัน)"
                 f"{dbg}",
                 parse_mode="Markdown",
             )
             return
-        await update.message.reply_text(_fmt_sync_result(newly) + dbg, parse_mode="Markdown")
+        # ส่งทีละ chunk ถ้ามีเยอะ (Telegram limit 4096 chars)
+        msg = _fmt_sync_result(newly)
+        for chunk in [msg[i:i+3800] for i in range(0, len(msg), 3800)]:
+            await update.message.reply_text(chunk + (dbg if chunk == msg[:3800] else ""), parse_mode="Markdown")
+        _sync_stats_to_dashboard()
     except Exception as e:
         await update.message.reply_text(f"⚠️ Sync error: `{e}`", parse_mode="Markdown")
 
