@@ -1902,6 +1902,94 @@ async def _rescan_after_close(ctx: ContextTypes.DEFAULT_TYPE):
         print(f"[rescan] error: {e}")
 
 
+async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Background sync ทุก 3 นาที — ดึง closed positions จาก MT5 history
+    แล้วเก็บ transaction + อัปเดต outcome ของทุกไม้ที่ยังไม่บันทึก
+    รับประกันว่าเก็บครบทุกไม้ แม้ auto-close ตอนปิดจะจับพลาด
+    """
+    if not mt5_executor.is_available():
+        return
+    try:
+        from agents.trade_log import (
+            transaction_exists, find_trade_by_ticket,
+            log_mt5_transaction, update_outcome,
+        )
+        from datetime import datetime
+
+        closed = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: mt5_executor.get_closed_positions(24)
+        )
+        if not closed:
+            return
+
+        newly = []
+        for pos in closed:
+            ticket = pos["position_id"]
+            if transaction_exists(ticket):
+                continue  # เก็บแล้ว ข้าม
+
+            direction = pos["direction"] or "BUY"
+            open_px   = pos["open_price"]
+            close_px  = pos["close_price"]
+            if open_px is None or close_px is None:
+                continue
+            pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
+            pnl_pips = round(pnl_raw * 10, 1)
+            outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+
+            # หา trade row ที่ผูกกับ ticket นี้
+            trade = find_trade_by_ticket(ticket)
+            trade_id = trade["id"] if trade else None
+
+            # อัปเดต outcome ถ้ายัง NULL
+            if trade and trade.get("outcome") is None:
+                dur = None
+                if pos["open_time"] and pos["close_time"]:
+                    dur = int((pos["close_time"] - pos["open_time"]) / 60)
+                update_outcome(trade_id, outcome, pnl_pips,
+                               actual_entry=open_px, actual_exit=close_px,
+                               duration_min=dur)
+
+            # บันทึก transaction (กันซ้ำด้วย transaction_exists แล้ว)
+            deal = {
+                "close_price": close_px, "ticket": ticket,
+                "profit": pos["profit"], "commission": pos["commission"],
+                "swap": pos["swap"], "time": pos["close_time"],
+            }
+            ot = {
+                "entry": open_px, "lot": pos["volume"], "mt5_ticket": ticket,
+                "pair": pos["symbol"],
+                "opened_at": datetime.fromtimestamp(pos["open_time"]).strftime("%Y-%m-%d %H:%M:%S") if pos["open_time"] else None,
+            }
+            net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
+            newly.append({
+                "ticket": ticket, "dir": direction, "trade_id": trade_id,
+                "pips": pnl_pips, "outcome": outcome, "net": net,
+            })
+
+        if newly:
+            # state cleanup ถ้าไม้ที่เปิดอยู่เพิ่งถูก sync ว่าปิดแล้ว
+            ot_state = bot_state.get("open_trade")
+            if ot_state:
+                st_ticket = ot_state.get("mt5_ticket")
+                if st_ticket and any(n["ticket"] == int(st_ticket) for n in newly):
+                    state_manager.set_field(bot_state, "open_trade", None)
+
+            lines = ["📥 *MT5 Sync — เก็บ transaction ใหม่*", "━━━━━━━━━━━━━━━━━"]
+            for n in newly:
+                icon = "✅" if n["outcome"] == "win" else "❌" if n["outcome"] == "loss" else "➖"
+                tid = f"#{n['trade_id']}" if n["trade_id"] else f"T#{n['ticket']}"
+                net_s = f" | net `${n['net']:+.2f}`" if n["net"] is not None else ""
+                lines.append(f"{icon} {tid} {n['dir']} `{n['pips']:+.1f}p`{net_s}")
+            await ctx.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID, text="\n".join(lines), parse_mode="Markdown"
+            )
+            print(f"[mt5_sync] captured {len(newly)} new transactions")
+    except Exception as e:
+        print(f"[mt5_sync] error: {e}")
+
+
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     """
     ทำงานทุก 5 นาที — เช็ค trailing stop และ re-entry opportunity
@@ -2427,6 +2515,9 @@ def run():
 
     # Trade monitor — ทุก 5 นาที ตรวจ trailing + reentry
     app.job_queue.run_repeating(trade_monitor, interval=300, first=60)
+
+    # MT5 transaction sync — ทุก 3 นาที เก็บ transaction ทุกไม้ (กันจับพลาดตอนปิด)
+    app.job_queue.run_repeating(mt5_sync_job, interval=180, first=90)
 
     # POS Guard — เช็ค SL ของทุก open position ทุก N วินาที
     if pos_guard.POSGUARD_ENABLED:

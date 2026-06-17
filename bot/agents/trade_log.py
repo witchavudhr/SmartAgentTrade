@@ -328,6 +328,29 @@ def log_trade(analysis: dict, action: str, mt5_ticket: int = None) -> int:
     return trade_id
 
 
+def transaction_exists(ticket: int) -> bool:
+    """เช็คว่า ticket นี้ถูกบันทึกใน mt5_transactions แล้วหรือยัง (กันซ้ำ)"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT 1 FROM mt5_transactions WHERE ticket=? LIMIT 1", (ticket,)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def find_trade_by_ticket(ticket: int) -> dict | None:
+    """หา trade row จาก mt5_ticket — คืน dict หรือ None"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM trades WHERE mt5_ticket=? ORDER BY id DESC LIMIT 1", (ticket,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def log_mt5_transaction(trade_id: int, direction: str, deal: dict, open_trade: dict):
     """
     บันทึก MT5 transaction จริงหลัง position ปิด

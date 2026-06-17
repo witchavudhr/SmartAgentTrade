@@ -280,10 +280,13 @@ def get_last_deal_for_ticket(ticket: int) -> dict | None:
     return None
 
 
-def get_latest_closed_deal(symbol: str = "XAUUSD", hours: int = 4) -> dict | None:
-    """fallback: ดึง deal ปิดล่าสุดของ symbol ใน X ชั่วโมงที่ผ่านมา (ใช้เมื่อไม่รู้ ticket)"""
+def get_latest_closed_deal(symbol: str | None = None, hours: int = 4) -> dict | None:
+    """fallback: ดึง deal ปิดล่าสุดใน X ชั่วโมงที่ผ่านมา (ใช้เมื่อไม่รู้ ticket)
+    symbol=None → ใช้ MT5_SYMBOL; ถ้า match symbol ไม่เจอ → ใช้ deal ปิดล่าสุดทุก symbol
+    """
     from datetime import datetime, timedelta
     import time as _time
+    sym = symbol or MT5_SYMBOL
     EXIT_TYPES = {1, 2, 3}
     for attempt in range(3):
         ok, err = _connect()
@@ -295,15 +298,69 @@ def get_latest_closed_deal(symbol: str = "XAUUSD", hours: int = 4) -> dict | Non
         date_to   = datetime.now() + timedelta(hours=1)
         deals = mt5.history_deals_get(date_from, date_to) or []
         disconnect()
-        close_deals = [d for d in deals if d.symbol == symbol and d.entry in EXIT_TYPES]
+        all_closes = [d for d in deals if d.entry in EXIT_TYPES]
+        # ลอง match symbol ก่อน — ถ้าไม่เจอ (broker มี suffix) ใช้ทุก symbol
+        close_deals = [d for d in all_closes if d.symbol == sym] or all_closes
         if close_deals:
             d = sorted(close_deals, key=lambda x: x.time)[-1]
             return {"close_price": d.price, "profit": d.profit, "volume": d.volume,
                     "time": d.time, "ticket": d.position_id,
                     "commission": d.commission, "swap": d.swap}
-        print(f"[mt5] get_latest_closed_deal: symbol={symbol} deals={len(deals)} close_deals=0 (attempt {attempt+1})")
+        print(f"[mt5] get_latest_closed_deal: sym={sym} deals={len(deals)} closes=0 (attempt {attempt+1})")
         _time.sleep(2)
     return None
+
+
+def get_closed_positions(hours: int = 24) -> list[dict]:
+    """ดึง closed positions ทั้งหมดใน X ชั่วโมง — จับคู่ open+close deal ตาม position_id
+    ใช้สำหรับ background sync เก็บ transaction ทุกไม้ (ไม่พึ่งการจับตอนปิดพอดี)
+    """
+    from datetime import datetime, timedelta
+    ok, err = _connect()
+    if not ok:
+        print(f"[mt5] get_closed_positions connect fail: {err}")
+        return []
+    date_from = datetime.now() - timedelta(hours=hours)
+    date_to   = datetime.now() + timedelta(hours=1)
+    deals = mt5.history_deals_get(date_from, date_to) or []
+    disconnect()
+
+    pos_open, pos_close = {}, {}
+    for d in deals:
+        pid = d.position_id
+        if d.entry == 0:                       # IN
+            if pid not in pos_open:
+                pos_open[pid] = d
+        elif d.entry in (1, 2, 3):             # OUT / INOUT / OUT_BY
+            # รวม commission/swap/profit ของทุก partial close + เก็บ close ล่าสุด
+            if pid not in pos_close:
+                pos_close[pid] = {"deals": [], "last": d}
+            pos_close[pid]["deals"].append(d)
+            if d.time >= pos_close[pid]["last"].time:
+                pos_close[pid]["last"] = d
+
+    result = []
+    for pid, cinfo in pos_close.items():
+        od = pos_open.get(pid)
+        last = cinfo["last"]
+        deals_list = cinfo["deals"]
+        total_profit = sum(x.profit for x in deals_list)
+        total_comm   = sum(x.commission for x in deals_list)
+        total_swap   = sum(x.swap for x in deals_list)
+        result.append({
+            "position_id": pid,
+            "symbol":      last.symbol,
+            "direction":   ("BUY" if od.type == 0 else "SELL") if od else None,
+            "open_price":  od.price if od else None,
+            "open_time":   od.time if od else None,
+            "close_price": last.price,
+            "close_time":  last.time,
+            "volume":      od.volume if od else last.volume,
+            "profit":      total_profit,
+            "commission":  total_comm,
+            "swap":        total_swap,
+        })
+    return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
