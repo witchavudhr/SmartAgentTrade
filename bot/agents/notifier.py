@@ -2157,7 +2157,7 @@ async def cmd_resetmt5(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, hours)
         newly = res["newly"]
 
-        msg = _fmt_sync_result(res)
+        msg = _fmt_sync_result(res["newly"])
         await update.message.reply_text(
             f"✅ ล้างไป {deleted} records\n{msg}",
             parse_mode="Markdown"
