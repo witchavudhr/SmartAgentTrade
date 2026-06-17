@@ -15,23 +15,18 @@ smc     = SMCEngine(swing_length=50, ob_length=5)   # swing struct=50, OB intern
 smc_m15 = SMCEngine(swing_length=50, ob_length=5)
 
 def _get_mt5_price() -> float | None:
-    """ดึงราคา ask/bid ล่าสุดจาก MT5 ถ้าเชื่อมอยู่"""
+    """ดึงราคา mid (bid+ask)/2 จาก MT5 — ไม่ต้องเช็ค is_available() เพราะ _connect() จัดการเอง"""
     try:
+        import MetaTrader5 as mt5
         from agents import mt5_executor
         from config.settings import MT5_SYMBOL
-        if not mt5_executor.is_available():
+        ok, _ = mt5_executor._connect()
+        if not ok:
             return None
-        try:
-            import MetaTrader5 as mt5
-            ok, _ = mt5_executor._connect()
-            if not ok:
-                return None
-            tick = mt5.symbol_info_tick(MT5_SYMBOL)
-            mt5_executor.disconnect()
-            if tick:
-                return round((tick.bid + tick.ask) / 2, 2)
-        except Exception:
-            pass
+        tick = mt5.symbol_info_tick(MT5_SYMBOL)
+        mt5_executor.disconnect()
+        if tick:
+            return round((tick.bid + tick.ask) / 2, 2)
     except Exception:
         pass
     return None

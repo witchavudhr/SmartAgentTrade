@@ -349,9 +349,11 @@ async def push_result(body: PushBody):
         stats_cache.update(body.stats_all)
     if body.transactions_all:
         transactions_cache.update(body.transactions_all)
-    # Use real MT5 price from bot (takes priority over supervisor result & yfinance)
+    # Use real MT5 price from bot — inject into result BEFORE _map_supervisor_result
+    # so price_now inside doesn't fall back to chart_analyst's wrong GC=F value
     if body.current_price and body.current_price > 1000:
         current_price = body.current_price
+        body.result["current_price"] = current_price
     mapped = _map_supervisor_result(body.result)
     sig = mapped["signal"]
     latest_signal = sig
