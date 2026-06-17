@@ -2109,56 +2109,20 @@ def _fmt_sync_result(newly: list) -> str:
 
 
 async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Background sync ทุก 3 นาที — เก็บ transaction + แจ้ง Telegram เฉพาะไม้ที่บอทรู้จัก"""
+    """Background sync ทุก 3 ชั่วโมง — ดึง closed positions 4 ชม. ย้อนหลัง บันทึก transaction"""
     if not mt5_executor.is_available():
         return
     try:
-        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, 24)
+        res = await asyncio.get_event_loop().run_in_executor(None, _run_mt5_sync, 4)
         newly = res["newly"]
         if not newly:
             return
-
         print(f"[mt5_sync] captured {len(newly)} new transactions")
-
-        # ── ถ้าไม้ที่เปิดอยู่เพิ่งถูก sync ว่าปิดแล้ว → notify + re-scan ──
-        ot_state = bot_state.get("open_trade")
-        if ot_state:
-            st_ticket = ot_state.get("mt5_ticket")
-            matched = next(
-                (n for n in newly if st_ticket and n["ticket"] == int(st_ticket)),
-                None
-            )
-            if matched:
-                trade_id  = ot_state.get("trade_id")
-                entry_px  = ot_state.get("entry", 0)
-                direction = ot_state.get("direction", "BUY")
-                pnl_pips  = matched.get("pips")
-                outcome   = matched.get("outcome")
-                net_usd   = matched.get("net")
-                close_px  = matched.get("close_px")
-
+        _sync_stats_to_dashboard()
+        for n in newly:
+            ot_state = bot_state.get("open_trade")
+            if ot_state and ot_state.get("mt5_ticket") == n["ticket"]:
                 state_manager.set_field(bot_state, "open_trade", None)
-
-                icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
-                net_line = f"\nNet (หลัง commission+swap): `${net_usd:+.2f}`" if net_usd is not None else ""
-                try:
-                    await ctx.bot.send_message(
-                        chat_id=TELEGRAM_CHAT_ID,
-                        text=(
-                            f"{icon} *MT5 ปิด Trade อัตโนมัติ — #{trade_id}*\n"
-                            f"━━━━━━━━━━━━━━━━━\n"
-                            f"{direction} | Entry: `{entry_px}` → Exit: `{close_px or '?'}`\n"
-                            f"P&L: `{pnl_pips:+.1f} จุด`{net_line}\n"
-                            f"บันทึก outcome: `{outcome or 'unknown'}` ใน DB แล้ว"
-                        ) if outcome else (
-                            f"⚠️ *Trade ปิดจาก MT5 แต่ดึง history ไม่ได้*\n"
-                            f"Trade #{trade_id} — ใช้ `/outcome {trade_id} win/loss [จุด]` บันทึกเอง"
-                        ),
-                        parse_mode="Markdown",
-                    )
-                except Exception as e:
-                    print(f"[mt5_sync] send notify error: {e}")
-
                 if bot_state.get("is_running"):
                     await _rescan_after_close(ctx)
     except Exception as e:
@@ -2848,8 +2812,8 @@ def run():
     # Trade monitor — ทุก 5 นาที ตรวจ trailing + reentry
     app.job_queue.run_repeating(trade_monitor, interval=300, first=60)
 
-    # MT5 transaction sync — ทุก 3 นาที เก็บ transaction ทุกไม้ (กันจับพลาดตอนปิด)
-    app.job_queue.run_repeating(mt5_sync_job, interval=180, first=90)
+    # MT5 transaction sync — ทุก 3 ชั่วโมง ดึง closed positions 4 ชม. ย้อนหลัง
+    app.job_queue.run_repeating(mt5_sync_job, interval=10800, first=60)
 
     # Dashboard stats sync — push stats ทุก 3 นาที + ทันทีตอน startup (first=5)
     async def _stats_sync_job(ctx):
