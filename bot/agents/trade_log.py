@@ -507,7 +507,11 @@ def get_transactions_by_period(period: str = 'today') -> dict:
                pnl_pips, profit_usd, commission, swap, net_usd,
                open_time, close_time, timestamp
         FROM mt5_transactions
-        WHERE COALESCE(close_time, timestamp) >= ?
+        WHERE CASE
+            WHEN typeof(COALESCE(close_time, timestamp)) = 'integer'
+            THEN datetime(COALESCE(close_time, timestamp), 'unixepoch', 'localtime')
+            ELSE COALESCE(close_time, timestamp)
+        END >= ?
         ORDER BY COALESCE(close_time, timestamp) ASC
     """, (since_str,)).fetchall()
     conn.close()
@@ -821,6 +825,14 @@ _PERIOD_FILTER = {
     "year":  "DATE(timestamp) >= DATE('now','localtime','start of year')",
     "all":   "1=1",
 }
+# mt5_transactions ใช้ close_time (อาจเป็น unix int หรือ string)
+_MT5_PERIOD_FILTER = {
+    "today": "DATE(datetime(close_time,'unixepoch','localtime')) = DATE('now','localtime') OR DATE(close_time,'localtime') = DATE('now','localtime')",
+    "week":  "DATE(CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch') ELSE close_time END,'localtime') >= DATE('now','localtime','-6 days')",
+    "month": "DATE(CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch') ELSE close_time END,'localtime') >= DATE('now','localtime','start of month')",
+    "year":  "DATE(CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch') ELSE close_time END,'localtime') >= DATE('now','localtime','start of year')",
+    "all":   "1=1",
+}
 
 
 def get_dashboard_stats(period: str = "today") -> dict:
@@ -829,8 +841,7 @@ def get_dashboard_stats(period: str = "today") -> dict:
     conn = sqlite3.connect(DB_PATH)
 
     date_filter = _PERIOD_FILTER.get(period, _PERIOD_FILTER["today"])
-    # mt5_transactions ใช้ close_time เป็น timestamp
-    mt5_date_filter = date_filter.replace("timestamp", "close_time")
+    mt5_date_filter = _MT5_PERIOD_FILTER.get(period, _MT5_PERIOD_FILTER["today"])
 
     # ── ดึงจาก mt5_transactions (ข้อมูล MT5 จริง) ────────────────
     mt5_rows = conn.execute(f"""
