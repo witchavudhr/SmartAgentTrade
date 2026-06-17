@@ -829,9 +829,18 @@ def get_dashboard_stats(period: str = "today") -> dict:
     conn = sqlite3.connect(DB_PATH)
 
     date_filter = _PERIOD_FILTER.get(period, _PERIOD_FILTER["today"])
-    base_filter = f"action IN ('confirmed','mt5_import') AND {date_filter}"
+    # mt5_transactions ใช้ close_time เป็น timestamp
+    mt5_date_filter = date_filter.replace("timestamp", "close_time")
 
-    period_trades = conn.execute(f"""
+    # ── ดึงจาก mt5_transactions (ข้อมูล MT5 จริง) ────────────────
+    mt5_rows = conn.execute(f"""
+        SELECT net_usd, pnl_pips FROM mt5_transactions
+        WHERE close_time IS NOT NULL AND {mt5_date_filter}
+    """).fetchall()
+
+    # ── fallback: trades table (outcome บันทึกด้วยมือ) ───────────
+    base_filter = f"action IN ('confirmed','mt5_import') AND {date_filter}"
+    manual_trades = conn.execute(f"""
         SELECT outcome, pnl_pips, COALESCE(lot, 0.01) FROM trades
         WHERE {base_filter} AND outcome IN ('win','loss','be')
     """).fetchall()
@@ -851,7 +860,7 @@ def get_dashboard_stats(period: str = "today") -> dict:
 
     best_setup_row = conn.execute(f"""
         SELECT setup_type FROM scan_log
-        WHERE approved=1 AND {date_filter.replace('timestamp','timestamp')}
+        WHERE approved=1 AND {date_filter}
         ORDER BY confidence DESC LIMIT 1
     """).fetchone()
 
@@ -859,26 +868,24 @@ def get_dashboard_stats(period: str = "today") -> dict:
         "SELECT COUNT(*) FROM trades WHERE outcome='pending' AND action='confirmed'"
     ).fetchone()[0]
 
-    best_trade_row = conn.execute(f"""
-        SELECT pnl_pips, COALESCE(lot, 0.01) FROM trades
-        WHERE outcome='win' AND {base_filter} AND pnl_pips IS NOT NULL
-        ORDER BY pnl_pips * COALESCE(lot, 0.01) DESC LIMIT 1
-    """).fetchone()
-
     conn.close()
 
-    period_pnl    = sum(_pips_to_usd(r[1], r[2]) for r in period_trades)
-    period_wins   = sum(1 for r in period_trades if r[0] == "win")
-    period_losses = sum(1 for r in period_trades if r[0] == "loss")
-    period_win_usd = [_pips_to_usd(r[1], r[2]) for r in period_trades if r[0] == "win"]
+    # ── คำนวณ stats — ใช้ mt5_transactions ถ้ามีข้อมูล ──────────
+    if mt5_rows:
+        period_pnl    = round(sum(r[0] or 0 for r in mt5_rows), 2)
+        period_wins   = sum(1 for r in mt5_rows if (r[0] or 0) > 0)
+        period_losses = sum(1 for r in mt5_rows if (r[0] or 0) < 0)
+        best_pnl      = round(max((r[0] or 0) for r in mt5_rows if (r[0] or 0) > 0), 2) if period_wins else 0.0
+    else:
+        # fallback ถ้า mt5_transactions ไม่มีข้อมูลช่วงนี้
+        period_pnl    = sum(_pips_to_usd(r[1], r[2]) for r in manual_trades)
+        period_wins   = sum(1 for r in manual_trades if r[0] == "win")
+        period_losses = sum(1 for r in manual_trades if r[0] == "loss")
+        best_pnl      = 0.0
 
     win_rate = (
         round(period_wins / (period_wins + period_losses) * 100, 1)
         if (period_wins + period_losses) > 0 else 0
-    )
-    best_pnl = (
-        round(_pips_to_usd(best_trade_row[0], best_trade_row[1]), 2)
-        if best_trade_row else 0.0
     )
 
     trades_bar = []
