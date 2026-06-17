@@ -16,40 +16,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.on_event("startup")
 async def start_stats_refresh():
     asyncio.create_task(_stats_refresh_loop())
-    asyncio.create_task(_price_loop())
     asyncio.create_task(_news_refresh_loop())
-
-async def _price_loop():
-    """Fetch XAUUSD spot price every 60s via yfinance and broadcast. Fetch immediately on first run."""
-    global current_price, nearest_ob
-    first = True
-    while True:
-        if not first:
-            await asyncio.sleep(60)
-        first = False
-        try:
-            import yfinance as yf
-            # XAUUSD=X = Gold spot price in USD (more accurate than GC=F futures)
-            price = 0.0
-            for ticker in ["XAUUSD=X", "GC=F"]:
-                try:
-                    p = round(float(yf.Ticker(ticker).fast_info.last_price), 2)
-                    if p and p > 1000:
-                        price = p
-                        break
-                except Exception:
-                    continue
-            if not price:
-                continue
-            current_price = price
-            ob_lo = nearest_ob.get("lo", 0)
-            ob_hi = nearest_ob.get("hi", 0)
-            ob_mid = (ob_lo + ob_hi) / 2 if ob_lo else 0
-            dist = round(abs(price - ob_mid) * 10, 1) if ob_mid else 0
-            nearest_ob = {**nearest_ob, "dist": dist}
-            await manager.broadcast({"type": "price_update", "price": price, "ob": nearest_ob})
-        except Exception:
-            pass
+    # NOTE: price comes exclusively from bot MT5 push (stats-sync every 3min + after each scan)
+    # yfinance removed — it gave stale/wrong prices (XAUUSD=X delayed 15-20min)
 
 async def _news_refresh_loop():
     """Refresh news cache every 15 min from ForexFactory via news_scout. Immediate on startup."""
