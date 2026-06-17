@@ -84,9 +84,11 @@ class SMCResult:
 # ─── Core Engine ────────────────────────────────────────────────────
 
 class SMCEngine:
-    def __init__(self, swing_length: int = 5, ob_filter_atr: bool = True,
-                 eql_threshold: float = 0.1, ob_mitigation: str = 'highlow'):
+    def __init__(self, swing_length: int = 5, ob_length: int = 5,
+                 ob_filter_atr: bool = True, eql_threshold: float = 0.1,
+                 ob_mitigation: str = 'highlow'):
         self.swing_length = swing_length
+        self.ob_length = ob_length      # LuxAlgo internal OB uses size=5 (hardcoded)
         self.ob_filter_atr = ob_filter_atr
         self.eql_threshold = eql_threshold
         # 'highlow' = LuxAlgo default (wick ทะลุก็ลบ) | 'close' = ต้อง body close ทะลุ (OB อยู่นานกว่า)
@@ -214,100 +216,113 @@ class SMCEngine:
 
     def _find_order_blocks(self, df: pd.DataFrame, structures: list = None):
         """
-        OB detection ที่ port มาจาก LuxAlgo SMC (storeOrdeBlock + deleteOrderBlocks) ตรงทุกขั้นตอน:
+        OB detection — port จาก LuxAlgo SMC internal order blocks (size=5):
 
         Algorithm (เหมือน LuxAlgo Pine ทุกบรรทัด):
-          1. ทุกแท่ง: คำนวณ ATR(200) + parsedHigh/parsedLow (สลับ high↔low ถ้าแท่ง volatility สูง)
-          2. เดินไปข้างหน้า track swing high/low ล่าสุด (level + index) + flag 'crossed'
-          3. Bullish OB: close crossover ขึ้นเหนือ swing High → ในช่วง leg [swingHigh.idx, i]
-                         หาแท่งที่ parsedLow ต่ำสุด → zone = parsedHigh/parsedLow ของแท่งนั้น
-          4. Bearish OB: close crossunder ลงใต้ swing Low → ในช่วง leg [swingLow.idx, i]
-                         หาแท่งที่ parsedHigh สูงสุด → zone = parsedHigh/parsedLow ของแท่งนั้น
-          5. Mitigation (HIGHLOW): Bear OB ลบเมื่อ high > top, Bull OB ลบเมื่อ low < bottom
+          1. ATR(200) Wilder's RMA + parsedHigh/parsedLow (swap ถ้า high-vol bar)
+          2. leg() alternating: high[size]>ta.highest(size) → BEARISH_LEG,
+                                low[size]<ta.lowest(size)  → BULLISH_LEG
+             — pivot จะ update เฉพาะตอน leg เปลี่ยนทิศ (not every new high/low!)
+          3. Bullish OB: ta.crossover(close, swingHigh) → หา argmin(parsedLows) ใน leg
+          4. Bearish OB: ta.crossunder(close, swingLow) → หา argmax(parsedHighs) ใน leg
+          5. Mitigation HIGHLOW: Bear ลบเมื่อ high>top, Bull ลบเมื่อ low<bottom
         """
         n = len(df)
-        str_n = self.swing_length
-        if n < str_n * 2 + 2:
+        size = self.ob_length   # LuxAlgo internal OB: hardcoded size=5
+        if n < size * 2 + 2:
             return []
 
-        high = df['high'].to_numpy()
-        low  = df['low'].to_numpy()
+        high  = df['high'].to_numpy()
+        low   = df['low'].to_numpy()
         close = df['close'].to_numpy()
 
-        # ── 1. ATR(200) — Wilder's RMA (เหมือน ta.atr ของ LuxAlgo) ──────────
+        # ── 1. ATR(200) Wilder's RMA ──────────────────────────────────────────
         tr = np.maximum.reduce([
             high[1:] - low[1:],
             np.abs(high[1:] - close[:-1]),
             np.abs(low[1:] - close[:-1]),
         ])
         tr_full = np.concatenate([[high[0] - low[0]], tr])
-        alpha = 1.0 / 200  # Wilder's smoothing α = 1/period
+        alpha = 1.0 / 200
         atr = np.zeros(n)
         atr[0] = tr_full[0]
         for _j in range(1, n):
             atr[_j] = alpha * tr_full[_j] + (1.0 - alpha) * atr[_j - 1]
 
         rng = high - low
-        high_vol = rng >= (2.0 * atr)
-        parsed_high = np.where(high_vol, low, high)   # LuxAlgo: highVol ? low : high
-        parsed_low  = np.where(high_vol, high, low)   # LuxAlgo: highVol ? high : low
+        high_vol    = rng >= (2.0 * atr)
+        parsed_high = np.where(high_vol, low,  high)   # highVol ? low : high
+        parsed_low  = np.where(high_vol, high, low)    # highVol ? high : low
 
-        # ── 2. LuxAlgo pivot detection: one-sided (right side only, str_n bars) ──
-        # LuxAlgo: high[size] > ta.highest(size)  → ต้องสูงกว่า str_n bars ถัดไปทั้งหมด
-        # ไม่มี left-side requirement — confirm delay = str_n bars
-        obs = []
-        sh_level = sh_idx = None; sh_crossed = False
-        sl_level = sl_idx = None; sl_crossed = False
+        # ── 2. LuxAlgo alternating leg detection ─────────────────────────────
+        # leg() ใน Pine: ถ้า high[size]>ta.highest(size) → BEARISH_LEG
+        #                ถ้า low[size]<ta.lowest(size)   → BULLISH_LEG
+        # pivot จะ update เฉพาะตอน ta.change(leg) != 0 (leg เปลี่ยนทิศ)
+        BEARISH_LEG = 0
+        BULLISH_LEG = 1
 
-        for i in range(str_n, n):
-            p = i - str_n   # bar ที่กำลัง confirm (str_n bars ก่อน i)
+        obs: list[OrderBlock] = []
+        leg = BEARISH_LEG   # Pine: var leg = 0
+        sh_level = sh_idx = None;  sh_crossed = False
+        sl_level = sl_idx = None;  sl_crossed = False
 
-            # Pivot High: high[p] > all(high[p+1 … p+str_n])
-            if p + str_n < n:
-                right_h = high[p + 1: p + str_n + 1]
-                if len(right_h) == str_n and high[p] > right_h.max():
+        for i in range(size, n):
+            p = i - size   # bar ที่กำลัง confirm (size bars ก่อน i)
+
+            # Pine: high[size] > ta.highest(size) — ta.highest(size) = max(high[0..size-1])
+            right_h = high[p + 1: i + 1]   # size bars: high[p+1] … high[i]
+            right_l = low[p + 1:  i + 1]
+
+            new_leg_high = len(right_h) == size and high[p] > right_h.max()
+            new_leg_low  = len(right_l) == size and low[p]  < right_l.min()
+
+            prev_leg = leg
+            if new_leg_high:
+                leg = BEARISH_LEG
+            elif new_leg_low:
+                leg = BULLISH_LEG
+
+            if leg != prev_leg:
+                # leg เปลี่ยนทิศ → record pivot
+                if leg == BULLISH_LEG:
+                    # BEARISH→BULLISH: new swing LOW at bar p
+                    sl_level, sl_idx, sl_crossed = low[p], p, False
+                else:
+                    # BULLISH→BEARISH: new swing HIGH at bar p
                     sh_level, sh_idx, sh_crossed = high[p], p, False
 
-            # Pivot Low: low[p] < all(low[p+1 … p+str_n])
-            if p + str_n < n:
-                right_l = low[p + 1: p + str_n + 1]
-                if len(right_l) == str_n and low[p] < right_l.min():
-                    sl_level, sl_idx, sl_crossed = low[p], p, False
-
-            # ── Bullish OB: close crossover swing high ─────────────
+            # ── Bullish OB: ta.crossover(close, swingHigh) ──────────
             if (sh_level is not None and not sh_crossed
-                    and close[i] > sh_level and close[i - 1] <= sh_level):
-                # LuxAlgo: parsedLows.slice(pivot.barIndex, bar_index) → ไม่รวม bar i
-                leg_lows = parsed_low[sh_idx: i]
+                    and close[i] > sh_level
+                    and (i == 0 or close[i - 1] <= sh_level)):
+                leg_lows = parsed_low[sh_idx: i]   # slice [pivot, BOS) ไม่รวม bar i
                 if len(leg_lows) > 0:
                     ob_idx = sh_idx + int(np.argmin(leg_lows))
                     obs.append(OrderBlock(
-                        top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
-                        bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
+                        top=float(high[ob_idx]),
+                        bottom=float(low[ob_idx]),
                         kind='bullish',
                         index=int(ob_idx),
                     ))
                 sh_crossed = True
 
-            # ── Bearish OB: close crossunder swing low ─────────────
+            # ── Bearish OB: ta.crossunder(close, swingLow) ──────────
             if (sl_level is not None and not sl_crossed
-                    and close[i] < sl_level and close[i - 1] >= sl_level):
-                # LuxAlgo: parsedHighs.slice(pivot.barIndex, bar_index) → ไม่รวม bar i
-                leg_highs = parsed_high[sl_idx: i]
+                    and close[i] < sl_level
+                    and (i == 0 or close[i - 1] >= sl_level)):
+                leg_highs = parsed_high[sl_idx: i]  # slice [pivot, BOS) ไม่รวม bar i
                 if len(leg_highs) > 0:
                     ob_idx = sl_idx + int(np.argmax(leg_highs))
                     obs.append(OrderBlock(
-                        top=float(max(parsed_high[ob_idx], parsed_low[ob_idx])),
-                        bottom=float(min(parsed_high[ob_idx], parsed_low[ob_idx])),
+                        top=float(high[ob_idx]),
+                        bottom=float(low[ob_idx]),
                         kind='bearish',
                         index=int(ob_idx),
                     ))
                 sl_crossed = True
 
-        # ── 5. Mitigation ──────────────────────────────────────────────
-        # highlow (LuxAlgo default): Bear ลบเมื่อ high>top, Bull ลบเมื่อ low<bottom
-        # close: ต้อง body close ทะลุ (OB อยู่นานกว่า)
-        bull_src = low if self.ob_mitigation == 'highlow' else close
+        # ── 5. Mitigation ──────────────────────────────────────────────────
+        bull_src = low  if self.ob_mitigation == 'highlow' else close
         bear_src = high if self.ob_mitigation == 'highlow' else close
         for ob in obs:
             for i in range(ob.index + 1, n):
@@ -318,7 +333,7 @@ class SMCEngine:
                     ob.mitigated = True
                     break
 
-        # เก็บแค่ 5 OB ล่าสุดต่อฝั่ง (เหมือน maxOrderBlocks ของ LuxAlgo)
+        # เก็บแค่ 5 OB ล่าสุดต่อฝั่ง (เหมือน internalOrderBlocksSizeInput=5)
         bulls = [o for o in obs if o.kind == 'bullish'][-5:]
         bears = [o for o in obs if o.kind == 'bearish'][-5:]
         return bulls + bears

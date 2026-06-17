@@ -11,8 +11,8 @@ from agents.json_utils import safe_json_parse
 _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-smc     = SMCEngine(swing_length=50)  # M5 OB — ตรงกับ LuxAlgo swingsLengthInput=50
-smc_m15 = SMCEngine(swing_length=50)  # M15 OB — ตรงกับ LuxAlgo swingsLengthInput=50
+smc     = SMCEngine(swing_length=50, ob_length=5)   # swing struct=50, OB internal=5 (LuxAlgo default)
+smc_m15 = SMCEngine(swing_length=50, ob_length=5)
 
 def _get_mt5_price() -> float | None:
     """ดึงราคา ask/bid ล่าสุดจาก MT5 ถ้าเชื่อมอยู่"""
