@@ -112,6 +112,7 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
         "vote":          news_vote,
         "vote_reasoning": news.get("vote_reasoning", ""),
         "key_event":     news.get("key_event"),
+        "next_event":    news.get("next_event"),
     }
 
     # ── Stage 5: Agent Voting ──────────────────────────────────
@@ -364,6 +365,23 @@ FVG ใกล้สุด: {nearest_fvg}
     )
 
 
+def _fmt_next_event(news_s: dict) -> str:
+    """บรรทัดข่าวถัดไป: 'ข่าวต่อไป: NFP — พรุ่งนี้ 19:30 (อีก 21.5 ชม.)'"""
+    ne = news_s.get("next_event") if isinstance(news_s, dict) else None
+    if not ne:
+        return ""
+    name = _md(str(ne.get("event", ""))[:40])
+    hrs  = ne.get("hours_until", 0)
+    when = f"{ne.get('day_label','')} {ne.get('time_label','')}".strip()
+    impact = ne.get("impact", "")
+    icon = "🔴" if impact == "High" else "🟡" if impact == "Medium" else "⚪"
+    if hrs < 1:
+        left = f"อีก {ne.get('minutes_until', 0)} นาที"
+    else:
+        left = f"อีก {hrs:g} ชม."
+    return f"\n   📅 ข่าวต่อไป: {icon} {name} — {when} ({left})"
+
+
 def format_alert(result: dict) -> str:
     """แปลง supervisor result เป็น Telegram alert"""
 
@@ -410,7 +428,8 @@ def format_alert(result: dict) -> str:
             f"*[3] Bias:* {vi(bias_vote)} `{bias_s.get('trade_direction','–')}`\n"
             f"   _{bias_r}_\n\n"
             f"*[4] News:* {vi(news_vote)} Risk: `{news_s.get('risk_level','–')}`\n"
-            f"   _{news_r}_\n\n"
+            f"   _{news_r}_"
+            f"{_fmt_next_event(news_s)}\n\n"
             f"*[5] Vote:* `{vote_score}/3`\n"
             f"{risk_line}"
             f"*[7] Supervisor:* ❌\n"
@@ -430,6 +449,7 @@ def format_alert(result: dict) -> str:
 
     vote_lines = ""
     bias_stage  = result.get("stages", {}).get("bias", {})
+    news_stage  = result.get("stages", {}).get("news", {})
     for agent, passed in votes_map.items():
         icon    = "✅" if passed else "❌"
         reason  = vote_detail.get(agent, "")
@@ -438,6 +458,8 @@ def format_alert(result: dict) -> str:
         if agent == "bias" and bias_stage.get("at_htf_level"):
             extra = f" 📍_{_md(bias_stage.get('htf_level_detail','HTF level'))}_"
         vote_lines += f"\n  {icon} {label}: _{_md(reason[:60])}_{extra}"
+        if agent == "news":
+            vote_lines += _fmt_next_event(news_stage)
 
     entry = result.get("entry_zone")
     entry_str = f"`{entry[0]} - {entry[1]}`" if entry else "N/A"

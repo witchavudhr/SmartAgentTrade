@@ -2001,7 +2001,7 @@ def _fmt_sync_result(newly: list) -> str:
 
 
 async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Background sync ทุก 3 นาที — เก็บ transaction ครบทุกไม้ แม้ auto-close จับพลาด"""
+    """Background sync ทุก 3 นาที — เก็บ transaction เงียบๆ (ไม่โพสต์ Telegram)"""
     if not mt5_executor.is_available():
         return
     try:
@@ -2015,10 +2015,8 @@ async def mt5_sync_job(ctx: ContextTypes.DEFAULT_TYPE):
             st_ticket = ot_state.get("mt5_ticket")
             if st_ticket and any(n["ticket"] == int(st_ticket) for n in newly):
                 state_manager.set_field(bot_state, "open_trade", None)
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID, text=_fmt_sync_result(newly), parse_mode="Markdown"
-        )
-        print(f"[mt5_sync] captured {len(newly)} new transactions")
+        # ทำงานเงียบ — เก็บลง DB อย่างเดียว ไม่แจ้ง Telegram (กันสแปม)
+        print(f"[mt5_sync] captured {len(newly)} new transactions (silent)")
     except Exception as e:
         print(f"[mt5_sync] error: {e}")
 

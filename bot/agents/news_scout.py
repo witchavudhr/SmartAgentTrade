@@ -161,6 +161,50 @@ def filter_gold_events(events: list) -> list:
     return filtered
 
 
+def get_next_event(within_hours: int = 72) -> dict | None:
+    """หาข่าว High Impact ที่กระทบ Gold 'ตัวถัดไป' (ในอนาคต) ไม่จำกัด window
+    คืน {event, date, impact, hours_until, minutes_until, day_label} หรือ None
+    """
+    events = fetch_calendar()
+    if not events:
+        return None
+    gold_events = filter_gold_events(events)
+    now = datetime.now()
+
+    future = []
+    for ev in gold_events:
+        try:
+            et = datetime.strptime(ev.get("date", "")[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        mins = (et - now).total_seconds() / 60
+        if mins > 0:                     # เฉพาะข่าวที่ยังไม่เกิด
+            future.append((mins, et, ev))
+
+    if not future:
+        return None
+    mins, et, ev = min(future, key=lambda x: x[0])
+
+    # day label ภาษาไทย
+    days_diff = (et.date() - now.date()).days
+    if days_diff == 0:
+        day_label = "วันนี้"
+    elif days_diff == 1:
+        day_label = "พรุ่งนี้"
+    else:
+        day_label = et.strftime("%a %d/%m")
+
+    return {
+        "event":         ev.get("event", ""),
+        "date":          et.strftime("%Y-%m-%d %H:%M"),
+        "impact":        ev.get("impact", ""),
+        "minutes_until": round(mins),
+        "hours_until":   round(mins / 60, 1),
+        "day_label":     day_label,
+        "time_label":    et.strftime("%H:%M"),
+    }
+
+
 def get_upcoming_news(minutes_ahead: int = 120) -> list | None:
     """
     หาข่าวในช่วง block window:
@@ -314,6 +358,7 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
         }
 
     result["upcoming_events"] = upcoming
+    result["next_event"] = get_next_event()   # ข่าวถัดไป (ไม่จำกัด window)
     result["is_blocked"] = blocked
     result["block_reason"] = block_reason
     result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
