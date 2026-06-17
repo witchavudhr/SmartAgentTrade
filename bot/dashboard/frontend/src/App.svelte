@@ -114,25 +114,35 @@
     [2,0,'BOJ','high'],[3,30,'GDP','med'],
   ];
 
+  // Session windows in Thai time UTC+7
+  // Asia:   07:00–14:00  (Tokyo/Singapore open)
+  // London: 14:00–23:00  (London open)
+  // NY:     19:00–04:00  (NY open, wraps midnight)
   function sessionLabel() {
     const h = new Date().getHours();
-    if (h >= 8 && h < 17) return 'London';
-    if (h >= 13 && h < 22) return 'New York';
-    if (h >= 1  && h < 8)  return 'Asia';
-    return 'Off-hours';
+    if (h >= 19 || h < 4)  return 'New York';
+    if (h >= 14)            return 'London';
+    if (h >= 7)             return 'Asia';
+    return 'Off-hours';   // 04:00–07:00
   }
   function sessionHours() {
     const h = new Date().getHours();
-    if (h >= 8 && h < 17) return '15:30→21:00';
-    if (h >= 13 && h < 22) return '20:00→03:00';
+    if (h >= 19 || h < 4)  return '19:00→04:00';
+    if (h >= 14)            return '14:00→23:00';
+    if (h >= 7)             return '07:00→14:00';
     return '—';
   }
   function sessionProgress() {
     const n = new Date(); const nowM = n.getHours()*60 + n.getMinutes();
-    const windows = [[8*60,17*60],[13*60,22*60],[1*60,8*60]];
-    for (const [s,e] of windows) {
-      if (nowM >= s && nowM < e) return Math.round((nowM-s)/(e-s)*100);
+    // [startM, endM] — NY wraps midnight so handle specially
+    const h = n.getHours();
+    if (h >= 19 || h < 4) {
+      const s = 19*60, dur = 9*60; // 19:00–04:00 = 9h
+      const elapsed = nowM >= 19*60 ? nowM - s : nowM + (24*60 - s);
+      return Math.round(Math.min(elapsed, dur) / dur * 100);
     }
+    if (h >= 14) return Math.round((nowM - 14*60) / (9*60) * 100);
+    if (h >= 7)  return Math.round((nowM - 7*60)  / (7*60) * 100);
     return 0;
   }
   function nextNews() {
