@@ -86,6 +86,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/resume — เริ่มสแกนใหม่\n\n"
         "📊 *Report & Tools*\n"
         "/report — สรุป trade จริง + P&L รายวัน\n"
+        "/txreport [today|week|month|year] — ดู MT5 transactions + P&L แยกช่วงเวลา\n"
         "/trades — ดู trade history ทั้งหมด\n"
         "/outcome [id] [win/loss/be] [จุด] [exit] — บันทึกผลหลังเทรด\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
@@ -1310,6 +1311,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     action = query.data
 
+    # ── txreport period switch ─────────────────────────────
+    if action.startswith("txr:"):
+        from agents.trade_log import get_transactions_by_period
+        period = action.split(":", 1)[1]
+        data   = get_transactions_by_period(period)
+        text, kb = _fmt_txreport(data)
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            plain = text.replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
+            await query.edit_message_text(plain, reply_markup=kb)
+        return
+
     # ── Pyramid ไม้ 2 callback ────────────────────────────
     if action in ("pyramid_confirm", "pyramid_skip"):
         p = bot_state.get("pending_pyramid")
@@ -2065,6 +2079,82 @@ async def cmd_tx(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+def _fmt_txreport(data: dict) -> tuple[str, object]:
+    """Format /txreport message + inline keyboard สำหรับ switch period"""
+    txs   = data['txs']
+    label = data['label']
+    cnt   = data['count']
+    wins  = data['wins']
+    losses = data['losses']
+    be_   = data['be']
+    wr    = data['win_rate']
+    total_net  = data['total_net_usd']
+    total_pips = data['total_pips']
+    total_gross = data['total_gross_usd']
+    total_comm  = data['total_commission']
+    total_swap  = data['total_swap']
+
+    net_icon = "✅" if total_net > 0 else "❌" if total_net < 0 else "➖"
+    lines = [
+        f"💼 *MT5 Transactions — {_md(label)}*",
+        "━━━━━━━━━━━━━━━━━",
+        f"จำนวน: `{cnt}` ไม้  |  W`{wins}` / L`{losses}` / BE`{be_}`  |  WR `{wr}%`",
+        f"Gross: `${total_gross:+.2f}`  Comm: `${total_comm:.2f}`  Swap: `${total_swap:.2f}`",
+        f"Net P&L: {net_icon} `${total_net:+.2f}`  (`{total_pips:+.1f} pips`)",
+        "━━━━━━━━━━━━━━━━━",
+    ]
+
+    if not txs:
+        lines.append("_ไม่มี transaction ในช่วงนี้_")
+    else:
+        # แสดงสูงสุด 20 รายการ (Telegram 4096 char limit)
+        shown = txs[-20:] if len(txs) > 20 else txs
+        if len(txs) > 20:
+            lines.append(f"_...แสดง 20 ล่าสุดจาก {len(txs)} ทั้งหมด_")
+        for t in shown:
+            icon  = "✅" if (t.get('pnl_pips') or 0) > 0 else "❌" if (t.get('pnl_pips') or 0) < 0 else "➖"
+            tid   = f"#{t['trade_id']}" if t.get('trade_id') else f"T#{t.get('ticket','?')}"
+            ct    = (t.get('close_time') or t.get('timestamp') or "")
+            # แสดง dd/mm HH:MM (TH time บนเครื่อง bot)
+            try:
+                ct_dt = datetime.strptime(ct[:19], "%Y-%m-%d %H:%M:%S")
+                ct_str = ct_dt.strftime("%d/%m %H:%M")
+            except Exception:
+                ct_str = ct[5:16] if ct else "?"
+            pips_str = f"{t['pnl_pips']:+.1f}p" if t.get('pnl_pips') is not None else "?"
+            net_str  = f"${t['net_usd']:+.2f}" if t.get('net_usd') is not None else "?"
+            dr   = t.get('direction', '?')
+            op   = t.get('open_price') or 0
+            cp   = t.get('close_price') or 0
+            lot  = t.get('lot') or 0
+            lines.append(
+                f"{icon} `{ct_str}` {tid} *{dr}* `{op:.2f}`→`{cp:.2f}` "
+                f"`{lot:.2f}L` `{pips_str}` net`{net_str}`"
+            )
+
+    # Inline keyboard — switch period
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("วันนี้", callback_data="txr:today"),
+        InlineKeyboardButton("7 วัน",  callback_data="txr:week"),
+        InlineKeyboardButton("เดือน",  callback_data="txr:month"),
+        InlineKeyboardButton("ปีนี้",   callback_data="txr:year"),
+    ]])
+    return "\n".join(lines), keyboard
+
+
+async def cmd_txreport(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/txreport [today|week|month|year] — ดู MT5 transactions แยกช่วงเวลา พร้อมสรุป P&L"""
+    from agents.trade_log import get_transactions_by_period
+    args   = ctx.args
+    period = args[0].lower() if args else 'today'
+    data   = get_transactions_by_period(period)
+    text, kb = _fmt_txreport(data)
+    await _safe_send(
+        lambda t, **kw: update.message.reply_text(t, **kw),
+        text, parse_mode="Markdown", reply_markup=kb
+    )
+
+
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     """
     ทำงานทุก 5 นาที — เช็ค trailing stop และ re-entry opportunity
@@ -2560,6 +2650,7 @@ def run():
     app.add_handler(CommandHandler("mt5import", cmd_mt5import))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("tx", cmd_tx))
+    app.add_handler(CommandHandler("txreport", cmd_txreport))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))

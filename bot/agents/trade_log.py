@@ -461,6 +461,83 @@ def get_recent_transactions(limit: int = 15) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_transactions_by_period(period: str = 'today') -> dict:
+    """
+    ดึง mt5_transactions แยกตามช่วงเวลา — ใช้กับ /txreport
+    period: 'today' | 'week' | 'month' | 'year'
+    timestamps เป็น TH time (local time บนเครื่อง bot)
+    """
+    init_db()
+    now = datetime.now()
+
+    if period in ('today', 'd', 'day'):
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        label = f"วันนี้ {now.strftime('%d/%m/%Y')}"
+        period_key = 'today'
+    elif period in ('week', 'w'):
+        since = now - timedelta(days=7)
+        label = f"7 วันย้อนหลัง ({since.strftime('%d/%m')}–{now.strftime('%d/%m/%Y')})"
+        period_key = 'week'
+    elif period in ('month', 'm'):
+        since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        label = f"เดือนนี้ {now.strftime('%B %Y')}"
+        period_key = 'month'
+    elif period in ('year', 'y'):
+        since = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        label = f"ปีนี้ {now.strftime('%Y')}"
+        period_key = 'year'
+    else:
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        label = f"วันนี้ {now.strftime('%d/%m/%Y')}"
+        period_key = 'today'
+
+    since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT id, ticket, trade_id, direction, symbol, lot,
+               open_price, close_price, sl, tp,
+               pnl_pips, profit_usd, commission, swap, net_usd,
+               open_time, close_time, timestamp
+        FROM mt5_transactions
+        WHERE COALESCE(close_time, timestamp) >= ?
+        ORDER BY COALESCE(close_time, timestamp) ASC
+    """, (since_str,)).fetchall()
+    conn.close()
+
+    txs = [dict(r) for r in rows]
+
+    wins   = [t for t in txs if (t.get('pnl_pips') or 0) > 0]
+    losses = [t for t in txs if (t.get('pnl_pips') or 0) < 0]
+    be_    = [t for t in txs if (t.get('pnl_pips') or 0) == 0]
+
+    total_gross = round(sum(t.get('profit_usd') or 0 for t in txs), 2)
+    total_comm  = round(sum(t.get('commission') or 0 for t in txs), 2)
+    total_swap  = round(sum(t.get('swap') or 0 for t in txs), 2)
+    total_net   = round(sum(t.get('net_usd') or 0 for t in txs), 2)
+    total_pips  = round(sum(t.get('pnl_pips') or 0 for t in txs), 1)
+
+    wr = round(len(wins) / (len(wins) + len(losses)) * 100) if (wins or losses) else 0
+
+    return {
+        'label':            label,
+        'period':           period_key,
+        'since':            since_str,
+        'txs':              txs,
+        'count':            len(txs),
+        'wins':             len(wins),
+        'losses':           len(losses),
+        'be':               len(be_),
+        'win_rate':         wr,
+        'total_gross_usd':  total_gross,
+        'total_commission': total_comm,
+        'total_swap':       total_swap,
+        'total_net_usd':    total_net,
+        'total_pips':       total_pips,
+    }
+
+
 def update_outcome(trade_id: int, outcome: str,
                    pnl_pips: float = None,
                    actual_entry: float = None,
