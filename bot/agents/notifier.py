@@ -1,8 +1,17 @@
 import asyncio
 import anthropic
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+_TH = timezone(timedelta(hours=7))  # Thailand UTC+7 (explicit, ไม่พึ่ง OS timezone)
+
+
+def _ts_to_th_str(ts) -> str | None:
+    """Unix timestamp (UTC int) → TH time string '2026-06-17 10:10:00'"""
+    if not ts or not isinstance(ts, (int, float)):
+        return None
+    return datetime.fromtimestamp(ts, tz=_TH).strftime("%Y-%m-%d %H:%M:%S")
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
@@ -886,10 +895,8 @@ async def handle_question(update: Update, question: str):
 # ── Auto-execute helper ────────────────────────────────
 
 def _pyramid_lot(existing_lot: float) -> float:
-    """ไม้ pyramid ต้องใหญ่กว่าไม้แรก: ×1.5 (ปัดเป็น 0.01)"""
-    lot2 = round(max(0.01, (existing_lot or 0.01) * 1.5), 2)
-    from config.settings import MAX_LOT
-    return min(lot2, MAX_LOT)
+    """ไม้ pyramid ใช้ 0.01 เสมอ — SL เดียวกับไม้แรก ต้อง risk น้อย"""
+    return 0.01
 
 
 def _price_is_better(new_price: float, ex_price: float, direction: str) -> bool:
@@ -1092,7 +1099,7 @@ async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
         f"*ไม้ 2:* {dir_icon}\n"
         f"Entry: `{entry_raw}`\n"
         f"SL: `{sl}` | TP: `{tp}` | RR: `{rr}`\n"
-        f"Lot ไม้ 2: `{lot2}` (×1.5 จากไม้ 1)"
+        f"Lot ไม้ 2: `{lot2}` (fixed 0.01)"
         + price_warn +
         f"\n\n🎯 *Confidence: {conf_bar}*\n\n"
         f"กดเปิดเพิ่ม หรือข้าม",
@@ -1220,9 +1227,7 @@ async def _handle_scan_result(result: dict, send_fn):
             is_pyramid = signal.get("pyramid_mode", False) or signal.get("setup_type") == "TREND_BOS_BREAK"
             pyramid_lot2 = None
             if is_pyramid:
-                sl_pips = abs(entry_price - float(sl_price)) * 10
-                plots = risk_manager.pyramid_bos_lots(BALANCE, sl_pips)
-                pyramid_lot2 = plots["lot2"]
+                pyramid_lot2 = 0.01
 
             # หา OB zone สำหรับรอ pyramid ไม้ 2
             pyramid_ob = None
@@ -1991,7 +1996,7 @@ def _capture_one_position(pos: dict) -> dict | None:
     ot = {
         "entry": open_px, "lot": pos["volume"], "mt5_ticket": ticket,
         "pair": pos["symbol"],
-        "opened_at": datetime.fromtimestamp(pos["open_time"]).strftime("%Y-%m-%d %H:%M:%S") if pos["open_time"] else None,
+        "opened_at": _ts_to_th_str(pos["open_time"]),
     }
     net = log_mt5_transaction(trade_id or 0, direction, deal, ot)
     return {"ticket": ticket, "dir": direction, "trade_id": trade_id,

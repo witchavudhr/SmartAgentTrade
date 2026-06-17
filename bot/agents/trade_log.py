@@ -10,7 +10,16 @@ Trade Log — บันทึกทุก live trade ลง SQLite + CSV export
 import sqlite3
 import csv
 import json
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
+
+_TH = timezone(timedelta(hours=7))  # Thailand UTC+7
+
+
+def _ts_to_th(ts) -> str | None:
+    """Unix timestamp (UTC) → TH time string (always UTC+7, regardless of OS timezone)"""
+    if not ts or not isinstance(ts, (int, float)):
+        return None
+    return datetime.fromtimestamp(ts, tz=_TH).strftime("%Y-%m-%d %H:%M:%S")
 from pathlib import Path
 from agents.json_utils import fmt_pts
 
@@ -368,10 +377,7 @@ def log_mt5_transaction(trade_id: int, direction: str, deal: dict, open_trade: d
     pnl_raw   = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
     pnl_pips  = round(pnl_raw * 10, 1) if (close_px and open_px) else None
 
-    from datetime import datetime
-    close_time = deal.get("time")
-    if close_time and isinstance(close_time, (int, float)):
-        close_time = datetime.fromtimestamp(close_time).strftime("%Y-%m-%d %H:%M:%S")
+    close_time = _ts_to_th(deal.get("time")) or deal.get("time")
 
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
