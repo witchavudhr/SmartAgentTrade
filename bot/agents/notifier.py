@@ -1381,7 +1381,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-    result = supervisor.run()
+    result = supervisor.run(force_session=True)  # window scheduler กำหนดเวลาแล้ว ไม่ต้อง filter ซ้ำ
     log_scan(result)
 
     async def send(text, **kw):
