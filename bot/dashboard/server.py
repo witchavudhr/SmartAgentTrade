@@ -37,16 +37,13 @@ async def _price_loop():
             pass
 
 async def _stats_refresh_loop():
-    """Broadcast stats every 15s — prefer bot-pushed cache over local DB."""
+    """Broadcast stats every 15s — always read from DB directly."""
     global stats
     while True:
         await asyncio.sleep(15)
         try:
-            if "today" in stats_cache:
-                new_stats = stats_cache["today"]
-            else:
-                from agents.trade_log import get_dashboard_stats
-                new_stats = get_dashboard_stats()
+            from agents.trade_log import get_dashboard_stats
+            new_stats = get_dashboard_stats()
             if new_stats != stats:
                 stats = new_stats
                 await manager.broadcast({"type": "stats", "data": stats})
