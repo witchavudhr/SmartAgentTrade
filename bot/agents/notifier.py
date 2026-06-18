@@ -1394,6 +1394,12 @@ async def _handle_scan_result(result: dict, send_fn):
                 mt5_tag = f"\n\n⚠️ *MT5 Error:* `{ex.get('error','unknown')}`\n→ กรุณาเปิด trade เองใน MT5"
         elif entry_far:
             mt5_tag = f"\n\n{entry_far_msg}"
+            # เปลี่ยน header ให้ชัดว่ายังไม่ execute — แค่รอ
+            dir_label = direction or ""
+            message = message.replace(
+                f"🔔 *SETUP APPROVED — {dir_label}*",
+                f"⏳ *SETUP PENDING — {dir_label} (รอ OB zone)*"
+            )
         elif not mt5_executor.is_available():
             mt5_tag = "\n\n📋 _MT5_ENABLED=false — กรุณาเปิด trade เองใน MT5_"
 
