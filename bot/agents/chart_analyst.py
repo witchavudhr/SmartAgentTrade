@@ -595,7 +595,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
     EQL swept → ดูด sell-side liquidity → ราคากลับขึ้นมาเหนือ EQL
     เงื่อนไข: eql_level + sweep_low ชัดเจน + ราคาปัจจุบัน > eql_level
     Entry: ราคาปัจจุบัน (หรือ limit ที่ eql_level)
-    SL: ต่ำกว่า sweep_low 5-10 จุด
+    SL: ต่ำกว่า sweep_low 10-15 จุด (หลุดแนวพอ)
     TP: nearest_swing_high ที่คำนวณโดย code (ด้านบน)
     → setup_type = EQL_SWEEP_BUY
     confidence สูงขึ้นถ้ามี bull confirm candle
@@ -607,7 +607,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
        → กลางอากาศ + uptrend = ไม่มี resistance รองรับ → NO_TRADE ดีกว่า
        → ถ้ามี Bear OB ใกล้ราคา → SELL ที่ Bear OB ได้ (resistance จริง) แม้ macro จะ BULL
     Entry: ราคาปัจจุบัน (หรือ limit ที่ eqh_level)
-    SL: สูงกว่า sweep_high 5-10 จุด
+    SL: สูงกว่า sweep_high 10-15 จุด (หลุดแนวพอ)
     TP: nearest_swing_low ที่คำนวณโดย code (ด้านล่าง)
     → setup_type = EQH_SWEEP_SELL
     confidence สูงขึ้นถ้ามี bear confirm candle + macro BEAR หรือ MIXED เท่านั้น
@@ -618,7 +618,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   🟢 D1 — AMD_BUY / Spring (ถ้า amd_signal=AMD_BUY):
     EQL swept → ดูด sell stops → CHoCH Bull → BOS up → คนที่ short โดน squeeze
     Entry: ราคาปัจจุบัน หรือ pullback มา EQL level (ถ้ายังใกล้)
-    SL: ต่ำกว่า amd_sweep_level 5-10 จุด (ใต้ wick sweep)
+    SL: ต่ำกว่า amd_sweep_level 10-15 จุด (หลุดแนวพอ)
     TP: nearest_swing_high / Bear OB ถ้าไม่ไกลเกิน
     setup_type = AMD_BUY
     confidence สูงขึ้นถ้า: CHoCH fresh (≤5 bars) + BOS confirmed + bull candle
@@ -626,7 +626,7 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
   🔴 D2 — AMD_SELL / Upthrust (ถ้า amd_signal=AMD_SELL):
     EQH swept → ดูด buy stops → CHoCH Bear → BOS down → คนที่ long โดน flush
     Entry: ราคาปัจจุบัน หรือ pullback มา EQH level
-    SL: สูงกว่า amd_sweep_level 5-10 จุด (เหนือ wick sweep)
+    SL: สูงกว่า amd_sweep_level 10-15 จุด (หลุดแนวพอ)
     TP: nearest_swing_low / Bull OB ถ้าไม่ไกลเกิน
     setup_type = AMD_SELL
     confidence สูงขึ้นถ้า: CHoCH fresh + BOS confirmed + bear candle
@@ -654,12 +654,13 @@ STEP 3 — ตัดสินใจและโหวต
 9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
 10. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
-⛔ กฎ SL (บังคับ — เผื่อ liquidity sweep):
-  SELL: stop_loss = ob_top + 20-35 จุด (เผื่อ sweep wick ที่ตลาดดูด buy-side liquidity ก่อน drop)
-        ตัวอย่าง: ob_top=4344 → SL ควรอยู่ที่ 4346–4347 (ไม่ใช่ 4344.5)
-  BUY:  stop_loss = ob_bottom - 20-35 จุด (เผื่อ sweep wick ที่ตลาดดูด sell-side liquidity ก่อน bounce)
-        ตัวอย่าง: ob_bottom=4317 → SL ควรอยู่ที่ 4314–4315 (ไม่ใช่ 4316.5)
-  เหตุผล: XAUUSD sweep 20-50 pips เป็นปกติ SL แน่นเกินไป = โดน stop hunt ก่อน move จริง
+⛔ กฎ SL (บังคับ — วาง SL หลุดแนว structure ไปซักหน่อย):
+  SELL: stop_loss = ob_top + 10-15 จุด (พ้น Bear OB top เล็กน้อย — หลุดแนว ไม่ต้องไกลมาก)
+        ตัวอย่าง: ob_top=4344 → SL ควรอยู่ที่ 4345.0–4345.5
+  BUY:  stop_loss = ob_bottom - 10-15 จุด (พ้น Bull OB bottom เล็กน้อย — หลุดแนว)
+        ตัวอย่าง: ob_bottom=4317 → SL ควรอยู่ที่ 4315.5–4316.0
+  Sweep setups (EQL/EQH/AMD): SL = sweep_level + 10-15 จุด (หลุด wick sweep ไปนิดนึง)
+  ไม่วาง SL แน่นจน price wick ปกติโดน
 
 ตอบ JSON เท่านั้น:
 {{
@@ -723,13 +724,13 @@ STEP 3 — ตัดสินใจและโหวต
     ob_top_ref    = (primary_bear_ob or {}).get("top")
     ob_bottom_ref = (primary_bull_ob or {}).get("bottom")
     if sig == "SELL" and sl and sl <= price_now:
-        # SL ต่ำกว่าราคา (ผิดทิศ) → ใช้ OB top + 30 pips เผื่อ sweep
-        fallback = round((ob_top_ref + 3.0) if ob_top_ref else (price_now + 3.0), 2)
+        # SL ต่ำกว่าราคา (ผิดทิศ) → ob_top + 15 จุด หลุดแนวพอ
+        fallback = round((ob_top_ref + 1.5) if ob_top_ref else (price_now + 1.5), 2)
         print(f"[ChartAnalyst] SELL SL {sl} ต่ำกว่าราคา {price_now} → fallback {fallback}")
         result["stop_loss"] = fallback
     elif sig == "BUY" and sl and sl >= price_now:
-        # SL สูงกว่าราคา (ผิดทิศ) → ใช้ OB bottom - 30 pips เผื่อ sweep
-        fallback = round((ob_bottom_ref - 3.0) if ob_bottom_ref else (price_now - 3.0), 2)
+        # SL สูงกว่าราคา (ผิดทิศ) → ob_bottom - 15 จุด หลุดแนวพอ
+        fallback = round((ob_bottom_ref - 1.5) if ob_bottom_ref else (price_now - 1.5), 2)
         print(f"[ChartAnalyst] BUY SL {sl} สูงกว่าราคา {price_now} → fallback {fallback}")
         result["stop_loss"] = fallback
 
