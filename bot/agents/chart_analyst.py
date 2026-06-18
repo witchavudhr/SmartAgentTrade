@@ -719,23 +719,24 @@ STEP 3 — ตัดสินใจและโหวต
     result["bull_ob_zone"] = _ob_zone(primary_bull_ob)
     result["bear_ob_zone"] = _ob_zone(primary_bear_ob)
 
-    # ── SL safety fallback: ต้องพ้น sweep wick เสมอ ──────────────────
+    # ── SL safety fallback: ต้องถูกทิศ + พ้น sweep wick เสมอ ──────────
     sig = result.get("signal")
     sl  = result.get("stop_loss")
+    cur = price_now  # current price สำหรับ direction check
     if sig == "SELL" and sl:
-        h5 = adv.get("recent_high_5") or (primary_bear_ob or {}).get("top")
-        if h5:
-            min_sl = round(h5 + 0.5, 2)
-            if sl < min_sl:
-                print(f"[ChartAnalyst] SL adjusted {sl}→{min_sl} (above sweep high {h5})")
-                result["stop_loss"] = min_sl
+        h5 = adv.get("recent_high_5") or (primary_bear_ob or {}).get("top") or cur
+        # SL ต้อง: สูงกว่า current price + สูงกว่า sweep high
+        min_sl = round(max(h5 + 0.5, cur + 0.5), 2)
+        if sl < min_sl:
+            print(f"[ChartAnalyst] SELL SL adjusted {sl}→{min_sl} (price={cur} h5={h5})")
+            result["stop_loss"] = min_sl
     elif sig == "BUY" and sl:
-        l5 = adv.get("recent_low_5") or (primary_bull_ob or {}).get("bottom")
-        if l5:
-            max_sl = round(l5 - 0.5, 2)
-            if sl > max_sl:
-                print(f"[ChartAnalyst] SL adjusted {sl}→{max_sl} (below sweep low {l5})")
-                result["stop_loss"] = max_sl
+        l5 = adv.get("recent_low_5") or (primary_bull_ob or {}).get("bottom") or cur
+        # SL ต้อง: ต่ำกว่า current price + ต่ำกว่า sweep low
+        max_sl = round(min(l5 - 0.5, cur - 0.5), 2)
+        if sl > max_sl:
+            print(f"[ChartAnalyst] BUY SL adjusted {sl}→{max_sl} (price={cur} l5={l5})")
+            result["stop_loss"] = max_sl
 
     return result
 

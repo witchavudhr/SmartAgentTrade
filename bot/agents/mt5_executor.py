@@ -114,11 +114,13 @@ def open_trade(
             return {"error": f"Invalid stops: SELL TP {tp} ต้องต่ำกว่าราคา {round(price,2)} — entry zone ห่างจากตลาดมากเกินไป"}
     if sl:
         if direction == "BUY" and sl >= price:
-            disconnect()
-            return {"error": f"Invalid stops: BUY SL {sl} ต้องต่ำกว่าราคา {round(price,2)}"}
+            corrected = round(price - 0.5, 2)
+            print(f"[MT5] BUY SL {sl} ผิดทิศ → auto-correct to {corrected} (price={round(price,2)})")
+            sl = corrected
         if direction == "SELL" and sl <= price:
-            disconnect()
-            return {"error": f"Invalid stops: SELL SL {sl} ต้องสูงกว่าราคา {round(price,2)}"}
+            corrected = round(price + 0.5, 2)
+            print(f"[MT5] SELL SL {sl} ผิดทิศ → auto-correct to {corrected} (price={round(price,2)})")
+            sl = corrected
 
     # slippage = MT5_MAX_SLIPPAGE_PIPS points (XAUUSD: 1 pip = 10 points)
     slippage_points = MT5_MAX_SLIPPAGE_PIPS * 10
