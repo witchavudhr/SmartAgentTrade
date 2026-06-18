@@ -114,11 +114,11 @@ def open_trade(
             return {"error": f"Invalid stops: SELL TP {tp} ต้องต่ำกว่าราคา {round(price,2)} — entry zone ห่างจากตลาดมากเกินไป"}
     if sl:
         if direction == "BUY" and sl >= price:
-            corrected = round(price - 0.5, 2)
+            corrected = round(price - 3.0, 2)  # 30 pips เผื่อ sweep
             print(f"[MT5] BUY SL {sl} ผิดทิศ → auto-correct to {corrected} (price={round(price,2)})")
             sl = corrected
         if direction == "SELL" and sl <= price:
-            corrected = round(price + 0.5, 2)
+            corrected = round(price + 3.0, 2)  # 30 pips เผื่อ sweep
             print(f"[MT5] SELL SL {sl} ผิดทิศ → auto-correct to {corrected} (price={round(price,2)})")
             sl = corrected
 

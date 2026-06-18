@@ -654,9 +654,12 @@ STEP 3 — ตัดสินใจและโหวต
 9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
 10. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
-⛔ กฎ SL (บังคับ):
-  SELL: stop_loss ต้องสูงกว่า Bear OB top (ob_top + 5-10 จุด) เสมอ — ไม่ใช่ต่ำกว่าราคา
-  BUY:  stop_loss ต้องต่ำกว่า Bull OB bottom (ob_bottom - 5-10 จุด) เสมอ — ไม่ใช่สูงกว่าราคา
+⛔ กฎ SL (บังคับ — เผื่อ liquidity sweep):
+  SELL: stop_loss = ob_top + 20-35 จุด (เผื่อ sweep wick ที่ตลาดดูด buy-side liquidity ก่อน drop)
+        ตัวอย่าง: ob_top=4344 → SL ควรอยู่ที่ 4346–4347 (ไม่ใช่ 4344.5)
+  BUY:  stop_loss = ob_bottom - 20-35 จุด (เผื่อ sweep wick ที่ตลาดดูด sell-side liquidity ก่อน bounce)
+        ตัวอย่าง: ob_bottom=4317 → SL ควรอยู่ที่ 4314–4315 (ไม่ใช่ 4316.5)
+  เหตุผล: XAUUSD sweep 20-50 pips เป็นปกติ SL แน่นเกินไป = โดน stop hunt ก่อน move จริง
 
 ตอบ JSON เท่านั้น:
 {{
@@ -720,13 +723,13 @@ STEP 3 — ตัดสินใจและโหวต
     ob_top_ref    = (primary_bear_ob or {}).get("top")
     ob_bottom_ref = (primary_bull_ob or {}).get("bottom")
     if sig == "SELL" and sl and sl <= price_now:
-        # SL ต่ำกว่าราคา (ผิดทิศ) → ใช้ OB top + buffer แทน
-        fallback = round((ob_top_ref + 1.0) if ob_top_ref else (price_now + 1.0), 2)
+        # SL ต่ำกว่าราคา (ผิดทิศ) → ใช้ OB top + 30 pips เผื่อ sweep
+        fallback = round((ob_top_ref + 3.0) if ob_top_ref else (price_now + 3.0), 2)
         print(f"[ChartAnalyst] SELL SL {sl} ต่ำกว่าราคา {price_now} → fallback {fallback}")
         result["stop_loss"] = fallback
     elif sig == "BUY" and sl and sl >= price_now:
-        # SL สูงกว่าราคา (ผิดทิศ) → ใช้ OB bottom - buffer แทน
-        fallback = round((ob_bottom_ref - 1.0) if ob_bottom_ref else (price_now - 1.0), 2)
+        # SL สูงกว่าราคา (ผิดทิศ) → ใช้ OB bottom - 30 pips เผื่อ sweep
+        fallback = round((ob_bottom_ref - 3.0) if ob_bottom_ref else (price_now - 3.0), 2)
         print(f"[ChartAnalyst] BUY SL {sl} สูงกว่าราคา {price_now} → fallback {fallback}")
         result["stop_loss"] = fallback
 
