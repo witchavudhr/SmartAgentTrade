@@ -463,8 +463,6 @@ MARKET DATA
   Sweep Low:   {adv.get('recent_sweep_low','–')} ({sweep_l_age} bars ago)
   Sweep High:  {adv.get('recent_sweep_high','–')} ({sweep_h_age} bars ago)
   Confirm:     Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
-  Recent High (5-bar): {adv.get('recent_high_5','?')}  ← sweep candle high — ใช้เป็น SL reference ฝั่ง SELL
-  Recent Low  (5-bar): {adv.get('recent_low_5','?')}   ← sweep candle low  — ใช้เป็น SL reference ฝั่ง BUY
   {momentum_warn}
 
 ⭐ OB Confluence (M5 ∩ M15):
@@ -656,12 +654,9 @@ STEP 3 — ตัดสินใจและโหวต
 9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
 10. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
-⛔ กฎ SL (บังคับ — ห้ามวาง SL แน่นเกิน):
-  SELL: stop_loss ต้องสูงกว่า recent_high_5 (sweep candle high) + 0.5 เสมอ
-        ถ้า recent_high_5 > ob_top → ใช้ recent_high_5 + 0.5 เป็น SL
-        ถ้า recent_high_5 ≤ ob_top → ใช้ ob_top + 0.5 เป็น SL อย่างน้อย
-  BUY:  stop_loss ต้องต่ำกว่า recent_low_5 (sweep candle low) - 0.5 เสมอ
-        เหตุผล: market ดูด liquidity (sweep) ก่อน reverse — SL ต้องพ้น sweep wick
+⛔ กฎ SL (บังคับ):
+  SELL: stop_loss ต้องสูงกว่า Bear OB top (ob_top + 5-10 จุด) เสมอ — ไม่ใช่ต่ำกว่าราคา
+  BUY:  stop_loss ต้องต่ำกว่า Bull OB bottom (ob_bottom - 5-10 จุด) เสมอ — ไม่ใช่สูงกว่าราคา
 
 ตอบ JSON เท่านั้น:
 {{
@@ -719,24 +714,21 @@ STEP 3 — ตัดสินใจและโหวต
     result["bull_ob_zone"] = _ob_zone(primary_bull_ob)
     result["bear_ob_zone"] = _ob_zone(primary_bear_ob)
 
-    # ── SL safety fallback: ต้องถูกทิศ + พ้น sweep wick เสมอ ──────────
+    # ── SL direction check: ต้องอยู่ถูกทิศก่อนส่ง ──────────────────────
     sig = result.get("signal")
     sl  = result.get("stop_loss")
-    cur = price_now  # current price สำหรับ direction check
-    if sig == "SELL" and sl:
-        h5 = adv.get("recent_high_5") or (primary_bear_ob or {}).get("top") or cur
-        # SL ต้อง: สูงกว่า current price + สูงกว่า sweep high
-        min_sl = round(max(h5 + 0.5, cur + 0.5), 2)
-        if sl < min_sl:
-            print(f"[ChartAnalyst] SELL SL adjusted {sl}→{min_sl} (price={cur} h5={h5})")
-            result["stop_loss"] = min_sl
-    elif sig == "BUY" and sl:
-        l5 = adv.get("recent_low_5") or (primary_bull_ob or {}).get("bottom") or cur
-        # SL ต้อง: ต่ำกว่า current price + ต่ำกว่า sweep low
-        max_sl = round(min(l5 - 0.5, cur - 0.5), 2)
-        if sl > max_sl:
-            print(f"[ChartAnalyst] BUY SL adjusted {sl}→{max_sl} (price={cur} l5={l5})")
-            result["stop_loss"] = max_sl
+    ob_top_ref    = (primary_bear_ob or {}).get("top")
+    ob_bottom_ref = (primary_bull_ob or {}).get("bottom")
+    if sig == "SELL" and sl and sl <= price_now:
+        # SL ต่ำกว่าราคา (ผิดทิศ) → ใช้ OB top + buffer แทน
+        fallback = round((ob_top_ref + 1.0) if ob_top_ref else (price_now + 1.0), 2)
+        print(f"[ChartAnalyst] SELL SL {sl} ต่ำกว่าราคา {price_now} → fallback {fallback}")
+        result["stop_loss"] = fallback
+    elif sig == "BUY" and sl and sl >= price_now:
+        # SL สูงกว่าราคา (ผิดทิศ) → ใช้ OB bottom - buffer แทน
+        fallback = round((ob_bottom_ref - 1.0) if ob_bottom_ref else (price_now - 1.0), 2)
+        print(f"[ChartAnalyst] BUY SL {sl} สูงกว่าราคา {price_now} → fallback {fallback}")
+        result["stop_loss"] = fallback
 
     return result
 
