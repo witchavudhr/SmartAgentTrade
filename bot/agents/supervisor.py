@@ -158,18 +158,32 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
             "TREND_BOS_BREAK":      f"BOS break pyramid — RR {rr} auto-approve",
         }.get(setup_type, f"{setup_type} auto-approve")
 
-        result["approved"]    = True
-        result["final_signal"]= signal
-        result["lot"]         = risk.get("lot")
-        result["risk_pct"]    = risk.get("risk_pct")
-        result["caution_mode"]= risk.get("caution_mode", False)
-        result["entry_zone"]  = analysis.get("entry_zone")
-        result["stop_loss"]   = analysis.get("stop_loss")
-        result["take_profit"] = analysis.get("take_profit")
-        result["rr_ratio"]    = rr
-        result["reasoning"]   = auto_reason
-        result["analysis"]    = analysis
-        result["stages"]["supervisor"] = {"approve": True, "reasoning": auto_reason, "auto": True}
+        liq_target_a = analysis.get("liquidity_target")
+        idm_level_a  = analysis.get("inducement_level")
+        liq_read_a   = analysis.get("liquidity_map_read", "")
+        auto_liq = (
+            f"BSL/SSL target: {liq_target_a}" if liq_target_a else ""
+        ) + (f" | Inducement: {idm_level_a}" if idm_level_a else "")
+
+        result["approved"]         = True
+        result["final_signal"]     = signal
+        result["lot"]              = risk.get("lot")
+        result["risk_pct"]         = risk.get("risk_pct")
+        result["caution_mode"]     = risk.get("caution_mode", False)
+        result["entry_zone"]       = analysis.get("entry_zone")
+        result["stop_loss"]        = analysis.get("stop_loss")
+        result["take_profit"]      = analysis.get("take_profit")
+        result["rr_ratio"]         = rr
+        result["reasoning"]        = auto_reason
+        result["entry_condition"]  = analysis.get("vote_reasoning", auto_reason)
+        result["liquidity_summary"]= liq_read_a or auto_liq or "–"
+        result["analysis"]         = analysis
+        result["stages"]["supervisor"] = {
+            "approve": True, "reasoning": auto_reason,
+            "entry_condition": result["entry_condition"],
+            "liquidity_summary": result["liquidity_summary"],
+            "auto": True,
+        }
         return result
 
     # ── Stage 7: Supervisor Final Decision — สำหรับ setup ที่ไม่ชัด ──
@@ -177,17 +191,19 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
     result["stages"]["supervisor"] = verdict
 
     if verdict.get("approve"):
-        result["approved"] = True
-        result["final_signal"] = signal
-        result["lot"] = risk.get("lot")
-        result["risk_pct"] = risk.get("risk_pct")
-        result["caution_mode"] = risk.get("caution_mode", False)
-        result["entry_zone"] = analysis.get("entry_zone")
-        result["stop_loss"] = analysis.get("stop_loss")
-        result["take_profit"] = analysis.get("take_profit")
-        result["rr_ratio"] = analysis.get("rr_ratio")
-        result["reasoning"] = verdict.get("reasoning")
-        result["analysis"] = analysis
+        result["approved"]          = True
+        result["final_signal"]      = signal
+        result["lot"]               = risk.get("lot")
+        result["risk_pct"]          = risk.get("risk_pct")
+        result["caution_mode"]      = risk.get("caution_mode", False)
+        result["entry_zone"]        = analysis.get("entry_zone")
+        result["stop_loss"]         = analysis.get("stop_loss")
+        result["take_profit"]       = analysis.get("take_profit")
+        result["rr_ratio"]          = analysis.get("rr_ratio")
+        result["reasoning"]         = verdict.get("reasoning")
+        result["entry_condition"]   = verdict.get("entry_condition", "")
+        result["liquidity_summary"] = verdict.get("liquidity_summary", "")
+        result["analysis"]          = analysis
     else:
         result["reject_reason"] = verdict.get("reasoning", "Supervisor rejected")
 
@@ -224,6 +240,12 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
         "   → ถ้า setup เป็น BULL_OB_ENTRY หรือ TREND_OB ให้ REJECT ก่อน รอ session ปกติ\n"
     ) if is_late_ny else ""
 
+    # Liquidity map info จาก chart analyst
+    liq_target   = analysis.get("liquidity_target")
+    idm_level    = analysis.get("inducement_level")
+    liq_map_read = analysis.get("liquidity_map_read", "")
+    setup_type_s = analysis.get("setup_type", "")
+
     prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้าย APPROVE หรือ REJECT trade นี้
 Vote รวม {vote_score}/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง (ไม่ต้องนับเสียงข้างมาก)
 
@@ -236,8 +258,12 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 ═══ Agent Votes & Reasoning ═══
 🔍 Chart Analyst [{chart_vote_str}]
    {chart_r}
-   → Signal: {analysis.get('signal')} | Confidence: {analysis.get('confidence')}% | Setup: {analysis.get('setup_type')} | RR: 1:{analysis.get('rr_ratio')}
+   → Signal: {analysis.get('signal')} | Confidence: {analysis.get('confidence')}% | Setup: {setup_type_s} | RR: 1:{analysis.get('rr_ratio')}
    → Entry: {analysis.get('entry_zone')} | SL: {analysis.get('stop_loss')} | TP: {analysis.get('take_profit')}
+
+🌊 Liquidity Map (จาก Chart Analyst):
+   {liq_map_read or '–'}
+   BSL/SSL Target: {liq_target or '–'} | Inducement: {idm_level or '–'}
 
 🌍 Bias Analyst [{bias_vote_str}] (Case {bias_case}{' — ถึง HTF level แล้ว' if at_htf else ''})
    {bias_r}
@@ -254,7 +280,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 
 ── กฎเหล็ก (ห้ามฝ่าฝืน) ──
 ✅ APPROVE ทันทีถ้า:
-   • setup_type = BULL_OB_SWEEP_REJECT → sweep+reject เกิดแล้ว = confirmation ชัดที่สุด
+   • setup_type = BSL_SWEEP_SELL / SSL_SWEEP_BUY → liquidity sweep เกิดแล้ว + rejection = highest conviction
+   • setup_type = BULL_OB_SWEEP_REJECT → sweep+reject ที่ OB เกิดแล้ว = confirmation ชัดที่สุด
    • setup_type = BULL_OB_ENTRY + Chart YES + ราคาอยู่ใน OB + RR ≥ 1.5
      → นี่คือ pyramid ไม้ 1 เล็กๆ ก่อน ไม่ต้องรอ confirmation เพิ่ม
      → "counter-trend" ไม่ใช่เหตุผล reject สำหรับ BULL_OB setup เพราะ swing มีในทุก trend
@@ -269,7 +296,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 
 ── ชั่งน้ำหนัก ──
 1. Chart Analyst = agent หลัก น้ำหนักสูงสุด
-2. Bias NO เพราะ "counter-trend" → น้ำหนักต่ำ ถ้า setup เป็น BULL_OB ประเภทใดก็ตาม
+2. Bias NO เพราะ "counter-trend" → น้ำหนักต่ำ ถ้า setup เป็น BULL_OB หรือ BSL/SSL sweep
 3. Bias NO เพราะข่าว/HTF structure พัง → น้ำหนักสูง
 4. News NO เพราะข่าว High Impact → น้ำหนักสูงที่สุด ต้องฟัง
 
@@ -277,6 +304,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 {{
   "approve": true/false,
   "confidence": 0-100,
+  "entry_condition": "ระบุให้ชัด: เข้าเงื่อนไข Case ไหน (A/B/C/D/E/F) และทำไม เช่น 'Case F1 — BSL ที่ 3350 swept แล้ว + bearish wick ยาว → BSL_SWEEP_SELL' หรือ 'Case B1 — EQL swept + rejection ที่ Bull OB 3180 → BULL_OB_SWEEP_REJECT'",
+  "liquidity_summary": "สรุปสถานะ liquidity: BSL อยู่ที่ไหน / SSL อยู่ที่ไหน / ราคากำลังมุ่งหาอะไร / inducement มีมั้ย เช่น 'SSL (EQL) ที่ 3165 swept แล้ว, BSL ที่ 3330 คือ next target TP, ไม่มี inducement ระหว่างทาง'",
   "key_agent": "chart/bias/news — agent ที่มีน้ำหนักมากสุด",
   "reject_reason_detail": {{
     "chart": "เหตุผลจาก Chart vote",
@@ -284,8 +313,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
     "news": "เหตุผลจาก News vote",
     "supervisor": "เหตุผลสุดท้ายที่ supervisor ตัดสิน"
   }},
-  "what_to_watch": "⚠️ REQUIRED ถ้า approve=false — ระบุให้ชัดว่าต้องรออะไรและที่ราคาเท่าไร เช่น 'รอ pullback ถึง Bull OB 3180–3182 แล้วดู rejection candle' หรือ 'รอ sweep low ที่ 3165 ก่อน แล้วค่อย BUY' หรือ 'รอ H4 CHoCH กลับเป็น bull ก่อน' — ต้องมีราคาอ้างอิงเสมอ ห้าม null เมื่อ reject",
-  "reasoning": "2-3 ประโยค ภาษาไทย — ระบุว่าชั่งน้ำหนักอะไร ทำไมถึง approve/reject"
+  "what_to_watch": "⚠️ REQUIRED ถ้า approve=false — ระบุให้ชัดว่าต้องรออะไรและที่ราคาเท่าไร เช่น 'รอ pullback ถึง Bull OB 3180–3182 แล้วดู rejection candle' หรือ 'รอ sweep SSL ที่ 3165 ก่อน แล้วค่อย BUY' — ต้องมีราคาอ้างอิงเสมอ ห้าม null เมื่อ reject",
+  "reasoning": "2-3 ประโยค ภาษาไทย — ระบุ: ① เข้าเงื่อนไขไหน ② liquidity อยู่ตรงไหน ③ ทำไมถึง approve/reject"
 }}"""
 
     response = client.messages.create(
@@ -520,12 +549,32 @@ def format_alert(result: dict) -> str:
     pyramid_plan = analysis.get("pyramid_plan")
     pyramid_line = f"\n📐 *Pyramid:* _{_md(str(pyramid_plan))}_\n" if pyramid_plan else ""
 
+    # Entry condition & liquidity summary
+    entry_cond   = result.get("entry_condition", "")
+    liq_summary  = result.get("liquidity_summary", "")
+    liq_target_r = analysis.get("liquidity_target")
+    idm_level_r  = analysis.get("inducement_level")
+
+    cond_line = f"📌 *เงื่อนไข:* _{_md(entry_cond[:180])}_\n" if entry_cond else ""
+
+    liq_line = ""
+    if liq_summary and liq_summary != "–":
+        liq_line = f"🌊 *Liquidity:* _{_md(liq_summary[:180])}_\n"
+    if liq_target_r:
+        liq_line += f"   🎯 Target: `{liq_target_r}`"
+        if idm_level_r:
+            liq_line += f" | IDM: `{idm_level_r}`"
+        liq_line += "\n"
+
     return (
         f"🔔 *SETUP APPROVED — {signal}*\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"{caution}"
         f"{emoji} *{signal}* | {setup_line.strip()}\n"
         f"🗳 Vote: `{vote_bar}` {vote}/3{vote_lines}\n\n"
+        f"━━━ เหตุผล ━━━\n"
+        f"{cond_line}"
+        f"{liq_line}"
         f"━━━ จุดเข้า ━━━\n"
         f"{'🟢 BUY' if signal=='BUY' else '🔴 SELL'} zone: {entry_str}\n"
         f"{tp_lines}"
