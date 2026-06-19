@@ -267,6 +267,7 @@ def analyze(smc_summary: dict = None) -> dict:
 
     momentum_bull = adv.get("momentum_bull", False)
     momentum_bear = adv.get("momentum_bear", False)
+    liq           = smc_summary.get("liquidity", {})
 
     # คำนวณระยะห่าง OB จริงๆ ก่อนสร้าง prompt
     price_now = float(smc_summary.get("price") or smc_summary.get("current_price") or 0)
@@ -297,6 +298,42 @@ def analyze(smc_summary: dict = None) -> dict:
         f"  Swing Highs above (top 3): {sh_above or 'N/A'}\n"
         f"  Swing Lows  below (top 3): {sl_below or 'N/A'}\n"
         f"  Round Numbers (±300p):     {round_levels or 'N/A'}"
+    )
+
+    def _fmt_liq_pool(p: dict) -> str:
+        if not p:
+            return "–"
+        swept_tag = " [SWEPT]" if p.get("swept") else ""
+        return (f"{p.get('level','?')} ({p.get('type','?')}/{p.get('size','?')}"
+                f" dist={p.get('dist_pts','?')}p){swept_tag}")
+
+    def _fmt_liq_list(pools: list) -> str:
+        if not pools:
+            return "  (ไม่มี)"
+        return "\n".join(f"  • {_fmt_liq_pool(p)}" for p in pools)
+
+    _bsl_pools  = liq.get("bsl_pools",  [])
+    _ssl_pools  = liq.get("ssl_pools",  [])
+    _near_bsl   = liq.get("nearest_bsl")
+    _near_ssl   = liq.get("nearest_ssl")
+    _bsl_idm    = liq.get("bsl_inducement")
+    _ssl_idm    = liq.get("ssl_inducement")
+
+    liq_map_block = (
+        f"🌊 LIQUIDITY MAP (BSL/SSL — คำนวณโดย code):\n"
+        f"  Nearest intact BSL (Buy-Side / above price): {_fmt_liq_pool(_near_bsl)}\n"
+        f"  Nearest intact SSL (Sell-Side / below price): {_fmt_liq_pool(_near_ssl)}\n"
+        f"  BSL Inducement (minor pool ระหว่างทางก่อน BSL): {_fmt_liq_pool(_bsl_idm)}\n"
+        f"  SSL Inducement (minor pool ระหว่างทางก่อน SSL): {_fmt_liq_pool(_ssl_idm)}\n"
+        f"  BSL Pools (all above price, top 5):\n{_fmt_liq_list(_bsl_pools)}\n"
+        f"  SSL Pools (all below price, top 5):\n{_fmt_liq_list(_ssl_pools)}\n"
+        f"\n"
+        f"  กฎการอ่าน Liquidity Map:\n"
+        f"  - ราคาวิ่งหา liquidity ที่ใกล้ที่สุดก่อนเสมอ (nearest intact pool)\n"
+        f"  - BSL = stop loss ของ Short sellers (อยู่เหนือราคา) → ราคาวิ่งขึ้นดูด → แล้ว SELL\n"
+        f"  - SSL = stop loss ของ Long buyers (อยู่ใต้ราคา) → ราคาวิ่งลงดูด → แล้ว BUY\n"
+        f"  - major pool (EQH/EQL) = target ใหญ่, minor pool (swing) = inducement ก่อนถึง major\n"
+        f"  - ถ้า BSL/SSL ถูก swept แล้ว (SWEPT) = ราคาจะ reverse ได้เลย"
     )
     _bear_ob   = smc_summary.get("active_bear_ob") or {}
     _bull_ob   = smc_summary.get("active_bull_ob") or {}
@@ -476,6 +513,8 @@ MARKET DATA
   Confirm:     Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
   {momentum_warn}
 
+{liq_map_block}
+
 ⭐ OB Confluence (M5 ∩ M15):
   Bull zone: {_fmt_conf(bull_confluence)}
   Bear zone: {_fmt_conf(bear_confluence)}
@@ -653,6 +692,41 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
 
   ⚠️ ห้าม E ถ้า: momentum แรงเกิน (2.5×ATR) หรือ RR < 1.5
 
+── CASE F: BSL/SSL Liquidity Sweep — Highest Priority ───────────
+ใช้ Liquidity Map ข้างบน: ราคาเพิ่ง sweep BSL หรือ SSL แล้ว → reverse entry
+
+  🔴 F1 — BSL_SWEEP_SELL (ราคา swept BSL แล้ว กำลัง reverse ลง):
+    เงื่อนไข:
+      - nearest_bsl SWEPT = True (price วิ่งขึ้นดูด BSL pool เสร็จแล้ว)
+      - ราคาปัจจุบันต่ำกว่า BSL level (กลับลงมาใต้ pool)
+      - bearish rejection candle หรือ CHoCH ลง
+    Entry: ราคาปัจจุบัน (หรือ limit ที่ BSL level)
+    SL: BSL level + 10-15 จุด (หลุดเหนือ pool ที่ถูก sweep)
+    TP: nearest_ssl level / PDL / Bull OB ที่อยู่ใต้ราคา
+    setup_type = BSL_SWEEP_SELL
+    liquidity_target = nearest_bsl level
+    confidence สูงถ้า: major pool (EQH/EQL) + HTF BEAR หรือ MIXED
+
+  🟢 F2 — SSL_SWEEP_BUY (ราคา swept SSL แล้ว กำลัง reverse ขึ้น):
+    เงื่อนไข:
+      - nearest_ssl SWEPT = True (price วิ่งลงดูด SSL pool เสร็จแล้ว)
+      - ราคาปัจจุบันสูงกว่า SSL level (กลับขึ้นมาเหนือ pool)
+      - bullish rejection candle หรือ CHoCH ขึ้น
+    Entry: ราคาปัจจุบัน (หรือ limit ที่ SSL level)
+    SL: SSL level - 10-15 จุด (หลุดใต้ pool ที่ถูก sweep)
+    TP: nearest_bsl level / PDH / Bear OB ที่อยู่เหนือราคา
+    setup_type = SSL_SWEEP_BUY
+    liquidity_target = nearest_ssl level
+    confidence สูงถ้า: major pool (EQH/EQL) + HTF BULL หรือ MIXED
+
+  🎯 Inducement Logic (อย่าหลงกล):
+    ถ้า bsl_inducement หรือ ssl_inducement มีค่า = ราคาอาจวิ่งดูด inducement ก่อน
+    แล้วค่อย reverse หลังจาก major pool ถูก swept
+    → รอ sweep inducement เสร็จก่อน แล้วค่อยดู CASE F
+
+  ⚠️ ห้าม F ถ้า: BSL/SSL ยังไม่ถูก sweep (ราคายังไม่ถึง pool)
+     → ใช้ liquidity_target เป็น entry_far แจ้งรอแทน
+
 ── CASE D: AMD Pattern — Range → Sweep → CHoCH → BOS ───────────
 ท่าเจอบ่อยที่สุด: ออกข้าง (Accumulation) → ดูด liquidity (Manipulation) → พลิกทิศ (Distribution)
 
@@ -680,22 +754,24 @@ STEP 3 — ตัดสินใจและโหวต
 ════════════════════════════════════════════
 หลักการ: ซื้อแนวรับ ขายแนวต้าน — ราคาต้องถึง OB ก่อนเสมอ ไม่ trade กลางอากาศ
 
-ลำดับ priority:
-0. ถ้าไม่มี OB ใกล้ AND ไม่มี S/R ใกล้ราคา → NO_TRADE รอ
-1. ★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (confidence สูงสุด — support+trend)
-   ★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (confidence สูงสุด — resistance+trend)
-2. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK
+ลำดับ priority (ไล่ตามความ confidence สูงสุด → ต่ำสุด):
+0. ถ้าไม่มีอะไรผ่านเลย → NO_TRADE รอ แต่ระบุว่า liquidity target อยู่ตรงไหน
+1. ★★★ CASE F1 — nearest_bsl SWEPT + bearish reject → SELL, setup_type=BSL_SWEEP_SELL (liquidity sweep = highest conviction)
+   ★★★ CASE F2 — nearest_ssl SWEPT + bullish reject → BUY,  setup_type=SSL_SWEEP_BUY  (liquidity sweep = highest conviction)
+2. ★★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (support+trend ตรงกัน)
+   ★★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (resistance+trend ตรงกัน)
+3. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK
    ★★ BOS ลง + pullback มา Bull OB เดิม + macro BEAR → SELL, setup_type=BREAKER_BLOCK
-3. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
-4. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
-5. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
-6. CASE C1 (eql_sweep_signal ≠ null) → YES, setup_type=EQL_SWEEP_BUY
-7. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
-8. CASE D1 (amd_signal=AMD_BUY) → YES, setup_type=AMD_BUY
-9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
-10. CASE E1 (ราคาใกล้ PDH/SwingHigh/Round + bearish reject) → YES, setup_type=SR_SELL
+4. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
+5. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
+6. CASE B + B2 → YES, setup_type=BULL_OB_ENTRY, pyramid_mode=true
+7. CASE C1 (eql_sweep_signal ≠ null) → YES, setup_type=EQL_SWEEP_BUY
+8. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
+9. CASE D1 (amd_signal=AMD_BUY) → YES, setup_type=AMD_BUY
+10. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
+11. CASE E1 (ราคาใกล้ PDH/SwingHigh/Round + bearish reject) → YES, setup_type=SR_SELL
     CASE E2 (ราคาใกล้ PDL/SwingLow/Round + bullish reject)  → YES, setup_type=SR_BUY
-11. ไม่มีเงื่อนไขผ่านเลย → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
+12. ไม่มีเงื่อนไขผ่านเลย → NO, ระบุใน trade_plan ว่าราคากำลังมุ่งหา liquidity pool ไหน (BSL/SSL)
 
 ⛔ กฎ SL (บังคับ — วาง SL หลุดแนว structure ไปซักหน่อย):
   SELL: stop_loss = ob_top + 10-15 จุด (พ้น Bear OB top เล็กน้อย — หลุดแนว ไม่ต้องไกลมาก)
@@ -710,8 +786,10 @@ STEP 3 — ตัดสินใจและโหวต
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "BSL_SWEEP_SELL/SSL_SWEEP_BUY/TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
   "sr_level": ราคา S/R ที่ใช้เป็น entry reference (เฉพาะ SR_SELL/SR_BUY) หรือ null,
+  "liquidity_target": ราคา BSL หรือ SSL pool ที่ราคากำลังมุ่งหา (เฉพาะ F cases หรือ NO_TRADE ที่รอ sweep) หรือ null,
+  "inducement_level": ราคา inducement pool ถ้ามี (minor pool ที่อยู่ระหว่างราคากับ target) หรือ null,
   "trend_aligned": true ถ้า OB ที่ใกล้ตรงกับ macro trend หรือ false,
   "proximity_case": "A หรือ B",
   "pyramid_mode": true หรือ false,
@@ -728,7 +806,8 @@ STEP 3 — ตัดสินใจและโหวต
   "price_vs_ob": "AT_OB/APPROACHING/FAR",
   "trade_plan": "แผน step-by-step รวม pyramid + TP target",
   "key_factors": ["factor1", "factor2"],
-  "reasoning": "ภาษาไทย: ① H1/H4 macro ② OB ที่ใกล้ที่สุดคือไหน ③ มี sweep+rejection มั้ย ④ setup ที่เลือก ⑤ pyramid plan ⑥ Bear OB distance + TP logic"
+  "liquidity_map_read": "สรุป 1 ประโยคว่า nearest BSL/SSL อยู่ที่ไหน swept หรือยัง และราคากำลังมุ่งหาอะไร",
+  "reasoning": "ภาษาไทย: ① H1/H4 macro ② Liquidity map — nearest BSL/SSL swept แล้วหรือยัง ③ OB ที่ใกล้ที่สุดคือไหน ④ มี sweep+rejection มั้ย ⑤ setup ที่เลือก (Case ไหน) ⑥ pyramid plan ⑦ TP logic (Bear OB / BSL / PDH / swing)"
 }}"""
 
     response = client.messages.create(

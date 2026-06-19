@@ -501,6 +501,76 @@ def get_session() -> dict:
     }
 
 
+def classify_liquidity(result: "SMCResult", current_price: float) -> dict:
+    """
+    จัด rank liquidity pools:
+      BSL (Buy-Side Liquidity)  = เหนือราคา = stop ของคน Short
+      SSL (Sell-Side Liquidity) = ใต้ราคา   = stop ของคน Long
+
+    คืน dict พร้อม bsl_pools, ssl_pools, nearest_bsl, nearest_ssl
+    แต่ละ pool: {level, type, size, dist_pts, swept}
+    """
+    eqh_set = set(round(v, 2) for v in (result.equal_highs or []))
+    eql_set = set(round(v, 2) for v in (result.equal_lows  or []))
+    swept_highs = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_high"}
+    swept_lows  = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_low"}
+
+    bsl_pools = []
+    for sh in (result.swing_highs or []):
+        lv = round(sh.price, 2)
+        if lv <= current_price:
+            continue
+        is_major = any(abs(lv - e) < 1.0 for e in eqh_set)
+        swept    = any(abs(lv - s) < 1.5 for s in swept_highs)
+        bsl_pools.append({
+            "level":    lv,
+            "type":     "EQH" if is_major else "SwingHigh",
+            "size":     "major" if is_major else "minor",
+            "dist_pts": round((lv - current_price) * 10, 1),
+            "swept":    swept,
+        })
+
+    ssl_pools = []
+    for sl in (result.swing_lows or []):
+        lv = round(sl.price, 2)
+        if lv >= current_price:
+            continue
+        is_major = any(abs(lv - e) < 1.0 for e in eql_set)
+        swept    = any(abs(lv - s) < 1.5 for s in swept_lows)
+        ssl_pools.append({
+            "level":    lv,
+            "type":     "EQL" if is_major else "SwingLow",
+            "size":     "major" if is_major else "minor",
+            "dist_pts": round((current_price - lv) * 10, 1),
+            "swept":    swept,
+        })
+
+    bsl_pools.sort(key=lambda x: x["dist_pts"])
+    ssl_pools.sort(key=lambda x: x["dist_pts"])
+
+    intact_bsl = [p for p in bsl_pools if not p["swept"]]
+    intact_ssl = [p for p in ssl_pools if not p["swept"]]
+
+    # Inducement = nearest minor pool ระหว่างราคากับ major target
+    def find_inducement(pools, target):
+        if not target or target["size"] == "minor":
+            return None
+        minor = [p for p in pools if p["size"] == "minor" and p["dist_pts"] < target["dist_pts"]]
+        return minor[0] if minor else None
+
+    nearest_bsl = intact_bsl[0] if intact_bsl else None
+    nearest_ssl = intact_ssl[0] if intact_ssl else None
+
+    return {
+        "bsl_pools":    bsl_pools[:5],
+        "ssl_pools":    ssl_pools[:5],
+        "nearest_bsl":  nearest_bsl,
+        "nearest_ssl":  nearest_ssl,
+        "bsl_inducement": find_inducement(intact_bsl, nearest_bsl),
+        "ssl_inducement": find_inducement(intact_ssl, nearest_ssl),
+    }
+
+
 def is_market_holiday() -> tuple[bool, str]:
     """
     เช็คว่าตลาด Forex/Gold ปิดสนิทวันนี้มั้ย
@@ -1652,6 +1722,12 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             summary["pdh"] = None
             summary["pdl"] = None
             summary["round_levels"] = []
+
+    # ── Liquidity Map ─────────────────────────────────────────
+    try:
+        summary["liquidity"] = classify_liquidity(result, current_price)
+    except Exception:
+        summary["liquidity"] = {}
 
     # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:

@@ -1342,10 +1342,34 @@ async def _handle_scan_result(result: dict, send_fn):
             ob_top    = entry_raw2[1] if isinstance(entry_raw2, list) else entry_price
             ob_bottom = entry_raw2[0] if isinstance(entry_raw2, list) else entry_price
             setup_type_now = signal.get("setup_type", "")
-            is_ob_setup = "OB" in setup_type_now
-            is_sr_setup = setup_type_now in ("SR_SELL", "SR_BUY")
+            is_ob_setup  = "OB" in setup_type_now
+            is_sr_setup  = setup_type_now in ("SR_SELL", "SR_BUY")
+            is_liq_setup = setup_type_now in ("BSL_SWEEP_SELL", "SSL_SWEEP_BUY")
 
-            if is_sr_setup:
+            if is_liq_setup:
+                # Liquidity sweep setup: เช็คว่า BSL/SSL ถูก sweep แล้วหรือยัง
+                liq_target = signal.get("liquidity_target")
+                if liq_target and current_mkt:
+                    dist_liq = round(abs(current_mkt - liq_target) * 10)
+                    if setup_type_now == "BSL_SWEEP_SELL" and current_mkt < liq_target:
+                        # ยังไม่ถึง BSL pool
+                        if dist_liq > 15:
+                            entry_far = True
+                            entry_far_msg = (
+                                f"⏳ *รอ Rally ดูด BSL*\n"
+                                f"ราคา `{current_mkt}` ห่าง BSL pool `{liq_target}` อยู่ `{dist_liq}p`\n"
+                                f"_รอราคาขึ้นไป sweep BSL ก่อน แล้วดู rejection_"
+                            )
+                    elif setup_type_now == "SSL_SWEEP_BUY" and current_mkt > liq_target:
+                        # ยังไม่ถึง SSL pool
+                        if dist_liq > 15:
+                            entry_far = True
+                            entry_far_msg = (
+                                f"⏳ *รอ Dip ดูด SSL*\n"
+                                f"ราคา `{current_mkt}` ห่าง SSL pool `{liq_target}` อยู่ `{dist_liq}p`\n"
+                                f"_รอราคาลงไป sweep SSL ก่อน แล้วดู rejection_"
+                            )
+            elif is_sr_setup:
                 # S/R setup: เช็คว่าราคาอยู่ใกล้ sr_level ≤20 pts
                 sr_level = signal.get("sr_level")
                 if sr_level:
