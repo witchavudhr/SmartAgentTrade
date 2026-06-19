@@ -503,50 +503,63 @@ def get_session() -> dict:
 
 def is_market_holiday() -> tuple[bool, str]:
     """
-    เช็คว่าตลาด Gold (CME/COMEX) ปิดวันนี้มั้ย
-    ปิด: วันหยุดสหรัฐ (CME Gold) + สหราชอาณาจักร (London) + วันหยุดสากล
-    คืน: (is_closed, holiday_name)
+    เช็คว่าตลาด Forex/Gold ปิดสนิทวันนี้มั้ย
+    คืน: (is_hard_closed, holiday_name)
+
+    Hard close (block scan): ตลาด Forex ปิดจริง — Christmas, New Year's, Good Friday
+    Soft close (warn only): CME Gold ลด volume แต่ Spot Gold ยังเทรดได้ผ่าน broker
     """
     import holidays as hol
     from datetime import date
 
     today = date.today()
 
-    # Weekend
-    if today.weekday() >= 5:  # 5=Sat, 6=Sun
+    # Weekend — Forex ปิดจริง
+    if today.weekday() >= 5:
         return True, "Weekend"
 
-    # CME Gold holidays (US)
-    us_holidays = hol.UnitedStates(years=today.year, subdiv=None)
-    # เฉพาะที่ตลาด Gold ปิดจริง
-    cme_gold_holidays = {
-        "New Year's Day",
-        "Martin Luther King Jr. Day",
-        "Presidents' Day",
-        "Good Friday",
-        "Memorial Day",
-        "Juneteenth National Independence Day",
-        "Independence Day",
-        "Labor Day",
-        "Thanksgiving",
+    # Hard close: Forex ปิดสนิทหรือใกล้เคียง
+    hard_close_keywords = {
         "Christmas Day",
+        "New Year's Day",
+        "Good Friday",
     }
+
+    us_holidays = hol.UnitedStates(years=today.year, subdiv=None)
     if today in us_holidays:
         hname = us_holidays[today]
-        # เช็คว่าเป็น holiday ที่ทำให้ตลาด Gold ปิดจริง
-        if any(h in hname for h in cme_gold_holidays):
+        if any(h in hname for h in hard_close_keywords):
             return True, f"🇺🇸 {hname}"
 
-    # UK Bank Holidays (London session)
     uk_holidays = hol.UnitedKingdom(years=today.year)
     if today in uk_holidays:
         hname = uk_holidays[today]
-        # London ปิด แต่ NY ยังเปิด — แค่ warn ไม่ block
-        # (block เฉพาะ Good Friday ที่ทั้ง US+UK ปิด)
-        if "Good Friday" in hname or "Christmas" in hname or "New Year" in hname:
+        if any(h in hname for h in hard_close_keywords):
             return True, f"🇬🇧 {hname}"
 
+    # Soft close — US bank holiday, CME ลด volume แต่ Spot Gold ยังเทรดได้
+    # คืน (False, holiday_name) เพื่อให้ caller แสดง warning แต่ไม่ block
+    soft_close_keywords = {
+        "Martin Luther King Jr. Day",
+        "Presidents' Day",
+        "Memorial Day",
+        "Juneteenth",
+        "Independence Day",
+        "Labor Day",
+        "Thanksgiving",
+    }
+    if today in us_holidays:
+        hname = us_holidays[today]
+        if any(h in hname for h in soft_close_keywords):
+            return False, f"⚠️ US Holiday ({hname}) — CME ลด volume, Spot ยังเทรดได้"
+
     return False, ""
+
+
+def get_holiday_warning() -> str:
+    """คืน warning string ถ้าเป็น soft holiday, ไม่งั้น คืน ''"""
+    _, msg = is_market_holiday()
+    return msg if msg.startswith("⚠️") else ""
 
 
 # ─── Advanced Signals (port from SMC By Beam) ─────────────────────

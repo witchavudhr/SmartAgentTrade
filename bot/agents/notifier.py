@@ -2718,12 +2718,14 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
     session_label = (ctx.job.data or {}).get("session_label", "🔍 Auto Scan")
 
-    # ── ข้ามถ้าตลาดปิด (วันหยุด / weekend) ──────────────
-    from agents.smc_engine import is_market_holiday
+    # ── ข้ามถ้าตลาดปิดสนิท (weekend / Christmas / New Year / Good Friday) ──
+    from agents.smc_engine import is_market_holiday, get_holiday_warning
     mkt_closed, holiday_name = is_market_holiday()
     if mkt_closed:
         print(f"[auto_scan] 🚫 ตลาดปิด — {holiday_name}")
         return
+    # Soft holiday: แจ้ง warning แต่ยัง scan ต่อ (Spot Gold ยังเทรดได้)
+    holiday_warn = get_holiday_warning()
 
     # ── ข้ามถ้ามีข่าว High Impact ──────────────────────
     blocked, block_reason = news_scout.should_block_trade()
@@ -2736,10 +2738,13 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # แจ้งว่าเริ่ม scan session ไหน
+    # แจ้งว่าเริ่ม scan session ไหน (+ holiday warning ถ้ามี)
+    scan_notice = f"{session_label} — กำลัง scan..."
+    if holiday_warn:
+        scan_notice += f"\n_{holiday_warn}_"
     await ctx.bot.send_message(
         chat_id=TELEGRAM_CHAT_ID,
-        text=f"{session_label} — กำลัง scan...",
+        text=scan_notice,
         parse_mode="Markdown"
     )
 
