@@ -841,21 +841,30 @@ STEP 3 — ตัดสินใจและโหวต
     result["bull_ob_zone"] = _ob_zone(primary_bull_ob)
     result["bear_ob_zone"] = _ob_zone(primary_bear_ob)
 
-    # ── SL direction check: ต้องอยู่ถูกทิศก่อนส่ง ──────────────────────
+    # ── SL sanity check: ถูกทิศ + พ้น entry zone ──────────────────────────
+    # entry zone มี buffer ±2pt จาก OB edge → SL ต้องอยู่นอก zone ด้วย ไม่แค่นอก OB
     sig = result.get("signal")
     sl  = result.get("stop_loss")
     ob_top_ref    = (primary_bear_ob or {}).get("top")
     ob_bottom_ref = (primary_bull_ob or {}).get("bottom")
-    if sig == "SELL" and sl and sl <= price_now:
-        # SL ต่ำกว่าราคา (ผิดทิศ) → ob_top + 15 จุด หลุดแนวพอ
-        fallback = round((ob_top_ref + 1.5) if ob_top_ref else (price_now + 1.5), 2)
-        print(f"[ChartAnalyst] SELL SL {sl} ต่ำกว่าราคา {price_now} → fallback {fallback}")
-        result["stop_loss"] = fallback
-    elif sig == "BUY" and sl and sl >= price_now:
-        # SL สูงกว่าราคา (ผิดทิศ) → ob_bottom - 15 จุด หลุดแนวพอ
-        fallback = round((ob_bottom_ref - 1.5) if ob_bottom_ref else (price_now - 1.5), 2)
-        print(f"[ChartAnalyst] BUY SL {sl} สูงกว่าราคา {price_now} → fallback {fallback}")
-        result["stop_loss"] = fallback
+
+    ENTRY_BUF = 2.0   # buffer ที่ notifier ใช้แสดง entry zone
+    SL_PAD    = 0.5   # ระยะพ้น entry zone top/bottom เพิ่มอีกนิด
+
+    if sig == "SELL":
+        # SL ต้องอยู่เหนือ ob_top + ENTRY_BUF (พ้น entry zone top)
+        min_sl_sell = round((ob_top_ref + ENTRY_BUF + SL_PAD) if ob_top_ref else (price_now + 2.5), 2)
+        if not sl or sl <= price_now or sl < min_sl_sell:
+            old_sl = sl
+            result["stop_loss"] = min_sl_sell
+            print(f"[ChartAnalyst] SELL SL {old_sl} ต่ำเกิน (ราคา={price_now} min={min_sl_sell}) → {min_sl_sell}")
+    elif sig == "BUY":
+        # SL ต้องอยู่ต่ำกว่า ob_bottom - ENTRY_BUF (พ้น entry zone bottom)
+        max_sl_buy = round((ob_bottom_ref - ENTRY_BUF - SL_PAD) if ob_bottom_ref else (price_now - 2.5), 2)
+        if not sl or sl >= price_now or sl > max_sl_buy:
+            old_sl = sl
+            result["stop_loss"] = max_sl_buy
+            print(f"[ChartAnalyst] BUY SL {old_sl} สูงเกิน (ราคา={price_now} max={max_sl_buy}) → {max_sl_buy}")
 
     return result
 

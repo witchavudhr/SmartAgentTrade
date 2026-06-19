@@ -113,12 +113,13 @@ def open_trade(
             disconnect()
             return {"error": f"Invalid stops: SELL TP {tp} ต้องต่ำกว่าราคา {round(price,2)} — entry zone ห่างจากตลาดมากเกินไป"}
     if sl:
+        # SELL: SL ต้องอยู่เหนือราคา execution + margin พอ (ป้องกัน SL อยู่ใน entry zone)
         if direction == "BUY" and sl >= price:
-            corrected = round(price - 1.5, 2)  # 15 จุด หลุดแนวพอ
+            corrected = round(price - 2.5, 2)
             print(f"[MT5] BUY SL {sl} ผิดทิศ → auto-correct to {corrected} (price={round(price,2)})")
             sl = corrected
         if direction == "SELL" and sl <= price:
-            corrected = round(price + 1.5, 2)  # 15 จุด หลุดแนวพอ
+            corrected = round(price + 2.5, 2)
             print(f"[MT5] SELL SL {sl} ผิดทิศ → auto-correct to {corrected} (price={round(price,2)})")
             sl = corrected
 
