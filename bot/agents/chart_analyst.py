@@ -596,7 +596,7 @@ Code คำนวณ Primary OB ให้แล้วด้านบน — เ�
    → เหตุผล: ราคามักวิ่งลงดูด SSL ก่อน → Bull OB ที่เข้าอยู่จะถูกทะลุ → SL โดน
    → แม้ราคาจะ AT Bull OB แต่ถ้า SSL intact + macro BEAR = BUY ก่อนกาล
    → สิ่งที่ทำแทน: รอ SSL ถูก sweep แล้วดู rejection → SSL_SWEEP_BUY
-   → signal = NO_TRADE | trade_plan = "รอ SSL ที่ {ssl_level} ถูก sweep ก่อน"
+   → signal = NO_TRADE | trade_plan = "รอ SSL ที่ {_near_ssl.get('level') if _near_ssl else '?'} ถูก sweep ก่อน"
 
 🚫 ห้าม SELL ที่ Bear OB ถ้า:
    nearest_bsl ยังไม่ถูก sweep (SWEPT=False)
