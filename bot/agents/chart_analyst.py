@@ -278,14 +278,25 @@ def analyze(smc_summary: dict = None) -> dict:
     sl_below        = smc_summary.get("swing_lows_below", [])
     _sh_pts  = round((nearest_sh - price_now) * 10, 0) if nearest_sh else None
     _sl_pts  = round((price_now - nearest_sl_code) * 10, 0) if nearest_sl_code else None
+    pdh          = smc_summary.get("pdh")
+    pdl          = smc_summary.get("pdl")
+    round_levels = smc_summary.get("round_levels", [])
+    _pdh_pts = round((pdh - price_now) * 10, 0) if pdh and pdh > price_now else None
+    _pdl_pts = round((price_now - pdl) * 10, 0) if pdl and pdl < price_now else None
+
     swing_hint = (
-        f"🎯 Swing Levels (คำนวณโดย code — ใช้เป็น TP hint):\n"
+        f"🎯 S/R Levels (คำนวณโดย code):\n"
+        f"  PDH (Prev Day High): {pdh or 'N/A'}"
+        + (f" ({int(_pdh_pts):+,} จุด)" if _pdh_pts else "") + "\n"
+        f"  PDL (Prev Day Low):  {pdl or 'N/A'}"
+        + (f" ({int(-_pdl_pts):+,} จุด)" if _pdl_pts else "") + "\n"
         f"  Nearest Swing High (above): {nearest_sh or 'N/A'}"
         + (f" ({int(_sh_pts):,} จุด)" if _sh_pts else "") + "\n"
         f"  Nearest Swing Low  (below): {nearest_sl_code or 'N/A'}"
         + (f" ({int(_sl_pts):,} จุด)" if _sl_pts else "") + "\n"
         f"  Swing Highs above (top 3): {sh_above or 'N/A'}\n"
-        f"  Swing Lows  below (top 3): {sl_below or 'N/A'}"
+        f"  Swing Lows  below (top 3): {sl_below or 'N/A'}\n"
+        f"  Round Numbers (±300p):     {round_levels or 'N/A'}"
     )
     _bear_ob   = smc_summary.get("active_bear_ob") or {}
     _bull_ob   = smc_summary.get("active_bull_ob") or {}
@@ -612,6 +623,36 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
     → setup_type = EQH_SWEEP_SELL
     confidence สูงขึ้นถ้ามี bear confirm candle + macro BEAR หรือ MIXED เท่านั้น
 
+── CASE E: S/R Entry — แนวรับ/แนวต้านโดยไม่มี OB ──────────────
+ใช้เมื่อ: ราคาอยู่ใกล้ key S/R level แต่ไม่มี OB ใกล้ (OB ไกลเกิน 300 จุด)
+
+  Key S/R levels ที่ใช้ได้ (เรียงตาม priority):
+    1. PDH (Prev Day High) — แนวต้านสำคัญที่สุด
+    2. PDL (Prev Day Low)  — แนวรับสำคัญที่สุด
+    3. Swing High ใกล้ที่สุด (above price)
+    4. Swing Low ใกล้ที่สุด (below price)
+    5. Round Number ที่ราคาใกล้ที่สุด (4200, 4250, 4300 ฯลฯ)
+
+  🔴 E1 — SR_SELL (ที่ S/R resistance):
+    เงื่อนไข: ราคา ≤ 20 จุด ต่ำกว่า S/R resistance (PDH / Swing High / Round)
+             + bearish rejection candle (wick ยาวบน / bear engulf)
+             + ไม่มี OB ใกล้ (Bear OB ไกลเกิน 300p) หรือ S/R ≥ confluence 2 ระดับ
+    Entry: ราคาปัจจุบัน หรือ limit ที่ S/R level
+    SL: S/R level + 10-15 จุด (หลุดแนวพอ)
+    TP: nearest_swing_low / PDL / Bull OB ที่อยู่ใต้ราคา
+    setup_type = SR_SELL | sr_level = ราคา S/R นั้น
+
+  🟢 E2 — SR_BUY (ที่ S/R support):
+    เงื่อนไข: ราคา ≤ 20 จุด สูงกว่า S/R support (PDL / Swing Low / Round)
+             + bullish rejection candle (wick ยาวล่าง / bull engulf)
+             + ไม่มี OB ใกล้ (Bull OB ไกลเกิน 300p) หรือ S/R ≥ confluence 2 ระดับ
+    Entry: ราคาปัจจุบัน หรือ limit ที่ S/R level
+    SL: S/R level - 10-15 จุด (หลุดแนวพอ)
+    TP: nearest_swing_high / PDH / Bear OB ที่อยู่เหนือราคา
+    setup_type = SR_BUY | sr_level = ราคา S/R นั้น
+
+  ⚠️ ห้าม E ถ้า: momentum แรงเกิน (2.5×ATR) หรือ RR < 1.5
+
 ── CASE D: AMD Pattern — Range → Sweep → CHoCH → BOS ───────────
 ท่าเจอบ่อยที่สุด: ออกข้าง (Accumulation) → ดูด liquidity (Manipulation) → พลิกทิศ (Distribution)
 
@@ -640,10 +681,10 @@ STEP 3 — ตัดสินใจและโหวต
 หลักการ: ซื้อแนวรับ ขายแนวต้าน — ราคาต้องถึง OB ก่อนเสมอ ไม่ trade กลางอากาศ
 
 ลำดับ priority:
-0. ถ้าไม่มี OB ใกล้ราคา (ทั้ง Bull และ Bear ห่างเกิน 300 จุด) → NO_TRADE รอ
+0. ถ้าไม่มี OB ใกล้ AND ไม่มี S/R ใกล้ราคา → NO_TRADE รอ
 1. ★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (confidence สูงสุด — support+trend)
    ★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (confidence สูงสุด — resistance+trend)
-2. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK (Breaker Block = support)
+2. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK
    ★★ BOS ลง + pullback มา Bull OB เดิม + macro BEAR → SELL, setup_type=BREAKER_BLOCK
 3. CASE A + A2 ผ่าน → YES, setup_type=TREND_BOS_BREAK, pyramid_mode=true
 4. CASE B + B1 (sweep+reject) → YES, setup_type=BULL_OB_SWEEP_REJECT
@@ -652,7 +693,9 @@ STEP 3 — ตัดสินใจและโหวต
 7. CASE C2 (eqh_sweep_signal ≠ null) → YES, setup_type=EQH_SWEEP_SELL
 8. CASE D1 (amd_signal=AMD_BUY) → YES, setup_type=AMD_BUY
 9. CASE D2 (amd_signal=AMD_SELL) → YES, setup_type=AMD_SELL
-10. ไม่มี OB ใกล้หรือเงื่อนไขไม่ผ่าน → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
+10. CASE E1 (ราคาใกล้ PDH/SwingHigh/Round + bearish reject) → YES, setup_type=SR_SELL
+    CASE E2 (ราคาใกล้ PDL/SwingLow/Round + bullish reject)  → YES, setup_type=SR_BUY
+11. ไม่มีเงื่อนไขผ่านเลย → NO, ระบุใน trade_plan ว่ารอราคาไปไหน
 
 ⛔ กฎ SL (บังคับ — วาง SL หลุดแนว structure ไปซักหน่อย):
   SELL: stop_loss = ob_top + 10-15 จุด (พ้น Bear OB top เล็กน้อย — หลุดแนว ไม่ต้องไกลมาก)
@@ -667,7 +710,8 @@ STEP 3 — ตัดสินใจและโหวต
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
+  "sr_level": ราคา S/R ที่ใช้เป็น entry reference (เฉพาะ SR_SELL/SR_BUY) หรือ null,
   "trend_aligned": true ถ้า OB ที่ใกล้ตรงกับ macro trend หรือ false,
   "proximity_case": "A หรือ B",
   "pyramid_mode": true หรือ false,

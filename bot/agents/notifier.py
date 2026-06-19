@@ -1330,8 +1330,21 @@ async def _handle_scan_result(result: dict, send_fn):
             ob_bottom = entry_raw2[0] if isinstance(entry_raw2, list) else entry_price
             setup_type_now = signal.get("setup_type", "")
             is_ob_setup = "OB" in setup_type_now
+            is_sr_setup = setup_type_now in ("SR_SELL", "SR_BUY")
 
-            if is_ob_setup:
+            if is_sr_setup:
+                # S/R setup: เช็คว่าราคาอยู่ใกล้ sr_level ≤20 pts
+                sr_level = signal.get("sr_level")
+                if sr_level:
+                    dist_sr = round(abs(current_mkt - sr_level) * 10)
+                    if dist_sr > 20:
+                        entry_far = True
+                        entry_far_msg = (
+                            f"⏳ *รอเข้าใกล้ {'แนวต้าน' if direction=='SELL' else 'แนวรับ'}*\n"
+                            f"ราคา `{current_mkt}` ห่าง S/R `{sr_level}` อยู่ `{dist_sr}p`\n"
+                            f"_รอราคาเข้าใกล้ {sr_level} ก่อน_"
+                        )
+            elif is_ob_setup:
                 # ราคาต้องอยู่ใน OB zone (เผื่อ spread 3pts)
                 in_ob_zone = (ob_bottom - 3) <= current_mkt <= (ob_top + 3)
                 if not in_ob_zone:

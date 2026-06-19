@@ -1624,6 +1624,35 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         summary["nearest_swing_low"] = None
         summary["swing_lows_below"]  = []
 
+    # ── PDH/PDL + Round Numbers ───────────────────────────────
+    if df is not None:
+        try:
+            df_tmp = df.copy()
+            df_tmp.index = pd.to_datetime(df_tmp.index)
+            df_tmp["_date"] = df_tmp.index.date
+            today_date = df_tmp["_date"].iloc[-1]
+            prev_df = df_tmp[df_tmp["_date"] < today_date]
+            if not prev_df.empty:
+                prev_day = prev_df["_date"].max()
+                prev_day_df = prev_df[prev_df["_date"] == prev_day]
+                summary["pdh"] = round(prev_day_df["high"].max(), 2)
+                summary["pdl"] = round(prev_day_df["low"].min(), 2)
+            else:
+                summary["pdh"] = None
+                summary["pdl"] = None
+            # Round numbers (multiples of 50) ใกล้ราคา ±300 pts
+            step = 50.0
+            base = round(current_price / step) * step
+            summary["round_levels"] = sorted([
+                round(base + i * step, 2)
+                for i in range(-3, 4)
+                if abs((base + i * step) - current_price) <= 300
+            ])
+        except Exception:
+            summary["pdh"] = None
+            summary["pdl"] = None
+            summary["round_levels"] = []
+
     # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:
         try:
