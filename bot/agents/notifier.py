@@ -134,16 +134,29 @@ def _md(text: str) -> str:
 
 
 async def _safe_send(send_fn, text: str, **kwargs):
-    """ส่ง Telegram message — ถ้า Markdown parse fail → retry เป็น plain text"""
-    try:
-        await send_fn(text, **kwargs)
-    except Exception as e:
-        if "parse" in str(e).lower() or "entity" in str(e).lower() or "BadRequest" in str(type(e).__name__):
-            # Strip markdown และส่งใหม่เป็น plain text
-            plain = text.replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
-            kw = {k: v for k, v in kwargs.items() if k != "parse_mode"}
-            await send_fn(plain, **kw)
-        else:
+    """ส่ง Telegram message — retry TimedOut 3 ครั้ง, Markdown fail → plain text"""
+    import asyncio
+    from telegram.error import TimedOut as TgTimedOut
+
+    for attempt in range(3):
+        try:
+            await send_fn(text, **kwargs)
+            return
+        except TgTimedOut:
+            if attempt < 2:
+                await asyncio.sleep(3 * (attempt + 1))  # 3s, 6s
+                continue
+            print(f"[_safe_send] TimedOut x3 — ข้ามข้อความนี้")
+            return
+        except Exception as e:
+            if "parse" in str(e).lower() or "entity" in str(e).lower() or "BadRequest" in str(type(e).__name__):
+                plain = text.replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
+                kw = {k: v for k, v in kwargs.items() if k != "parse_mode"}
+                try:
+                    await send_fn(plain, **kw)
+                except TgTimedOut:
+                    print(f"[_safe_send] TimedOut on plain retry — ข้ามข้อความนี้")
+                return
             raise
 
 
@@ -2861,7 +2874,15 @@ async def _startup_session_scan(ctx: ContextTypes.DEFAULT_TYPE):
 def run():
     from config.settings import SCAN_INTERVAL_MINUTES
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
