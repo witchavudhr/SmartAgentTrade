@@ -319,6 +319,24 @@ def analyze(smc_summary: dict = None) -> dict:
     _bsl_idm    = liq.get("bsl_inducement")
     _ssl_idm    = liq.get("ssl_inducement")
 
+    # คำนวณระยะ SSL/BSL เป็นจุด สำหรับ Liquidity Gate check
+    _dist_ssl_pts = _near_ssl.get("dist_pts") if _near_ssl else None
+    _dist_bsl_pts = _near_bsl.get("dist_pts") if _near_bsl else None
+    _ssl_swept    = _near_ssl.get("swept", False) if _near_ssl else True
+    _bsl_swept    = _near_bsl.get("swept", False) if _near_bsl else True
+
+    _liq_gate_warn = ""
+    if _near_ssl and not _ssl_swept and _dist_ssl_pts and _dist_ssl_pts < 500:
+        _liq_gate_warn += (
+            f"\n  ⛔ LIQUIDITY GATE ACTIVE: SSL ที่ {_near_ssl.get('level')} ยังไม่ถูก sweep"
+            f" (dist={_dist_ssl_pts}p) — ห้าม BUY ถ้า macro BEAR"
+        )
+    if _near_bsl and not _bsl_swept and _dist_bsl_pts and _dist_bsl_pts < 500:
+        _liq_gate_warn += (
+            f"\n  ⛔ LIQUIDITY GATE ACTIVE: BSL ที่ {_near_bsl.get('level')} ยังไม่ถูก sweep"
+            f" (dist={_dist_bsl_pts}p) — ห้าม SELL ถ้า macro BULL"
+        )
+
     liq_map_block = (
         f"🌊 LIQUIDITY MAP (BSL/SSL — คำนวณโดย code):\n"
         f"  Nearest intact BSL (Buy-Side / above price): {_fmt_liq_pool(_near_bsl)}\n"
@@ -326,7 +344,8 @@ def analyze(smc_summary: dict = None) -> dict:
         f"  BSL Inducement (minor pool ระหว่างทางก่อน BSL): {_fmt_liq_pool(_bsl_idm)}\n"
         f"  SSL Inducement (minor pool ระหว่างทางก่อน SSL): {_fmt_liq_pool(_ssl_idm)}\n"
         f"  BSL Pools (all above price, top 5):\n{_fmt_liq_list(_bsl_pools)}\n"
-        f"  SSL Pools (all below price, top 5):\n{_fmt_liq_list(_ssl_pools)}\n"
+        f"  SSL Pools (all below price, top 5):\n{_fmt_liq_list(_ssl_pools)}"
+        f"{_liq_gate_warn}\n"
         f"\n"
         f"  กฎการอ่าน Liquidity Map:\n"
         f"  - ราคาวิ่งหา liquidity ที่ใกล้ที่สุดก่อนเสมอ (nearest intact pool)\n"
@@ -566,6 +585,33 @@ Code คำนวณ Primary OB ให้แล้วด้านบน — เ�
 → ใช้ Primary OB นี้เป็น entry_zone เสมอ ไม่ต้องคำนวณใหม่
 
 ════════════════════════════════════════════
+⚠️ LIQUIDITY GATE — เช็คก่อนทุก setup (บังคับ)
+════════════════════════════════════════════
+ก่อนเข้า trade ใดๆ ต้องผ่าน Liquidity Gate ก่อนเสมอ:
+
+🚫 ห้าม BUY ที่ Bull OB ถ้า:
+   nearest_ssl ยังไม่ถูก sweep (SWEPT=False)
+   AND dist_ssl < 500p (SSL อยู่ใกล้กว่า 500 จุด)
+   AND macro BEAR (H4 BEAR หรือ H1+H4 BEAR)
+   → เหตุผล: ราคามักวิ่งลงดูด SSL ก่อน → Bull OB ที่เข้าอยู่จะถูกทะลุ → SL โดน
+   → แม้ราคาจะ AT Bull OB แต่ถ้า SSL intact + macro BEAR = BUY ก่อนกาล
+   → สิ่งที่ทำแทน: รอ SSL ถูก sweep แล้วดู rejection → SSL_SWEEP_BUY
+   → signal = NO_TRADE | trade_plan = "รอ SSL ที่ {ssl_level} ถูก sweep ก่อน"
+
+🚫 ห้าม SELL ที่ Bear OB ถ้า:
+   nearest_bsl ยังไม่ถูก sweep (SWEPT=False)
+   AND dist_bsl < 500p (BSL อยู่ใกล้กว่า 500 จุด)
+   AND macro BULL (H4 BULL หรือ H1+H4 BULL)
+   → ราคามักวิ่งขึ้นดูด BSL ก่อน → Bear OB ที่เข้าจะถูกทะลุ → SL โดน
+   → รอ BSL ถูก sweep แล้วดู rejection → BSL_SWEEP_SELL
+
+✅ ยกเว้น Liquidity Gate ถ้า:
+   • SSL/BSL ถูก sweep แล้ว (SWEPT=True) → ผ่านได้ทันที
+   • dist_ssl หรือ dist_bsl ≥ 500p (liquidity ไกลมาก ไม่ใช่ next target)
+   • macro BULL + BUY หรือ macro BEAR + SELL (trend-aligned ไม่มี opposing liquidity ใกล้)
+   • มี sweep+rejection ชัดที่ OB แล้ว (CASE B1/F) → liquidity ถือว่า cleared จาก OB
+
+════════════════════════════════════════════
 STEP 2 — วิเคราะห์ Setup ที่ OB นั้น
 ════════════════════════════════════════════
 
@@ -627,8 +673,8 @@ OB ที่ใกล้สุด ตรงกับ macro trend:
     → ไม้ 2 ถ้า sweep เกิด (trade_monitor แจ้ง)
     → setup_type = BULL_OB_ENTRY, pyramid_mode=true
 
-  ✅ B ผ่านถ้า: Bull OB unmitigated + RR ≥ 1.5
-  ❌ B ไม่ผ่านถ้า: OB mitigated แล้ว หรือ RR < 1.5
+  ✅ B ผ่านถ้า: Bull OB unmitigated + RR ≥ 1.5 + ผ่าน Liquidity Gate (SSL swept หรือ ไกล ≥500p หรือ macro BULL)
+  ❌ B ไม่ผ่านถ้า: OB mitigated แล้ว หรือ RR < 1.5 หรือ SSL intact < 500p + macro BEAR → รอ SSL sweep
 
   📐 Bear OB Distance Bonus:
     Bear OB คือ TP สูงสุดของ swing นี้
@@ -755,6 +801,8 @@ STEP 3 — ตัดสินใจและโหวต
 หลักการ: ซื้อแนวรับ ขายแนวต้าน — ราคาต้องถึง OB ก่อนเสมอ ไม่ trade กลางอากาศ
 
 ลำดับ priority (ไล่ตามความ confidence สูงสุด → ต่ำสุด):
+-1. ⛔ ตรวจ Liquidity Gate ก่อน: BUY + SSL intact < 500p + macro BEAR → NO_TRADE (รอ SSL sweep)
+                                  SELL + BSL intact < 500p + macro BULL → NO_TRADE (รอ BSL sweep)
 0. ถ้าไม่มีอะไรผ่านเลย → NO_TRADE รอ แต่ระบุว่า liquidity target อยู่ตรงไหน
 1. ★★★ CASE F1 — nearest_bsl SWEPT + bearish reject → SELL, setup_type=BSL_SWEEP_SELL (liquidity sweep = highest conviction)
    ★★★ CASE F2 — nearest_ssl SWEPT + bullish reject → BUY,  setup_type=SSL_SWEEP_BUY  (liquidity sweep = highest conviction)
