@@ -1,5 +1,12 @@
 # SmartAgentTrade
 
+## Run (Windows)
+```
+git pull
+pip install -r bot/requirements.txt
+cd bot && python main.py
+```
+
 ## Project Overview
 Multi-Agent AI Trading System สำหรับ XAUUSD (Gold Spot)
 ใช้ Smart Money Concepts (SMC) strategy + Claude API เป็น AI brain
