@@ -1,11 +1,23 @@
 # SmartAgentTrade
 
 ## Run (Windows)
+
+**Bot (Telegram scanner):**
 ```
 git pull
 pip install -r bot/requirements.txt
 cd bot && python main.py
 ```
+
+**Dashboard (web UI):**
+```
+# Terminal 1 — Python API server
+cd bot/dashboard && python server.py
+
+# Terminal 2 — Svelte frontend
+cd bot/dashboard/frontend && npm install && npm run dev
+```
+เปิด http://localhost:5173
 
 ## Project Overview
 Multi-Agent AI Trading System สำหรับ XAUUSD (Gold Spot)
