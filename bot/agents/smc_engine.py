@@ -117,11 +117,13 @@ class SMCEngine:
         obs = self._find_order_blocks(df, structures)
         result.order_blocks = obs
         # เลือก OB ที่ใกล้ราคาปัจจุบันที่สุด (ไม่ใช่ most recently formed)
+        # ราคาต้องออกจาก OB อย่างน้อย MIN_OB_DEPARTURE pts ถึงจะ confirm (ไม่งั้น OB ยังไม่ชัด)
         _price = df['close'].iloc[-1]
+        MIN_OB_DEPARTURE = 3.0  # 30 pts — ราคาต้องพ้น OB edge อย่างน้อย 30 pts
         _bull_all = [ob for ob in obs if not ob.mitigated and ob.kind == 'bullish']
         _bear_all = [ob for ob in obs if not ob.mitigated and ob.kind == 'bearish']
-        _bull_below = [ob for ob in _bull_all if ob.top <= _price]
-        _bear_above = [ob for ob in _bear_all if ob.bottom >= _price]
+        _bull_below = [ob for ob in _bull_all if ob.top <= _price - MIN_OB_DEPARTURE]
+        _bear_above = [ob for ob in _bear_all if ob.bottom >= _price + MIN_OB_DEPARTURE]
         result.active_bull_ob = (min(_bull_below, key=lambda ob: _price - ob.top)
                                  if _bull_below else
                                  min(_bull_all, key=lambda ob: abs(ob.top - _price)) if _bull_all else None)
@@ -1591,17 +1593,19 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
     _bull_obs = [ob for ob in all_obs if not ob.mitigated and ob.kind == 'bullish']
     _bear_obs = [ob for ob in all_obs if not ob.mitigated and ob.kind == 'bearish']
 
+    _MIN_DEP = 3.0  # 30 pts — ราคาต้องพ้น OB edge อย่างน้อยก่อนจะ confirm
+
     if _bull_obs:
-        # Bull OB ที่ top ใกล้ราคามากสุด (ไม่เกินราคา — demand อยู่ต่ำกว่า)
-        below = [ob for ob in _bull_obs if ob.top <= current_price]
+        # Bull OB ที่ top ใกล้ราคามากสุด (ราคาต้องพ้น top ≥30pts — OB confirmed)
+        below = [ob for ob in _bull_obs if ob.top <= current_price - _MIN_DEP]
         active_bull_ob = min(below, key=lambda ob: current_price - ob.top) if below else \
                          min(_bull_obs, key=lambda ob: abs(ob.top - current_price))
     else:
         active_bull_ob = None
 
     if _bear_obs:
-        # Bear OB ที่ bottom ใกล้ราคามากสุด (ไม่ต่ำกว่าราคา — supply อยู่สูงกว่า)
-        above = [ob for ob in _bear_obs if ob.bottom >= current_price]
+        # Bear OB ที่ bottom ใกล้ราคามากสุด (ราคาต้องพ้น bottom ≥30pts — OB confirmed)
+        above = [ob for ob in _bear_obs if ob.bottom >= current_price + _MIN_DEP]
         active_bear_ob = min(above, key=lambda ob: ob.bottom - current_price) if above else \
                          min(_bear_obs, key=lambda ob: abs(ob.bottom - current_price))
     else:
