@@ -902,11 +902,25 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         m5_bear  = smc.get("active_bear_ob")
         m15_bull = m15.get("active_bull_ob")
         m15_bear = m15.get("active_bear_ob")
+        liq      = smc.get("liquidity", {})
 
         def _fmt(ob, label):
             if not ob: return f"{label}: ไม่มี"
-            in_tag = " ← IN OB ✅" if ob.get("in_ob") else ""
+            in_tag = " ← IN OB ✅" if ob.get("in_ob") else f" ห่าง {int(round(abs((price or 0) - ob.get('top', 0)) * 10))}p"
             return f"{label}: `{ob.get('bottom')} – {ob.get('top')}`{in_tag}"
+
+        def _fmt_liq_list(pools, icon, max_n=3):
+            intact = [p for p in (pools or []) if not p.get("swept")][:max_n]
+            if not intact:
+                return f"  {icon} ไม่มี (swept หมดแล้ว)"
+            lines = []
+            for p in intact:
+                size_tag = "★" if p.get("size") == "major" else "·"
+                lines.append(f"  {icon} {size_tag} `{p.get('level')}` ({p.get('type','?')} {p.get('dist_pts','?')}p)")
+            return "\n".join(lines)
+
+        bsl_lines = _fmt_liq_list(liq.get("bsl_pools", []), "🔵")
+        ssl_lines = _fmt_liq_list(liq.get("ssl_pools", []), "🟠")
 
         src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"
         msg = (
@@ -919,7 +933,12 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  🔴 {_fmt(m5_bear, 'Bear OB')}\n\n"
             f"*M15:*\n"
             f"  🟢 {_fmt(m15_bull, 'Bull OB')}\n"
-            f"  🔴 {_fmt(m15_bear, 'Bear OB')}\n"
+            f"  🔴 {_fmt(m15_bear, 'Bear OB')}\n\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"🌊 *Liquidity Pools (ยังไม่ถูก sweep)*\n"
+            f"*BSL* (เหนือราคา — stop ของ shorts):\n{bsl_lines}\n\n"
+            f"*SSL* (ใต้ราคา — stop ของ longs):\n{ssl_lines}\n"
+            f"_★ = major (EQH/EQL) · · = minor (swing)_"
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
