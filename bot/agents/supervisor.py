@@ -147,10 +147,39 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
     rr         = float(analysis.get("rr_ratio") or 0)
 
     # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
-    # เหตุผล: BULL_OB_ENTRY / BULL_OB_SWEEP_REJECT / TREND_OB คือ
-    # setups ที่ผ่านเงื่อนไข OB + RR + Chart YES มาแล้ว ไม่ต้องให้ LLM หาเหตุผล reject เพิ่ม
+    # เพิ่มเงื่อนไข: TREND_OB ต้องมี entry zone ใกล้ OB จริงๆ
+    # ป้องกัน Claude return TREND_OB แต่ entry zone ไม่ใช่ OB (กลางอากาศ)
     ob_setups = {"BULL_OB_ENTRY", "BULL_OB_SWEEP_REJECT", "TREND_OB", "TREND_BOS_BREAK"}
-    if setup_type in ob_setups and chart_vote == "YES" and rr >= 1.5 and not blocked:
+
+    # ตรวจ entry zone ตรงกับ OB จริงมั้ย (เฉพาะ TREND_OB)
+    _entry_zone = analysis.get("entry_zone") or []
+    _entry_mid  = ((_entry_zone[0] + _entry_zone[1]) / 2) if len(_entry_zone) == 2 else None
+    _bear_ob    = analysis.get("bear_ob_zone") or {}
+    _bull_ob    = analysis.get("bull_ob_zone") or {}
+    _ob_zone_ok = True
+    if setup_type == "TREND_OB" and _entry_mid:
+        if signal == "SELL" and _bear_ob:
+            # entry ต้องอยู่ใกล้ Bear OB ≤300p
+            bear_bottom = _bear_ob.get("bottom", _entry_mid)
+            dist_entry_ob = abs(_entry_mid - bear_bottom) * 10
+            if dist_entry_ob > 300:
+                _ob_zone_ok = False
+                result["reject_reason"] = (
+                    f"TREND_OB SELL rejected: entry zone {_entry_zone} ห่าง Bear OB "
+                    f"{_bear_ob.get('bottom')}–{_bear_ob.get('top')} อยู่ {dist_entry_ob:.0f}p — กลางอากาศ"
+                )
+        elif signal == "BUY" and _bull_ob:
+            # entry ต้องอยู่ใกล้ Bull OB ≤300p
+            bull_top = _bull_ob.get("top", _entry_mid)
+            dist_entry_ob = abs(_entry_mid - bull_top) * 10
+            if dist_entry_ob > 300:
+                _ob_zone_ok = False
+                result["reject_reason"] = (
+                    f"TREND_OB BUY rejected: entry zone {_entry_zone} ห่าง Bull OB "
+                    f"{_bull_ob.get('bottom')}–{_bull_ob.get('top')} อยู่ {dist_entry_ob:.0f}p — กลางอากาศ"
+                )
+
+    if setup_type in ob_setups and chart_vote == "YES" and rr >= 1.5 and not blocked and _ob_zone_ok:
         auto_reason = {
             "BULL_OB_SWEEP_REJECT": "Sweep + rejection ที่ Bull OB — สัญญาณแข็งที่สุด auto-approve",
             "BULL_OB_ENTRY":        f"ราคาอยู่ที่ Bull OB (pyramid ไม้ 1) — RR {rr} auto-approve",
