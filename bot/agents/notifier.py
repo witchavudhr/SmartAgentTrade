@@ -2683,9 +2683,12 @@ def _build_scan_windows() -> list[tuple]:
       NY windows      → shift +1h เมื่อ EST (winter), 0 เมื่อ EDT (summer)
     """
     import pytz
-    from datetime import datetime, time as dtime
+    from datetime import datetime, time as dtime, timezone, timedelta
 
-    thai_tz   = pytz.timezone("Asia/Bangkok")
+    # ใช้ fixed offset UTC+7 กับ time object — pytz ต้องใช้ localize() กับ datetime เท่านั้น
+    # ถ้าใส่ pytz timezone ตรงใน time() constructor APScheduler จะอ่าน offset ผิดและ schedule ไม่ fire
+    THAI_TZ = timezone(timedelta(hours=7))
+
     london_tz = pytz.timezone("Europe/London")
     ny_tz     = pytz.timezone("America/New_York")
     now = datetime.now()
@@ -2704,7 +2707,7 @@ def _build_scan_windows() -> list[tuple]:
         h, m = sh + shift, sm
         end_mins = (eh + shift) * 60 + em
         while h * 60 + m <= end_mins:
-            result.append((dtime(h % 24, m, tzinfo=thai_tz), label))
+            result.append((dtime(h % 24, m, tzinfo=THAI_TZ), label))
             m += 15
             if m >= 60:
                 m = 0
@@ -2994,12 +2997,11 @@ def run():
         )
 
     # Daily close summary — 23:30 Thai (NY ปิด)
-    import pytz
-    from datetime import time as dtime
-    thai_tz = pytz.timezone("Asia/Bangkok")
+    from datetime import time as dtime, timezone, timedelta
+    _THAI_TZ = timezone(timedelta(hours=7))
     app.job_queue.run_daily(
         daily_close_summary,
-        time=dtime(23, 30, tzinfo=thai_tz),
+        time=dtime(23, 30, tzinfo=_THAI_TZ),
     )
 
     # ── Startup: clear stale open_trade state ──────────────────────
