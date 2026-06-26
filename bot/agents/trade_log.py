@@ -377,7 +377,8 @@ def log_mt5_transaction(trade_id: int, direction: str, deal: dict, open_trade: d
     pnl_raw   = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
     pnl_pips  = round(pnl_raw * 10, 1) if (close_px and open_px) else None
 
-    close_time = _ts_to_th(deal.get("time")) or deal.get("time")
+    _deal_time = deal.get("time") or deal.get("close_time")
+    close_time = _ts_to_th(_deal_time) or _deal_time
 
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -870,9 +871,20 @@ def get_dashboard_stats(period: str = "today") -> dict:
     mt5_date_filter = _MT5_PERIOD_FILTER.get(period, _MT5_PERIOD_FILTER["today"])
 
     # ── ดึงจาก mt5_transactions (ข้อมูล MT5 จริง) ────────────────
+    # ใช้ COALESCE(close_time, timestamp) เพื่อรวม record ที่ close_time=NULL
+    # (close_time=NULL เกิดจาก bug เก่าที่ get_position_deals ส่ง key "close_time" แต่ log_mt5_transaction อ่าน "time")
+    _ctf_col = "COALESCE(close_time, timestamp)"
+    _ctf_map = {
+        "today": f"{_ctf_col} >= strftime('%Y-%m-%d 00:00:00', 'now', 'localtime')",
+        "week":  f"{_ctf_col} >= datetime('now', 'localtime', '-6 days')",
+        "month": f"{_ctf_col} >= datetime('now', 'localtime', 'start of month')",
+        "year":  f"{_ctf_col} >= datetime('now', 'localtime', 'start of year')",
+        "all":   "1=1",
+    }
+    _ctf_filter = _ctf_map.get(period, _ctf_map["today"])
     mt5_rows = conn.execute(f"""
         SELECT net_usd, pnl_pips FROM mt5_transactions
-        WHERE close_time IS NOT NULL AND {mt5_date_filter}
+        WHERE {_ctf_filter}
     """).fetchall()
 
     # ── fallback: trades table (outcome บันทึกด้วยมือ) ───────────
@@ -909,10 +921,12 @@ def get_dashboard_stats(period: str = "today") -> dict:
 
     # ── คำนวณ stats — ใช้ mt5_transactions ถ้ามีข้อมูล ──────────
     if mt5_rows:
-        period_pnl    = round(sum(r[0] or 0 for r in mt5_rows), 2)
-        period_wins   = sum(1 for r in mt5_rows if (r[0] or 0) > 0)
-        period_losses = sum(1 for r in mt5_rows if (r[0] or 0) < 0)
-        best_pnl      = round(max((r[0] or 0) for r in mt5_rows if (r[0] or 0) > 0), 2) if period_wins else 0.0
+        # ใช้ net_usd เป็นหลัก ถ้า NULL fallback เป็น pnl_pips (r[1])
+        def _net(r): return r[0] if r[0] is not None else (r[1] * 0.1 if r[1] is not None else 0)
+        period_pnl    = round(sum(_net(r) for r in mt5_rows), 2)
+        period_wins   = sum(1 for r in mt5_rows if _net(r) > 0)
+        period_losses = sum(1 for r in mt5_rows if _net(r) < 0)
+        best_pnl      = round(max(_net(r) for r in mt5_rows if _net(r) > 0), 2) if period_wins else 0.0
     else:
         # fallback ถ้า mt5_transactions ไม่มีข้อมูลช่วงนี้
         period_pnl    = sum(_pips_to_usd(r[1], r[2]) for r in manual_trades)
