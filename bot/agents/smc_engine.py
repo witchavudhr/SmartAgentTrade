@@ -1698,6 +1698,29 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         summary["nearest_swing_low"] = None
         summary["swing_lows_below"]  = []
 
+    # ── OTE Zone (ICT Optimal Trade Entry: 61.8%–78.6% retracement) ─
+    _sh = summary.get("nearest_swing_high")
+    _sl = summary.get("nearest_swing_low")
+    if _sh and _sl and _sh > _sl:
+        _range = _sh - _sl
+        # OTE for BUY: ราคา retrace 61.8-78.6% จาก swing high ลงมา
+        _ote_buy_high  = round(_sh - _range * 0.618, 2)
+        _ote_buy_low   = round(_sh - _range * 0.786, 2)
+        # OTE for SELL: ราคา retrace 61.8-78.6% จาก swing low ขึ้นไป
+        _ote_sell_low  = round(_sl + _range * 0.618, 2)
+        _ote_sell_high = round(_sl + _range * 0.786, 2)
+        summary["ote"] = {
+            "swing_high":    _sh,
+            "swing_low":     _sl,
+            "range_pts":     round(_range * 10, 0),
+            "ote_buy_zone":  [_ote_buy_low,  _ote_buy_high],
+            "ote_sell_zone": [_ote_sell_low, _ote_sell_high],
+            "in_ote_buy":    _ote_buy_low  <= current_price <= _ote_buy_high,
+            "in_ote_sell":   _ote_sell_low <= current_price <= _ote_sell_high,
+        }
+    else:
+        summary["ote"] = None
+
     # ── PDH/PDL + Round Numbers ───────────────────────────────
     if df is not None:
         try:

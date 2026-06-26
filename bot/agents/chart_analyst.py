@@ -285,6 +285,23 @@ def analyze(smc_summary: dict = None) -> dict:
     _pdh_pts = round((pdh - price_now) * 10, 0) if pdh and pdh > price_now else None
     _pdl_pts = round((price_now - pdl) * 10, 0) if pdl and pdl < price_now else None
 
+    _ote      = smc_summary.get("ote") or {}
+    _ote_b    = _ote.get("ote_buy_zone")
+    _ote_s    = _ote.get("ote_sell_zone")
+    _in_ote_b = _ote.get("in_ote_buy",  False)
+    _in_ote_s = _ote.get("in_ote_sell", False)
+    _ote_hint = ""
+    if _ote_b and _ote_s:
+        _ote_hint = (
+            f"\n\n📐 OTE Zone (Fibonacci 61.8%–78.6% retracement):\n"
+            f"  BUY  OTE: {_ote_b[0]} – {_ote_b[1]}"
+            + (" ← ราคาอยู่ใน OTE ✅ (confluence สูง)" if _in_ote_b else "") + "\n"
+            f"  SELL OTE: {_ote_s[0]} – {_ote_s[1]}"
+            + (" ← ราคาอยู่ใน OTE ✅ (confluence สูง)" if _in_ote_s else "") + "\n"
+            f"  Range: {int(_ote.get('range_pts', 0))} pts (Swing High {_ote.get('swing_high')} → Swing Low {_ote.get('swing_low')})\n"
+            f"  กฎ OTE: ถ้าราคาอยู่ใน OTE zone + OB อยู่ในโซนเดียวกัน = confluence สูงมาก → เพิ่ม confidence"
+        )
+
     swing_hint = (
         f"🎯 S/R Levels (คำนวณโดย code):\n"
         f"  PDH (Prev Day High): {pdh or 'N/A'}"
@@ -298,6 +315,7 @@ def analyze(smc_summary: dict = None) -> dict:
         f"  Swing Highs above (top 3): {sh_above or 'N/A'}\n"
         f"  Swing Lows  below (top 3): {sl_below or 'N/A'}\n"
         f"  Round Numbers (±300p):     {round_levels or 'N/A'}"
+        + _ote_hint
     )
 
     def _fmt_liq_pool(p: dict) -> str:

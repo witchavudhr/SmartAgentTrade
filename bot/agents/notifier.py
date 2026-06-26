@@ -1204,13 +1204,98 @@ def _confidence_bar(pct: int) -> str:
     return "█" * filled + "░" * (10 - filled) + f" {pct}%"
 
 
+def _is_pool_swept(pool_type: str, level: float, current_price: float,
+                   liq_snapshot: dict) -> bool:
+    """
+    ตรวจว่า SSL/BSL pool ที่ watch อยู่ถูก sweep แล้วหรือยัง
+    ใช้ราคาปัจจุบันเป็น primary check + ตรวจ swept flag ใน pools
+    """
+    if not level:
+        return False
+    # Price-based: ถ้าราคาทะลุผ่าน level ไปแล้ว = swept
+    if pool_type == "SSL":
+        if current_price < level - 0.5:   # ราคาวิ่งลงทะลุ SSL (50 pts buffer)
+            return True
+    elif pool_type == "BSL":
+        if current_price > level + 0.5:   # ราคาวิ่งขึ้นทะลุ BSL
+            return True
+    # Pool-flag: ตรวจ swept=True จาก classify_liquidity
+    pools_key = "ssl_pools" if pool_type == "SSL" else "bsl_pools"
+    for p in (liq_snapshot or {}).get(pools_key, []):
+        if abs(float(p.get("level", 0)) - level) < 5.0:  # within 50 pts
+            return p.get("swept", False)
+    return False
+
+
 async def _handle_scan_result(result: dict, send_fn):
     """
     ถ้ามี open trade ค้างอยู่ → Advisory mode (แจ้ง + confidence + ปุ่มให้กดเอง)
     ถ้าไม่มี open trade → Auto-execute ปกติ
     Rejected → แจ้งสั้นๆ
+    liq_gate_blocked → WATCHING alert (รอ SSL/BSL ถูก sweep)
     """
     from agents.smc_engine import get_session
+
+    _current_price  = float(result.get("current_price") or 0)
+    _liq_snapshot   = result.get("liq_snapshot", {})
+    _watching_gate  = bot_state.get("watching_gate")
+
+    # ── ตรวจ watching_gate: sweep เกิดขึ้นแล้วหรือยัง ────────────
+    if _watching_gate and _liq_snapshot and _current_price:
+        _w_level  = float(_watching_gate.get("level") or 0)
+        _w_type   = _watching_gate.get("pool_type", "SSL")
+        _w_signal = _watching_gate.get("signal", "?")
+        _w_since  = _watching_gate.get("since", "?")
+
+        if _w_level and _is_pool_swept(_w_type, _w_level, _current_price, _liq_snapshot):
+            # Sweep เกิดขึ้นแล้ว! แจ้ง + clear state
+            state_manager.set_field(bot_state, "watching_gate", None)
+            _arrow = "⬆️" if _w_signal == "BUY" else "⬇️"
+            await _safe_send(
+                send_fn,
+                f"💥 *{_w_type} SWEPT!* — Setup {_w_signal} เริ่มได้\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{_arrow} {_w_type} ที่ `{_w_level}` ถูก sweep แล้ว\n"
+                f"ราคาปัจจุบัน: `{_current_price}`\n"
+                f"⏳ รอ CHoCH confirm แล้วดู OB สำหรับ {_w_signal} entry\n"
+                f"_(watching ตั้งแต่ {_w_since})_",
+                parse_mode="Markdown"
+            )
+            # ไม่ return — scan ปัจจุบันอาจ approve อยู่ด้วย ให้ flow ต่อ
+
+    # ── Liquidity Gate WATCHING: setup พร้อมแต่รอ SSL/BSL sweep ──
+    if result.get("liq_gate_blocked"):
+        _liq_level  = result.get("liq_gate_level")
+        _liq_signal = result.get("liq_gate_signal", "?")
+        _liq_read   = result.get("liq_gate_map_read", "")
+        _price      = result.get("current_price", "?")
+        _pool_type  = "SSL" if _liq_signal == "BUY" else "BSL" if _liq_signal == "SELL" else "SSL/BSL"
+        _arrow      = "⬇️" if _liq_signal == "BUY" else "⬆️" if _liq_signal == "SELL" else "↕️"
+        _liq_line   = f"ที่ `{_liq_level}`" if _liq_level else "(ยังไม่ระบุ)"
+        _map_line   = f"\n_{_liq_read}_" if _liq_read else ""
+
+        # Save watching_gate state (ถ้ายังไม่มี หรือ level ต่างกัน)
+        _existing_watch = bot_state.get("watching_gate")
+        if not _existing_watch or abs(float(_existing_watch.get("level") or 0) - float(_liq_level or 0)) > 5.0:
+            state_manager.set_field(bot_state, "watching_gate", {
+                "pool_type": _pool_type,
+                "level":     _liq_level,
+                "signal":    _liq_signal,
+                "since":     datetime.now().strftime("%H:%M %d/%m"),
+            })
+            await _safe_send(
+                send_fn,
+                f"👁 *WATCHING — รอ Liquidity Sweep*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{_arrow} Setup: *{_liq_signal}* | ราคา: `{_price}`\n"
+                f"🔒 Gate: *{_pool_type}* {_liq_line} ยังไม่ถูก sweep\n"
+                f"⏳ รอราคาวิ่งดูด {_pool_type} ก่อน แล้วค่อย reverse{_map_line}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"_จะ alert อัตโนมัติเมื่อ {_pool_type} ถูก sweep_",
+                parse_mode="Markdown"
+            )
+        # else: watching อยู่แล้ว — ไม่ส่ง alert ซ้ำ
+        return
 
     if result.get("approved"):
         # ── เช็ค MT5 โดยตรง — source of truth ──────────────────
@@ -1229,7 +1314,12 @@ async def _handle_scan_result(result: dict, send_fn):
             if ticket and ticket not in open_tickets:
                 # ปิดจาก MT5 โดยตรง — ดึง close price แล้ว auto-record outcome
                 try:
-                    deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+                    # ลำดับ: position filter (น่าเชื่อถือ) → date-range → fallback latest
+                    deal = mt5_executor.get_position_deals(int(ticket))
+                    if not deal:
+                        deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+                    if not deal:
+                        deal = mt5_executor.get_latest_closed_deal(hours=4)
                     if deal:
                         close_px = deal["close_price"]
                         entry_px = existing_trade.get("entry", 0)
@@ -2159,12 +2249,15 @@ def _capture_one_position(pos: dict) -> dict | None:
 
 
 def _run_mt5_sync(hours: int = 24) -> dict:
-    """Core MT5 sync — 2 pass:
+    """Core MT5 sync — 3 pass:
       1. date-range: ดึง closed positions ทั้งหมดใน X ชม.
       2. direct: ไม้ที่บอทเปิด (มี ticket) แต่ยังไม่ captured → query position filter ตรง
-         (กัน MT5 date-range query ไม่ครบ deal ล่าสุด)
+      3. outcome fix: trade ที่มี transaction แล้วแต่ outcome ยัง None → fix จาก tx data
     """
-    from agents.trade_log import transaction_exists, get_uncaptured_tickets
+    from agents.trade_log import (
+        transaction_exists, get_uncaptured_tickets,
+        get_trades_pending_outcome, update_outcome,
+    )
 
     newly = []
     # ── Pass 1: date-range ────────────────────────────────────
@@ -2187,8 +2280,27 @@ def _run_mt5_sync(hours: int = 24) -> dict:
             if n:
                 newly.append(n)
 
+    # ── Pass 3: outcome fix (มี tx แต่ trades.outcome ยัง None) ─
+    outcome_fixed = []
+    for row in get_trades_pending_outcome():
+        trade_id  = row["id"]
+        close_px  = row["close_price"]
+        open_px   = row["open_price"] or row["actual_entry"] or row["entry_low"]
+        direction = row["direction"] or row["signal"] or "BUY"
+        pnl_pips  = row["pnl_pips"]
+        if pnl_pips is None and open_px and close_px:
+            pnl_raw  = (close_px - open_px) if direction == "BUY" else (open_px - close_px)
+            pnl_pips = round(pnl_raw * 10, 1)
+        if pnl_pips is None:
+            continue
+        outcome = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+        update_outcome(trade_id, outcome, pnl_pips, actual_exit=close_px)
+        outcome_fixed.append({"trade_id": trade_id, "outcome": outcome, "pips": pnl_pips})
+        print(f"[mt5_sync] Pass3 fix outcome trade_id={trade_id} → {outcome} {pnl_pips:+.1f}p")
+
     return {"newly": newly, "total_closed": len(closed),
-            "found_tickets": found_tickets, "direct_found": direct_found}
+            "found_tickets": found_tickets, "direct_found": direct_found,
+            "outcome_fixed": outcome_fixed}
 
 
 def _fmt_sync_result(newly: list) -> str:
@@ -2306,10 +2418,16 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         dbg = f"\n\n🔍 date-range = {len(found)} ไม้ | direct query = {len(direct)} ไม้"
         if direct:
             dbg += f"\ndirect tickets: `{', '.join(str(t) for t in direct)}`"
+        outcome_fixed = res.get("outcome_fixed", [])
         if not newly:
+            fix_line = ""
+            if outcome_fixed:
+                fix_line = f"\n✏️ Fix outcome {len(outcome_fixed)} trade: " + ", ".join(
+                    f"#{f['trade_id']} {f['outcome']} {f['pips']:+.1f}p" for f in outcome_fixed
+                )
             await update.message.reply_text(
                 f"✅ ไม่มี transaction ใหม่ (ดึง {res['total_closed']} ไม้จาก MT5 ใน {days} วัน — เก็บครบแล้ว)"
-                f"{dbg}",
+                f"{fix_line}{dbg}",
                 parse_mode="Markdown",
             )
             return
@@ -2458,12 +2576,16 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
 
                 deal = None
                 if ticket:
-                    deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
-                # fallback: ticket lookup ล้มเหลว หรือไม่มี ticket → หา deal ล่าสุดของ XAUUSD
+                    # ลำดับ: position filter (API filter ตรงที่สุด) → date-range → latest fallback
+                    deal = mt5_executor.get_position_deals(int(ticket))
+                    if not deal:
+                        deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+                        if deal:
+                            print(f"[trade_monitor] ticket={ticket} get_position_deals ล้มเหลว → ใช้ date-range")
                 if not deal:
                     deal = mt5_executor.get_latest_closed_deal(hours=4)
                     if deal and ticket:
-                        print(f"[trade_monitor] ticket={ticket} lookup ล้มเหลว → ใช้ latest deal fallback")
+                        print(f"[trade_monitor] ticket={ticket} ทุก lookup ล้มเหลว → ใช้ latest deal fallback")
                 if deal:
                     close_px = deal["close_price"]
                     pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)

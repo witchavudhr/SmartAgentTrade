@@ -452,6 +452,26 @@ def get_uncaptured_tickets() -> list[int]:
     return [r[0] for r in rows]
 
 
+def get_trades_pending_outcome() -> list[dict]:
+    """trades ที่มี mt5_transaction แล้ว (ปิดไปแล้ว) แต่ outcome ยัง None/pending ใน trades table
+    ใช้ใน sync Pass 3 — fix outcome จาก transaction data ที่มีอยู่แล้ว
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT t.id, t.signal, t.actual_entry, t.entry_low, t.mt5_ticket,
+               tx.close_price, tx.open_price, tx.direction, tx.pnl_pips
+        FROM trades t
+        JOIN mt5_transactions tx ON tx.trade_id = t.id
+        WHERE (t.outcome IS NULL OR t.outcome = 'pending')
+          AND tx.close_price IS NOT NULL
+        ORDER BY t.id DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_recent_transactions(limit: int = 15) -> list[dict]:
     """ดึง mt5_transactions ล่าสุด — ใช้กับคำสั่ง /tx"""
     init_db()
@@ -819,10 +839,10 @@ def _pips_to_usd(pips, lot):
 
 
 _PERIOD_FILTER = {
-    "today": "DATE(timestamp) = DATE('now','localtime')",
-    "week":  "DATE(timestamp) >= DATE('now','localtime','-6 days')",
-    "month": "DATE(timestamp) >= DATE('now','localtime','start of month')",
-    "year":  "DATE(timestamp) >= DATE('now','localtime','start of year')",
+    "today": "timestamp >= strftime('%Y-%m-%d 00:00:00', 'now', 'localtime')",
+    "week":  "timestamp >= datetime('now', 'localtime', '-6 days')",
+    "month": "timestamp >= datetime('now', 'localtime', 'start of month')",
+    "year":  "timestamp >= datetime('now', 'localtime', 'start of year')",
     "all":   "1=1",
 }
 # mt5_transactions ใช้ close_time (อาจเป็น unix int หรือ string)
@@ -831,10 +851,12 @@ def _mt5_col():
     return "CASE WHEN typeof(close_time)='integer' THEN datetime(close_time,'unixepoch','+7 hours') ELSE close_time END"
 
 _MT5_PERIOD_FILTER = {
-    "today": f"DATE({_mt5_col()}) = DATE('now','localtime')",
-    "week":  f"DATE({_mt5_col()}) >= DATE('now','localtime','-6 days')",
-    "month": f"DATE({_mt5_col()}) >= DATE('now','localtime','start of month')",
-    "year":  f"DATE({_mt5_col()}) >= DATE('now','localtime','start of year')",
+    # ใช้ >= midnight (ไม่ใช่ = today) เพราะ trade ที่ปิดหลังเที่ยงคืน จะมี DATE = "พรุ่งนี้"
+    # ทำให้ตรงกับ get_transactions_by_period ที่ใช้ close_time >= today 00:00:00
+    "today": f"{_mt5_col()} >= strftime('%Y-%m-%d 00:00:00', 'now', 'localtime')",
+    "week":  f"{_mt5_col()} >= datetime('now', 'localtime', '-6 days')",
+    "month": f"{_mt5_col()} >= datetime('now', 'localtime', 'start of month')",
+    "year":  f"{_mt5_col()} >= datetime('now', 'localtime', 'start of year')",
     "all":   "1=1",
 }
 

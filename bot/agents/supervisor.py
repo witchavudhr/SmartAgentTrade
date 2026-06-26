@@ -56,6 +56,15 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
 
     result["current_price"] = smc_summary.get("current_price")
 
+    # เพิ่ม liquidity snapshot ทุก scan (แม้ NO_SIGNAL) เพื่อให้ notifier ตรวจ sweep ได้
+    _liq = smc_summary.get("liquidity", {})
+    result["liq_snapshot"] = {
+        "nearest_ssl": _liq.get("nearest_ssl"),
+        "nearest_bsl": _liq.get("nearest_bsl"),
+        "ssl_pools":   _liq.get("ssl_pools", []),
+        "bsl_pools":   _liq.get("bsl_pools", []),
+    }
+
     # Pre-filter: ถ้าไม่มี signal ไม่เรียก Claude เลย
     if not chart_analyst.has_signal(smc_summary, force_session=force_session):
         result["reject_reason"] = "SMC Engine: ไม่มี setup ครบเงื่อนไข"
@@ -84,6 +93,17 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
 
     if signal == "NO_TRADE" or chart_vote == "NO":
         result["reject_reason"] = f"Chart Analyst voted NO — {analysis.get('vote_reasoning', 'NO_TRADE')}"
+        # ตรวจว่า Claude ปฏิเสธเพราะ Liquidity Gate (รอ SSL/BSL sweep) หรือเปล่า
+        _vote_reason = (analysis.get("vote_reasoning") or "").lower()
+        _trade_plan  = (analysis.get("trade_plan") or "").lower()
+        _reasoning   = (analysis.get("reasoning") or "").lower()
+        _liq_keywords = ("รอ ssl", "รอ bsl", "liquidity gate", "ssl ยัง", "bsl ยัง",
+                         "ยังไม่ถูก sweep", "wait for ssl", "wait for bsl", "ssl intact", "bsl intact")
+        if any(kw in _vote_reason + _trade_plan + _reasoning for kw in _liq_keywords):
+            result["liq_gate_blocked"]  = True
+            result["liq_gate_level"]    = analysis.get("liquidity_target")
+            result["liq_gate_map_read"] = analysis.get("liquidity_map_read", "")
+            result["liq_gate_signal"]   = analysis.get("signal")  # BUY หรือ SELL ที่อยากเข้า
         return result
 
     # ── Stage 3: Bias Analyst (Sonnet, cached) — รู้ signal แล้ว ─
