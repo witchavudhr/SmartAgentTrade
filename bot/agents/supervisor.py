@@ -199,6 +199,22 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
                     f"{_bull_ob.get('bottom')}–{_bull_ob.get('top')} อยู่ {dist_entry_ob:.0f}p — กลางอากาศ"
                 )
 
+    # ── TREND_OB bias conflict guard ──────────────────────────────
+    # TREND_OB หมายถึง "trend-aligned" — ถ้า bias ขัดแย้งกับ signal ให้ reject ทันที
+    # (ป้องกัน SELL ขณะ BULL bias หรือ BUY ขณะ BEAR bias)
+    if setup_type == "TREND_OB" and _ob_zone_ok:
+        _bias_dir = (bias.get("trade_direction") or "").upper()
+        if signal == "SELL" and _bias_dir == "BUY":
+            result["reject_reason"] = (
+                f"TREND_OB SELL rejected: Bias = BUY (BULL) — ไม่ใช่ trend-aligned, ห้าม SELL สวนทาง"
+            )
+            return result
+        if signal == "BUY" and _bias_dir == "SELL":
+            result["reject_reason"] = (
+                f"TREND_OB BUY rejected: Bias = SELL (BEAR) — ไม่ใช่ trend-aligned, ห้าม BUY สวนทาง"
+            )
+            return result
+
     if setup_type in ob_setups and chart_vote == "YES" and rr >= 1.5 and not blocked and _ob_zone_ok:
         auto_reason = {
             "BULL_OB_SWEEP_REJECT": "Sweep + rejection ที่ Bull OB — สัญญาณแข็งที่สุด auto-approve",
