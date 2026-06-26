@@ -328,10 +328,19 @@ NO  — ถ้า D หรือ E (ระบุชัดว่า H1/H4 ขั�
   "reasoning": "ภาษาไทย — ระบุ macro trend, ระยะที่วิ่งมา, level ที่เกี่ยวข้อง และเหตุผลที่ vote"
 }}"""
 
+    # ── Prompt Caching: split static rules → system (cached), dynamic HTF data → user ──
+    _SPLIT = "══════ หน้าที่ของคุณ ══════"
+    if _SPLIT in prompt:
+        _idx = prompt.index(_SPLIT)
+        _usr, _sys = prompt[:_idx], prompt[_idx:]
+    else:
+        _usr, _sys = prompt, ""
+
     response = client.messages.create(
         model=MODEL_SMART,
         max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
+        system=[{"type": "text", "text": _sys, "cache_control": {"type": "ephemeral"}}] if _sys else None,
+        messages=[{"role": "user", "content": _usr}]
     )
 
     result = safe_json_parse(

@@ -876,10 +876,19 @@ STEP 3 — ตัดสินใจและโหวต
   "reasoning": "ภาษาไทย: ① H1/H4 macro ② Liquidity map — nearest BSL/SSL swept แล้วหรือยัง ③ OB ที่ใกล้ที่สุดคือไหน ④ มี sweep+rejection มั้ย ⑤ setup ที่เลือก (Case ไหน) ⑥ pyramid plan ⑦ TP logic (Bear OB / BSL / PDH / swing)"
 }}"""
 
+    # ── Prompt Caching: split static rules → system (cached), dynamic data → user ──
+    _SPLIT = "════════════════════════════════════════════\n📌 หลักการหลัก"
+    if _SPLIT in prompt:
+        _idx = prompt.index(_SPLIT)
+        _usr, _sys = prompt[:_idx], prompt[_idx:]
+    else:
+        _usr, _sys = prompt, ""
+
     response = client.messages.create(
         model=MODEL_SMART,
-        max_tokens=3500,   # Thai reasoning + pyramid_plan ยาว — 2000 ไม่พอ
-        messages=[{"role": "user", "content": prompt}]
+        max_tokens=3500,
+        system=[{"type": "text", "text": _sys, "cache_control": {"type": "ephemeral"}}] if _sys else None,
+        messages=[{"role": "user", "content": _usr}]
     )
 
     raw_text = response.content[0].text

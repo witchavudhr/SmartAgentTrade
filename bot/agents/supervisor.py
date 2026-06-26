@@ -382,10 +382,19 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
   "reasoning": "2-3 ประโยค ภาษาไทย — ระบุ: ① เข้าเงื่อนไขไหน ② liquidity อยู่ตรงไหน ③ ทำไมถึง approve/reject"
 }}"""
 
+    # ── Prompt Caching: split static rules → system (cached), dynamic trade context → user ──
+    _SPLIT = "═══ วิธีตัดสิน ═══"
+    if _SPLIT in prompt:
+        _idx = prompt.index(_SPLIT)
+        _usr, _sys = prompt[:_idx], prompt[_idx:]
+    else:
+        _usr, _sys = prompt, ""
+
     response = client.messages.create(
         model=MODEL_SMART,
         max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
+        system=[{"type": "text", "text": _sys, "cache_control": {"type": "ephemeral"}}] if _sys else None,
+        messages=[{"role": "user", "content": _usr}]
     )
 
     result = safe_json_parse(
