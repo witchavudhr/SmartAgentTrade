@@ -1312,14 +1312,15 @@ async def _handle_scan_result(result: dict, send_fn):
         tp_price = signal.get("take_profit") or signal.get("tp")
         direction = signal.get("signal")
 
+        # เตรียม open_trade dict แต่ยังไม่ save — รอให้ MT5 execute จริงก่อน
+        # ป้องกัน pyramid check เห็นว่ามีไม้ทั้งที่ยัง PENDING อยู่
+        _open_trade_draft = None
         if entry_price and sl_price and direction in ("BUY", "SELL"):
-            # pyramid mode: ถ้า TREND_BOS_BREAK → ใช้ lot1 เล็ก + รอ lot2 ที่ OB
             is_pyramid = signal.get("pyramid_mode", False) or signal.get("setup_type") == "TREND_BOS_BREAK"
             pyramid_lot2 = None
             if is_pyramid:
                 pyramid_lot2 = 0.01
 
-            # หา OB zone สำหรับรอ pyramid ไม้ 2
             pyramid_ob = None
             if is_pyramid:
                 _, _smc = chart_analyst.get_price_data()
@@ -1327,7 +1328,7 @@ async def _handle_scan_result(result: dict, send_fn):
                     ob_key = "active_bull_ob" if direction == "BUY" else "active_bear_ob"
                     pyramid_ob = _smc.get(ob_key)
 
-            open_trade = {
+            _open_trade_draft = {
                 "entry":            entry_price,
                 "original_sl":      float(sl_price),
                 "current_sl":       float(sl_price),
@@ -1343,7 +1344,6 @@ async def _handle_scan_result(result: dict, send_fn):
                 "pyramid_ob":       pyramid_ob,
                 "pyramid_alerted":  False,
             }
-            state_manager.set_field(bot_state, "open_trade", open_trade)
 
         message = supervisor.format_alert(result)
 
@@ -1439,7 +1439,7 @@ async def _handle_scan_result(result: dict, send_fn):
                 direction = direction,
                 lot       = float(lot_val),
                 sl        = float(sl_price),
-                tp        = 0.0,   # ไม่ตั้ง TP — ให้ EA POS Guard จัดการ exit
+                tp        = 0.0,
                 comment   = f"SAT-{trade_id}",
             )
             if "ticket" in ex:
@@ -1448,12 +1448,10 @@ async def _handle_scan_result(result: dict, send_fn):
                     f"Ticket: `{ex['ticket']}` | Price: `{ex['price']}` | Lot: `{ex['volume']}`\n"
                     f"_EA POS Guard จัดการ exit — ไม่มี fixed TP_"
                 )
-                # เก็บ ticket ใน open_trade สำหรับ auto-close ในอนาคต
-                if bot_state.get("open_trade"):
-                    ot_upd = bot_state["open_trade"]
-                    ot_upd["mt5_ticket"] = ex["ticket"]
-                    state_manager.set_field(bot_state, "open_trade", ot_upd)
-                # บันทึก ticket ใน DB ด้วย
+                # save open_trade เฉพาะตอน MT5 execute สำเร็จ
+                if _open_trade_draft:
+                    _open_trade_draft["mt5_ticket"] = ex["ticket"]
+                    state_manager.set_field(bot_state, "open_trade", _open_trade_draft)
                 try:
                     from agents.trade_log import update_mt5_ticket
                     update_mt5_ticket(trade_id, ex["ticket"])
