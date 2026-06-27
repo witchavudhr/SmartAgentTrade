@@ -136,15 +136,20 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         return True
 
     # ── ชั้น 3: TREND setup (priority รอง) ───────────────────────
+    # NOTE: ถ้าอยากปิด cost filter นี้ → เปลี่ยน OB_NEARBY_THRESHOLD เป็น 9999
+    OB_NEARBY_THRESHOLD = 150  # จุด — ถ้าราคาห่าง OB เกินนี้ ไม่นับว่า "มี OB ใกล้"
+    price         = smc_summary.get("current_price") or 0
+    bull_dist     = abs(price - (bull_ob.get("top", price) or price)) if bull_ob else 9999
+    bear_dist     = abs(price - (bear_ob.get("bottom", price) or price)) if bear_ob else 9999
     has_sweep     = smc_summary.get("last_sweep") is not None
-    has_ob        = bool(bull_ob) or bool(bear_ob) or smc_summary.get("active_ob") is not None
+    has_ob_nearby = bull_dist < OB_NEARBY_THRESHOLD or bear_dist < OB_NEARBY_THRESHOLD
     has_structure = (smc_summary.get("last_bos") is not None or
                      smc_summary.get("last_choch") is not None)
     bias = smc_summary.get("bias", "neutral")
-    score = sum([has_sweep, has_ob, has_structure])
+    score = sum([has_sweep, has_ob_nearby, has_structure])
 
     if score >= 2 and bias != "neutral":
-        print(f"[has_signal] ✅ TREND — sweep={has_sweep} ob={has_ob} struct={has_structure} bias={bias} score={score}/3")
+        print(f"[has_signal] ✅ TREND — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} bias={bias}")
         return True  # Trend setup viable — ให้ Claude วิเคราะห์ตำแหน่ง OB ต่อ
 
     # ── ชั้น 3: Swing Entry signal (fallback เมื่อ trend ไม่ครบ) ──
