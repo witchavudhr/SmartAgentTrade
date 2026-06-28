@@ -2850,6 +2850,80 @@ def _build_scan_windows() -> list[tuple]:
     return windows
 
 
+# ── Weekly Feedback Loop ───────────────────────────────────────────
+
+async def weekly_feedback_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """ทุกเสาร์ 08:00 — วิเคราะห์ผลสัปดาห์ + แนะนำปรับ supervisor"""
+    from agents.trade_log import get_weekly_trades
+    from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
+    import anthropic as _anthropic
+
+    trades = get_weekly_trades()
+    if not trades:
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text="📊 *Weekly Review* — ไม่มี trade อาทิตย์นี้",
+            parse_mode="Markdown"
+        )
+        return
+
+    # สร้าง summary สถิติเบื้องต้น
+    wins   = [t for t in trades if t["outcome"] == "win"]
+    losses = [t for t in trades if t["outcome"] == "loss"]
+    total_pnl = sum((t["net_usd"] or 0) for t in trades)
+
+    # สร้าง trade list ส่งให้ Claude วิเคราะห์
+    trade_lines = []
+    for t in trades:
+        pips = f"{t['pnl_pips']:+.0f}p" if t["pnl_pips"] else "?"
+        usd  = f"${t['net_usd']:+.2f}" if t["net_usd"] else ""
+        trade_lines.append(
+            f"#{t['id']} [{t['timestamp'][:10]}] {t['signal']} {t['setup_type'] or '?'} | "
+            f"{t['bias_condition'] or '?'} | session={t['session'] or '?'} | "
+            f"RR={t['rr_plan'] or '?'} conf={t['confidence'] or '?'}% | "
+            f"→ {t['outcome'] or 'pending'} {pips} {usd}"
+        )
+    trades_text = "\n".join(trade_lines)
+
+    try:
+        _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = _client.messages.create(
+            model=MODEL_SMART,
+            max_tokens=1500,
+            messages=[{"role": "user", "content": f"""คุณคือ Trading Coach วิเคราะห์ผล trade XAUUSD SMC สัปดาห์นี้
+
+trades ทั้งหมด ({len(trades)} ไม้ | W:{len(wins)} L:{len(losses)} | P&L: ${total_pnl:+.2f}):
+{trades_text}
+
+วิเคราะห์และตอบเป็นภาษาไทย กระชับ:
+
+1. **Pattern ที่ชนะ** — setup/session/bias ไหนชนะบ่อย ทำไม
+2. **Pattern ที่แพ้/ระวัง** — อะไรผิดปกติ ควรหลีกเลี่ยงอะไร
+3. **bias_condition insight** — H4+H1 combination ไหนดีสุด/แย่สุด
+4. **ข้อแนะนำ supervisor** — 2-3 rule เฉพาะเจาะจงที่ควรปรับสัปดาห์หน้า
+   (เช่น "เพิ่ม RR minimum เป็น 3.0 สำหรับ CAUTION MODE" หรือ "block SELL เมื่อ H4_BULL+H1_BULL")
+
+ห้ามทำ list ยาว — สรุปแบบ bullet สั้นๆ 1-2 ประโยคต่อข้อ"""}]
+        )
+        ai_insight = resp.content[0].text
+    except Exception as e:
+        ai_insight = f"⚠️ วิเคราะห์ไม่ได้: {e}"
+
+    msg = (
+        f"📊 *Weekly Review — {trades[0]['timestamp'][:10]} → {trades[-1]['timestamp'][:10]}*\n\n"
+        f"📈 Trades: {len(trades)} ไม้ | ✅ {len(wins)}W / ❌ {len(losses)}L | "
+        f"WR: {len(wins)/len(trades)*100:.0f}% | P&L: ${total_pnl:+.2f}\n\n"
+        f"🤖 *AI Feedback:*\n{ai_insight}"
+    )
+
+    for chunk in [msg[i:i+3800] for i in range(0, len(msg), 3800)]:
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=chunk,
+            parse_mode="Markdown"
+        )
+
+
 # ── Daily close summary ────────────────────────────────
 
 async def daily_close_summary(ctx: ContextTypes.DEFAULT_TYPE):
@@ -3122,6 +3196,14 @@ def run():
     app.job_queue.run_daily(
         daily_close_summary,
         time=dtime(23, 30, tzinfo=_THAI_TZ),
+    )
+
+    # Weekly feedback loop — ทุกเสาร์ 08:00 Thai
+    # วิเคราะห์ผลสัปดาห์ + AI แนะนำปรับ supervisor
+    app.job_queue.run_daily(
+        weekly_feedback_job,
+        time=dtime(8, 0, tzinfo=_THAI_TZ),
+        days=(5,),  # 5 = Saturday
     )
 
     # ── Startup: clear stale open_trade state ──────────────────────

@@ -133,10 +133,11 @@ def init_db():
         ("rr_plan",      "REAL"),
         ("lot",          "REAL"),
         ("risk_pct",     "REAL"),
-        ("actual_entry", "REAL"),
-        ("actual_exit",  "REAL"),
-        ("duration_min", "INTEGER"),
-        ("mt5_ticket",   "INTEGER"),
+        ("actual_entry",   "REAL"),
+        ("actual_exit",    "REAL"),
+        ("duration_min",   "INTEGER"),
+        ("mt5_ticket",     "INTEGER"),
+        ("bias_condition", "TEXT"),   # เช่น "H4_BULL+H1_BEAR" — ใช้ weekly feedback
     ]
     for col, typ in migrations:
         if col not in existing:
@@ -292,6 +293,12 @@ def log_trade(analysis: dict, action: str, mt5_ticket: int = None) -> int:
     key_factors = analysis.get("key_factors", [])
     rr_val     = analysis.get("rr_ratio") or analysis.get("rr")
 
+    # สร้าง bias_condition จาก stages.bias — ใช้ weekly feedback loop
+    _bias_s = analysis.get("stages", {}).get("bias", {})
+    _h4 = (_bias_s.get("h4_bias") or analysis.get("h4_bias") or "?").upper()[:4]
+    _h1 = (_bias_s.get("h1_bias") or "?").upper()[:4]
+    bias_condition = f"H4_{_h4}+H1_{_h1}"
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("""
         INSERT INTO trades (
@@ -299,13 +306,13 @@ def log_trade(analysis: dict, action: str, mt5_ticket: int = None) -> int:
             confidence, h4_bias,
             entry_low, entry_high, stop_loss, take_profit,
             sl_pips, tp_pips, rr_plan, lot, risk_pct,
-            key_factors, reasoning, action, mt5_ticket
+            key_factors, reasoning, action, mt5_ticket, bias_condition
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?,
             ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?, ?, ?
+            ?, ?, ?, ?, ?
         )
     """, (
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -330,11 +337,35 @@ def log_trade(analysis: dict, action: str, mt5_ticket: int = None) -> int:
         analysis.get("reasoning"),
         action,
         mt5_ticket,
+        bias_condition,
     ))
     trade_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return trade_id
+
+
+def get_weekly_trades() -> list[dict]:
+    """ดึง trades ทั้งหมด 7 วันที่ผ่านมา สำหรับ weekly feedback loop"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT t.id, t.timestamp, t.signal, t.setup_type, t.session,
+               t.bias_condition, t.h4_bias, t.confidence, t.rr_plan,
+               t.outcome, t.pnl_pips, t.actual_entry, t.actual_exit,
+               t.reasoning,
+               tx.net_usd
+        FROM trades t
+        LEFT JOIN mt5_transactions tx ON tx.trade_id = t.id
+        WHERE t.action IN ('confirmed', 'mt5_import')
+          AND t.timestamp >= datetime('now', 'localtime', '-7 days')
+        ORDER BY t.timestamp
+    """).fetchall()
+    conn.close()
+    cols = ['id','timestamp','signal','setup_type','session','bias_condition',
+            'h4_bias','confidence','rr_plan','outcome','pnl_pips',
+            'actual_entry','actual_exit','reasoning','net_usd']
+    return [dict(zip(cols, r)) for r in rows]
 
 
 def transaction_exists(ticket: int) -> bool:
