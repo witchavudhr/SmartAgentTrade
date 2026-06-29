@@ -137,7 +137,8 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
 
     # ── ชั้น 3: TREND setup (priority รอง) ───────────────────────
     # NOTE: ถ้าอยากปิด cost filter นี้ → เปลี่ยน OB_NEARBY_THRESHOLD เป็น 9999
-    OB_NEARBY_THRESHOLD = 150  # จุด — ถ้าราคาห่าง OB เกินนี้ ไม่นับว่า "มี OB ใกล้"
+    OB_NEARBY_THRESHOLD  = 150  # จุด — ราคาต้องอยู่ภายในนี้จาก OB
+    LIQ_NEARBY_THRESHOLD = 120  # จุด — ราคาต้องอยู่ภายในนี้จาก SSL/BSL pool
     price         = smc_summary.get("current_price") or 0
     bull_dist     = abs(price - (bull_ob.get("top", price) or price)) if bull_ob else 9999
     bear_dist     = abs(price - (bear_ob.get("bottom", price) or price)) if bear_ob else 9999
@@ -146,10 +147,20 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     has_structure = (smc_summary.get("last_bos") is not None or
                      smc_summary.get("last_choch") is not None)
     bias = smc_summary.get("bias", "neutral")
-    score = sum([has_sweep, has_ob_nearby, has_structure])
+
+    # liquidity proximity — SSL (ล่าง) = BUY target, BSL (บน) = SELL target
+    _liq     = smc_summary.get("liquidity") or {}
+    _ssl     = _liq.get("nearest_ssl")
+    _bsl     = _liq.get("nearest_bsl")
+    ssl_dist = abs(price - _ssl) if _ssl else 9999
+    bsl_dist = abs(price - _bsl) if _bsl else 9999
+    has_liq_nearby = ssl_dist < LIQ_NEARBY_THRESHOLD or bsl_dist < LIQ_NEARBY_THRESHOLD
+    _liq_dist_str  = f"ssl={ssl_dist:.0f}p bsl={bsl_dist:.0f}p" if (_ssl or _bsl) else "no_liq"
+
+    score = sum([has_sweep, has_ob_nearby, has_structure, has_liq_nearby])
 
     if score >= 2 and bias != "neutral":
-        print(f"[has_signal] ✅ TREND — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} bias={bias}")
+        print(f"[has_signal] ✅ TREND — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
         return True  # Trend setup viable — ให้ Claude วิเคราะห์ตำแหน่ง OB ต่อ
 
     # ── ชั้น 3: Swing Entry signal (fallback เมื่อ trend ไม่ครบ) ──
@@ -177,7 +188,7 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ AMD — {amd.get('amd_signal')} {amd.get('amd_stars','')} score={amd.get('amd_score')}")
         return True
 
-    print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob={has_ob} struct={has_structure} bias={bias} score={score}/3 bull_ob={bool(bull_ob)} bear_ob={bool(bear_ob)}")
+    print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
     return False
 
 

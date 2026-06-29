@@ -1294,7 +1294,15 @@ async def _handle_scan_result(result: dict, send_fn):
                 f"_จะ alert อัตโนมัติเมื่อ {_pool_type} ถูก sweep_",
                 parse_mode="Markdown"
             )
-        # else: watching อยู่แล้ว — ไม่ส่ง alert ซ้ำ
+        else:
+            # watching อยู่แล้ว — ส่ง one-liner สั้นๆ แทน ไม่ให้หายเงียบ
+            _since = _existing_watch.get("since", "?")
+            await _safe_send(
+                send_fn,
+                f"👁 *Watching {_pool_type} {_liq_line}* — ยังไม่ sweep _(since {_since})_\n"
+                f"ราคา: `{_price}` | รอ {_pool_type} ถูก sweep แล้วค่อย {_liq_signal}",
+                parse_mode="Markdown"
+            )
         return
 
     if result.get("approved"):
@@ -3043,14 +3051,32 @@ def _startup_clear_stale_trade():
     if existing:
         ticket = existing.get("mt5_ticket")
         open_tickets = {p["ticket"] for p in positions}
-        stale = (ticket and ticket not in open_tickets) or (not ticket and not positions)
-        if stale:
+        tid = existing.get("trade_id", "?")
+
+        if not ticket:
+            # PENDING trade — ราคายังไม่ถึง OB ยังไม่ได้ execute MT5
+            # ไม่ clear — แจ้งกลับว่ายัง pending อยู่
+            _dir  = existing.get("direction", "?")
+            _entr = existing.get("entry", "?")
+            _sl   = existing.get("original_sl", "?")
+            _tp   = existing.get("tp", "?")
+            _open = existing.get("opened_at", "?")
+            print(f"[startup] ⏳ Trade #{tid} ยังเป็น PENDING (ยังไม่ execute MT5) — คง state ไว้")
+            bot_state["_startup_pending_msg"] = (
+                f"⏳ *PENDING ยังอยู่ — Trade #{tid}*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"Setup ที่รออยู่: *{_dir}* | Entry zone: `{_entr}`\n"
+                f"SL: `{_sl}` | TP: `{_tp}`\n"
+                f"Approved เมื่อ: {_open}\n"
+                f"⚠️ ราคายังไม่ถึง OB zone — รอ rally/dip เข้า zone"
+            )
+            existing = existing  # คง state ไว้
+        elif ticket not in open_tickets:
+            # มี ticket แต่ MT5 ปิดไปแล้ว — stale จริง
             state_manager.set_field(bot_state, "open_trade", None)
-            tid = existing.get("trade_id", "?")
-            print(f"[startup] 🧹 Trade #{tid} state cleared — no matching MT5 position")
+            print(f"[startup] 🧹 Trade #{tid} state cleared — MT5 ticket {ticket} ปิดแล้ว")
             existing = None
         else:
-            tid = existing.get("trade_id", "?")
             print(f"[startup] ✅ Trade #{tid} still open in MT5 — keeping state")
 
     # ── Case 2: MT5 มีไม้แต่ bot ไม่รู้ → restore ──────────
@@ -3208,6 +3234,13 @@ def run():
 
     # ── Startup: clear stale open_trade state ──────────────────────
     _startup_clear_stale_trade()
+
+    # ── Startup: แจ้ง PENDING trade ที่ยังค้างอยู่ ──────────────────
+    async def _startup_notify_pending(ctx: ContextTypes.DEFAULT_TYPE):
+        msg = bot_state.pop("_startup_pending_msg", None)
+        if msg:
+            await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+    app.job_queue.run_once(_startup_notify_pending, when=3)
 
     # ── Startup scan: ถ้า restart ระหว่าง session และ scan เก่าเกิน 10 นาที ──
     app.job_queue.run_once(_startup_session_scan, when=5, data={"session_label": "🚀 Startup"})
