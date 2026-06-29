@@ -3023,7 +3023,17 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     _notify_scan_start()
-    result = supervisor.run()
+    try:
+        result = supervisor.run()
+    except Exception as _e:
+        import traceback
+        _tb = traceback.format_exc()[-800:]
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=f"🚨 *Scan Error*\n`{type(_e).__name__}: {str(_e)[:200]}`\n\n```\n{_tb}\n```",
+            parse_mode="Markdown"
+        )
+        return
     log_scan(result)
     _push_to_dashboard(result)
 

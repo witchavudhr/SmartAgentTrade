@@ -149,13 +149,16 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     bias = smc_summary.get("bias", "neutral")
 
     # liquidity proximity — SSL (ล่าง) = BUY target, BSL (บน) = SELL target
-    _liq     = smc_summary.get("liquidity") or {}
-    _ssl     = _liq.get("nearest_ssl")
-    _bsl     = _liq.get("nearest_bsl")
-    ssl_dist = abs(price - _ssl) if _ssl else 9999
-    bsl_dist = abs(price - _bsl) if _bsl else 9999
+    # nearest_ssl/bsl อาจเป็น dict {"level":..., "swept":...} หรือตัวเลขตรงๆ
+    _liq = smc_summary.get("liquidity") or {}
+    _ssl_raw = _liq.get("nearest_ssl")
+    _bsl_raw = _liq.get("nearest_bsl")
+    _ssl_lvl = (_ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw) if _ssl_raw else None
+    _bsl_lvl = (_bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw) if _bsl_raw else None
+    ssl_dist = abs(price - float(_ssl_lvl)) if _ssl_lvl else 9999
+    bsl_dist = abs(price - float(_bsl_lvl)) if _bsl_lvl else 9999
     has_liq_nearby = ssl_dist < LIQ_NEARBY_THRESHOLD or bsl_dist < LIQ_NEARBY_THRESHOLD
-    _liq_dist_str  = f"ssl={ssl_dist:.0f}p bsl={bsl_dist:.0f}p" if (_ssl or _bsl) else "no_liq"
+    _liq_dist_str  = f"ssl={ssl_dist:.0f}p bsl={bsl_dist:.0f}p" if (_ssl_lvl or _bsl_lvl) else "no_liq"
 
     score = sum([has_sweep, has_ob_nearby, has_structure, has_liq_nearby])
 
