@@ -3129,13 +3129,15 @@ async def _startup_session_scan(ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # หา slot ที่ควรจะ fire แต่ bot ยังไม่ได้ scan (missed ใน 14 นาทีที่ผ่านมา)
-    now_mins = now.hour * 60 + now.minute
+    # หา slot ที่ควรจะ fire แต่ bot ยังไม่ได้ scan
+    # ใช้ seconds เพื่อจับ case "restart ห่างจาก slot แค่ไม่กี่วิ" (เช่น restart 21:45 แล้ว 22:00 missed)
+    now_secs = now.hour * 3600 + now.minute * 60 + now.second
     missed_label = None
     for scan_time, label in _build_scan_windows():
-        slot_mins = scan_time.hour * 60 + scan_time.minute
-        # slot ผ่านไปแล้วไม่เกิน 14 นาที (ก่อน slot ถัดไป 15 นาที)
-        if 0 < now_mins - slot_mins <= 14:
+        slot_secs = scan_time.hour * 3600 + scan_time.minute * 60
+        diff = now_secs - slot_secs
+        # slot ผ่านไปแล้วไม่เกิน 14 นาที รวม 2 นาทีข้างหน้า (จับ near-miss ตอน startup)
+        if -120 < diff <= 14 * 60:
             missed_label = label
             break
 
