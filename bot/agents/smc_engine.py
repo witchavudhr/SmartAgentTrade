@@ -584,11 +584,18 @@ def is_market_holiday() -> tuple[bool, str]:
     import holidays as hol
     from datetime import date
 
-    today = date.today()
+    from datetime import datetime, timezone, timedelta as _td
+    _THAI = timezone(_td(hours=7))
+    now_thai = datetime.now(_THAI)
+    today = now_thai.date()
 
     # Weekend — Forex ปิดจริง
-    if today.weekday() >= 5:
+    if today.weekday() >= 5:  # Saturday=5, Sunday=6
         return True, "Weekend"
+
+    # วันจันทร์ก่อน 07:00 Thai — ตลาดยังไม่เปิด (Forex เปิด Sunday 22:00 UTC = Mon ~05:00 Thai)
+    if today.weekday() == 0 and now_thai.hour < 7:
+        return True, "Weekend (ตลาดยังไม่เปิด)"
 
     # Hard close: Forex ปิดสนิทหรือใกล้เคียง
     hard_close_keywords = {
