@@ -3024,7 +3024,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
     _notify_scan_start()
     try:
-        result = supervisor.run()
+        result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
     except Exception as _e:
         import traceback
         _tb = traceback.format_exc()[-800:]
