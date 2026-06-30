@@ -2955,10 +2955,12 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
         return  # scan กำลังรันอยู่ ข้าม
 
     try:
-        import urllib.request
-        req = urllib.request.Request(f"{DASHBOARD_URL}/api/poll-scan")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read())
+        def _fetch():
+            import urllib.request
+            req = urllib.request.Request(f"{DASHBOARD_URL}/api/poll-scan")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return json.loads(resp.read())
+        data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
         if not data.get("requested"):
             return
     except Exception:
