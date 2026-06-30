@@ -589,13 +589,17 @@ def is_market_holiday() -> tuple[bool, str]:
     now_thai = datetime.now(_THAI)
     today = now_thai.date()
 
-    # Weekend — Forex ปิดจริง
-    if today.weekday() >= 5:  # Saturday=5, Sunday=6
-        return True, "Weekend"
+    # XAUUSD market hours:
+    #   ปิด: ศุกร์ ~23:00 Thai ถึง อาทิตย์ ~22:00 Thai
+    #   เปิด: อาทิตย์ 22:00 Thai เป็นต้นไป (US Sunday electronic open)
+    dow = today.weekday()  # Mon=0 ... Sat=5 Sun=6
 
-    # วันจันทร์ก่อน 07:00 Thai — ตลาดยังไม่เปิด (Forex เปิด Sunday 22:00 UTC = Mon ~05:00 Thai)
-    if today.weekday() == 0 and now_thai.hour < 7:
-        return True, "Weekend (ตลาดยังไม่เปิด)"
+    if dow == 5:  # Saturday — ปิดทั้งวัน
+        return True, "Weekend (Saturday)"
+
+    if dow == 6:  # Sunday — เปิดหลัง 22:00 Thai เท่านั้น
+        if now_thai.hour < 22:
+            return True, "Weekend (Sunday ตลาดยังไม่เปิด — เปิด 22:00)"
 
     # Hard close: Forex ปิดสนิทหรือใกล้เคียง
     hard_close_keywords = {
