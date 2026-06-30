@@ -601,6 +601,10 @@ def is_market_holiday() -> tuple[bool, str]:
         if now_thai.hour < 22:
             return True, "Weekend (Sunday ตลาดยังไม่เปิด — เปิด 22:00)"
 
+    if dow == 0 and (now_thai.hour < 6 or (now_thai.hour == 6 and now_thai.minute < 30)):
+        # Monday ก่อน 06:30 Thai — ยังไม่ถึง Pre-Event session
+        return True, "Monday (ตลาดยังเงียบ — เปิด 06:30)"
+
     # Hard close: Forex ปิดสนิทหรือใกล้เคียง
     hard_close_keywords = {
         "Christmas Day",
