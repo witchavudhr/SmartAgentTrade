@@ -1295,14 +1295,48 @@ async def _handle_scan_result(result: dict, send_fn):
                 parse_mode="Markdown"
             )
         else:
-            # watching อยู่แล้ว — ส่ง one-liner สั้นๆ แทน ไม่ให้หายเงียบ
+            # watching อยู่แล้ว — เช็ค OB ก่อนส่ง one-liner
             _since = _existing_watch.get("since", "?")
-            await _safe_send(
-                send_fn,
-                f"👁 *Watching {_pool_type} {_liq_line}* — ยังไม่ sweep _(since {_since})_\n"
-                f"ราคา: `{_price}` | รอ {_pool_type} ถูก sweep แล้วค่อย {_liq_signal}",
-                parse_mode="Markdown"
-            )
+
+            # เช็คว่าราคาอยู่ใน OB zone ไหม (แม้ liq_gate ยังไม่ sweep)
+            _chart_s  = result.get("stages", {}).get("chart", {})
+            _bull_ob  = _chart_s.get("bull_ob_zone") or {}
+            _bear_ob  = _chart_s.get("bear_ob_zone") or {}
+            _px       = float(_price) if _price else 0
+            _in_bull  = _bull_ob and _bull_ob.get("bottom") and _bull_ob.get("top") and \
+                        float(_bull_ob["bottom"]) <= _px <= float(_bull_ob["top"])
+            _in_bear  = _bear_ob and _bear_ob.get("bottom") and _bear_ob.get("top") and \
+                        float(_bear_ob["bottom"]) <= _px <= float(_bear_ob["top"])
+
+            if _in_bull or _in_bear:
+                _ob_label = f"Bull OB `{_bull_ob.get('bottom')}–{_bull_ob.get('top')}`" if _in_bull \
+                       else f"Bear OB `{_bear_ob.get('bottom')}–{_bear_ob.get('top')}`"
+                _ob_dir   = "BUY" if _in_bull else "SELL"
+                await _safe_send(
+                    send_fn,
+                    f"⚠️ *ราคาเข้า OB ขณะ Watching!*\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"📍 ราคา `{_price}` อยู่ใน {_ob_label}\n"
+                    f"🔒 {_pool_type} {_liq_line} ยังไม่ sweep — gate ยังปิด\n"
+                    f"👁 _(Watching since {_since})_\n"
+                    f"⚡ ถ้า {_pool_type} sweep ตอนนี้ → {_ob_dir} entry ทันที",
+                    parse_mode="Markdown"
+                )
+            else:
+                # ไม่ใน OB — ส่ง one-liner ปกติ
+                _bull_dist = round(abs(_px - float(_bull_ob.get("top", _px))) * 10) if _bull_ob.get("top") else None
+                _bear_dist = round(abs(_px - float(_bear_ob.get("bottom", _px))) * 10) if _bear_ob.get("bottom") else None
+                _ob_dist_str = ""
+                if _bull_dist is not None:
+                    _ob_dist_str = f" | Bull OB ห่าง {_bull_dist}p"
+                elif _bear_dist is not None:
+                    _ob_dist_str = f" | Bear OB ห่าง {_bear_dist}p"
+                await _safe_send(
+                    send_fn,
+                    f"👁 *Watching {_pool_type} {_liq_line}* — ยังไม่ sweep _(since {_since})_\n"
+                    f"ราคา: `{_price}`{_ob_dist_str} | รอ {_pool_type} sweep แล้วค่อย {_liq_signal}",
+                    parse_mode="Markdown"
+                )
         return
 
     if result.get("approved"):
