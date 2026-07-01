@@ -1227,6 +1227,46 @@ def _is_pool_swept(pool_type: str, level: float, current_price: float,
     return False
 
 
+async def _ask_ob_entry_in_watching(price, ob, ob_dir, liq_type, liq_level, chart_stage, result) -> str:
+    """ถาม Claude สั้นๆ ว่าควรเข้า OB ไหม แม้ liq_gate ยังไม่ sweep"""
+    try:
+        import anthropic as _anth
+        from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
+        _client = _anth.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        _bias_s   = result.get("stages", {}).get("bias", {})
+        _h4       = _bias_s.get("overall_bias") or "?"
+        _h1_dir   = _bias_s.get("trade_direction") or "?"
+        _chart_r  = chart_stage.get("vote_reasoning") or chart_stage.get("reasoning") or "?"
+        _sl_zone  = ob.get("bottom") if ob_dir == "BUY" else ob.get("top")
+        _ob_bot   = ob.get("bottom"); _ob_top = ob.get("top")
+
+        resp = _client.messages.create(
+            model=MODEL_SMART, max_tokens=300,
+            messages=[{"role": "user", "content": f"""XAUUSD SMC — ราคาเข้า OB zone ขณะที่ bot กำลัง watch liquidity sweep
+
+สถานการณ์:
+- ราคา: {price} อยู่ใน {ob_dir} OB zone ({_ob_bot}–{_ob_top})
+- Liq Gate: {liq_type} ที่ {liq_level} ยังไม่ถูก sweep
+- Macro bias: H4={_h4} | Direction={_h1_dir}
+- Chart reasoning: {str(_chart_r)[:200]}
+
+คำถาม: ควรเข้า {ob_dir} ตอนนี้ไหม แม้ {liq_type} ยังไม่ sweep?
+
+ตอบสั้นๆ 2-3 บรรทัด: verdict (ENTER/WAIT/SKIP) + เหตุผลหลัก 1 ข้อ + ถ้า ENTER ให้ระบุ SL zone"""}]
+        )
+        _txt = resp.content[0].text.strip()
+        # แปลง verdict เป็น emoji
+        if "ENTER" in _txt.upper():
+            return f"🤖 *AI: ควรเข้า*\n_{_txt}_"
+        elif "SKIP" in _txt.upper():
+            return f"🤖 *AI: ข้ามไป*\n_{_txt}_"
+        else:
+            return f"🤖 *AI: รอก่อน*\n_{_txt}_"
+    except Exception as _e:
+        return f"🤖 AI วิเคราะห์ไม่ได้: {_e}"
+
+
 async def _handle_scan_result(result: dict, send_fn):
     """
     ถ้ามี open trade ค้างอยู่ → Advisory mode (แจ้ง + confidence + ปุ่มให้กดเอง)
@@ -1309,9 +1349,17 @@ async def _handle_scan_result(result: dict, send_fn):
                         float(_bear_ob["bottom"]) <= _px <= float(_bear_ob["top"])
 
             if _in_bull or _in_bear:
-                _ob_label = f"Bull OB `{_bull_ob.get('bottom')}–{_bull_ob.get('top')}`" if _in_bull \
-                       else f"Bear OB `{_bear_ob.get('bottom')}–{_bear_ob.get('top')}`"
+                _ob      = _bull_ob if _in_bull else _bear_ob
+                _ob_label = f"Bull OB `{_ob.get('bottom')}–{_ob.get('top')}`" if _in_bull \
+                       else f"Bear OB `{_ob.get('bottom')}–{_ob.get('top')}`"
                 _ob_dir   = "BUY" if _in_bull else "SELL"
+
+                # ถาม Claude ว่าควรเข้าไหม แม้ liq_gate ยังไม่ sweep
+                _ob_verdict = await _ask_ob_entry_in_watching(
+                    price=_px, ob=_ob, ob_dir=_ob_dir,
+                    liq_type=_pool_type, liq_level=_liq_level,
+                    chart_stage=_chart_s, result=result,
+                )
                 await _safe_send(
                     send_fn,
                     f"⚠️ *ราคาเข้า OB ขณะ Watching!*\n"
@@ -1319,7 +1367,8 @@ async def _handle_scan_result(result: dict, send_fn):
                     f"📍 ราคา `{_price}` อยู่ใน {_ob_label}\n"
                     f"🔒 {_pool_type} {_liq_line} ยังไม่ sweep — gate ยังปิด\n"
                     f"👁 _(Watching since {_since})_\n"
-                    f"⚡ ถ้า {_pool_type} sweep ตอนนี้ → {_ob_dir} entry ทันที",
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"{_ob_verdict}",
                     parse_mode="Markdown"
                 )
             else:
