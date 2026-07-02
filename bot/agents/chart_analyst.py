@@ -191,6 +191,16 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ AMD — {amd.get('amd_signal')} {amd.get('amd_stars','')} score={amd.get('amd_score')}")
         return True
 
+    # ── ชั้น 7: Recent OB Rejection (CASE G) — rejection เพิ่งเกิดใน 5 แท่ง ──
+    _bear_rej = smc_summary.get("recent_bear_ob_rejection")
+    _bull_rej = smc_summary.get("recent_bull_ob_rejection")
+    if _bear_rej and _bear_rej.get("bars_ago", 99) <= 3:
+        print(f"[has_signal] ✅ OB_REJECTION (BEAR) — zone={_bear_rej.get('ob_zone')} bars_ago={_bear_rej.get('bars_ago')}")
+        return True
+    if _bull_rej and _bull_rej.get("bars_ago", 99) <= 3:
+        print(f"[has_signal] ✅ OB_REJECTION (BULL) — zone={_bull_rej.get('ob_zone')} bars_ago={_bull_rej.get('bars_ago')}")
+        return True
+
     print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
     return False
 
@@ -391,6 +401,10 @@ def analyze(smc_summary: dict = None) -> dict:
         f"  - major pool (EQH/EQL) = target ใหญ่, minor pool (swing) = inducement ก่อนถึง major\n"
         f"  - ถ้า BSL/SSL ถูก swept แล้ว (SWEPT) = ราคาจะ reverse ได้เลย"
     )
+    # recent OB rejection fields
+    _recent_bear_rej = smc_summary.get("recent_bear_ob_rejection")
+    _recent_bull_rej = smc_summary.get("recent_bull_ob_rejection")
+
     _bear_ob   = smc_summary.get("active_bear_ob") or {}
     _bull_ob   = smc_summary.get("active_bull_ob") or {}
     dist_to_bear_ob = round(abs(price_now - _bear_ob.get("bottom", price_now + 9999)) * 10, 1) if _bear_ob else 9999
@@ -568,6 +582,12 @@ MARKET DATA
   Sweep High:  {adv.get('recent_sweep_high','–')} ({sweep_h_age} bars ago)
   Confirm:     Bull={adv.get('bull_candle')} Bear={adv.get('bear_candle')}
   {momentum_warn}
+
+🔁 RECENT OB REJECTION (ตรวจจาก 5 แท่งล่าสุด — ใช้สำหรับ CASE G):
+  Bear OB rejection: {f"⚠️ SELL rejection ที่ {_recent_bear_rej['ob_zone']} — {_recent_bear_rej['bars_ago']} แท่งที่แล้ว (OB_REJECTION_SELL)" if _recent_bear_rej else "ไม่มี"}
+  Bull OB rejection: {f"⚠️ BUY rejection ที่ {_recent_bull_rej['ob_zone']} — {_recent_bull_rej['bars_ago']} แท่งที่แล้ว (OB_REJECTION_BUY)" if _recent_bull_rej else "ไม่มี"}
+  กฎ: ถ้ามี recent rejection (bars_ago ≤ 3) → CASE G ใช้ได้ แม้ราคาออกจาก OB ไปแล้ว
+      ระบุ "ob rejection" ใน vote_reasoning เพื่อ bypass liq_gate ได้
 
 {liq_map_block}
 
@@ -845,14 +865,20 @@ STEP 3 — ตัดสินใจและโหวต
 1. ★★★ CASE F1 — nearest_bsl SWEPT + bearish reject → SELL, setup_type=BSL_SWEEP_SELL (liquidity sweep = highest conviction)
    ★★★ CASE F2 — nearest_ssl SWEPT + bullish reject → BUY,  setup_type=SSL_SWEEP_BUY  (liquidity sweep = highest conviction)
 1.5. ★★ CASE G — OB Rejection (ไม่ต้องรอ sweep ถ้า rejection ชัด):
-   🔴 G1 — OB_REJECTION_SELL: ราคาอยู่ใน Bear OB zone + bearish rejection candle (wick ยาวบน / bear engulf / strong close ลง)
-            → SELL | setup_type=OB_REJECTION_SELL
-            vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bearish rejection ที่ Bear OB"
-            SL: Bear OB top + 10-15 จุด | TP: nearest_ssl / PDL / Bull OB ใต้ราคา
-   🟢 G2 — OB_REJECTION_BUY: ราคาอยู่ใน Bull OB zone + bullish rejection candle (wick ยาวล่าง / bull engulf / strong close ขึ้น)
-            → BUY | setup_type=OB_REJECTION_BUY
-            vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bullish rejection ที่ Bull OB"
-            SL: Bull OB bottom - 10-15 จุด | TP: nearest_bsl / PDH / Bear OB เหนือราคา
+   🔴 G1 — OB_REJECTION_SELL:
+      ทริกเกอร์ได้ 2 แบบ:
+        (a) ราคาอยู่ใน Bear OB ตอนนี้ + bearish rejection candle
+        (b) recent_bear_ob_rejection แสดงว่ามี rejection ใน 3 แท่งล่าสุด (ราคาออกมาแล้ว แต่ setup ยังใหม่)
+      → SELL | setup_type=OB_REJECTION_SELL
+      vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bearish rejection ที่ Bear OB"
+      SL: Bear OB top + 10-15 จุด | TP: nearest_ssl / PDL / Bull OB ใต้ราคา
+   🟢 G2 — OB_REJECTION_BUY:
+      ทริกเกอร์ได้ 2 แบบ:
+        (a) ราคาอยู่ใน Bull OB ตอนนี้ + bullish rejection candle
+        (b) recent_bull_ob_rejection แสดงว่ามี rejection ใน 3 แท่งล่าสุด (ราคาออกมาแล้ว แต่ setup ยังใหม่)
+      → BUY | setup_type=OB_REJECTION_BUY
+      vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bullish rejection ที่ Bull OB"
+      SL: Bull OB bottom - 10-15 จุด | TP: nearest_bsl / PDH / Bear OB เหนือราคา
    ⚠️ CASE G confidence ต่ำกว่า CASE F เพราะไม่มี sweep confirmation — ระบุ confidence 50-70
 2. ★★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (support+trend ตรงกัน)
    ★★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (resistance+trend ตรงกัน)

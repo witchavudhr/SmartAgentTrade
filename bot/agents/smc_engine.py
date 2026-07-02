@@ -1819,4 +1819,57 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         except Exception:
             summary["amd"] = {"amd_signal": None, "amd_score": 0}
 
+        # ── Recent OB Rejection (ตรวจว่าเพิ่งมี rejection ที่ OB ใน 5 แท่งล่าสุด) ──
+        # ใช้เมื่อ price ออกจาก OB ไปแล้ว แต่ rejection เพิ่งเกิด → CASE G ยังใช้ได้
+        try:
+            _lookback = 5
+            _recent   = df.iloc[-_lookback:].reset_index(drop=True)
+
+            _bear_rej = None
+            _bull_rej = None
+
+            if active_bear_ob:
+                _ob_bot = active_bear_ob.bottom
+                _ob_top = active_bear_ob.top
+                for _i, _row in _recent.iterrows():
+                    if _row['high'] >= _ob_bot:          # wick/body แตะ Bear OB
+                        _this_bear = _row['close'] < _row['open']
+                        _next_bear = False
+                        if _i + 1 < len(_recent):
+                            _nxt = _recent.iloc[_i + 1]
+                            _next_bear = (_nxt['close'] < _nxt['open']
+                                          and _nxt['close'] < _ob_bot)
+                        if _this_bear or _next_bear:
+                            _bear_rej = {
+                                "ob_zone": [round(_ob_bot, 2), round(_ob_top, 2)],
+                                "bars_ago": int(_lookback - 1 - _i),
+                                "direction": "SELL",
+                            }
+                            break
+
+            if active_bull_ob:
+                _ob_bot = active_bull_ob.bottom
+                _ob_top = active_bull_ob.top
+                for _i, _row in _recent.iterrows():
+                    if _row['low'] <= _ob_top:           # wick/body แตะ Bull OB
+                        _this_bull = _row['close'] > _row['open']
+                        _next_bull = False
+                        if _i + 1 < len(_recent):
+                            _nxt = _recent.iloc[_i + 1]
+                            _next_bull = (_nxt['close'] > _nxt['open']
+                                          and _nxt['close'] > _ob_top)
+                        if _this_bull or _next_bull:
+                            _bull_rej = {
+                                "ob_zone": [round(_ob_bot, 2), round(_ob_top, 2)],
+                                "bars_ago": int(_lookback - 1 - _i),
+                                "direction": "BUY",
+                            }
+                            break
+
+            summary["recent_bear_ob_rejection"] = _bear_rej
+            summary["recent_bull_ob_rejection"] = _bull_rej
+        except Exception:
+            summary["recent_bear_ob_rejection"] = None
+            summary["recent_bull_ob_rejection"] = None
+
     return summary
