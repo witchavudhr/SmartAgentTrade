@@ -201,6 +201,12 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ OB_REJECTION (BULL) — zone={_bull_rej.get('ob_zone')} bars_ago={_bull_rej.get('bars_ago')}")
         return True
 
+    # ── ชั้น 8: Post-Sweep Continuation Pullback (CASE H) ────────────
+    _post = smc_summary.get("post_sweep_continuation")
+    if _post:
+        print(f"[has_signal] ✅ POST_SWEEP_CONT — dir={_post.get('direction')} pb={_post.get('pullback_pct')}% drop={_post.get('initial_drop_pts') or _post.get('initial_rise_pts')}p")
+        return True
+
     print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
     return False
 
@@ -404,6 +410,8 @@ def analyze(smc_summary: dict = None) -> dict:
     # recent OB rejection fields
     _recent_bear_rej = smc_summary.get("recent_bear_ob_rejection")
     _recent_bull_rej = smc_summary.get("recent_bull_ob_rejection")
+    _ob_quality      = smc_summary.get("ob_quality") or {}
+    _post_cont       = smc_summary.get("post_sweep_continuation")
 
     _bear_ob   = smc_summary.get("active_bear_ob") or {}
     _bull_ob   = smc_summary.get("active_bull_ob") or {}
@@ -588,6 +596,15 @@ MARKET DATA
   Bull OB rejection: {f"⚠️ BUY rejection ที่ {_recent_bull_rej['ob_zone']} — {_recent_bull_rej['bars_ago']} แท่งที่แล้ว (OB_REJECTION_BUY)" if _recent_bull_rej else "ไม่มี"}
   กฎ: ถ้ามี recent rejection (bars_ago ≤ 3) → CASE G ใช้ได้ แม้ราคาออกจาก OB ไปแล้ว
       ระบุ "ob rejection" ใน vote_reasoning เพื่อ bypass liq_gate ได้
+
+📐 OB QUALITY (ระยะห่าง OB จาก sweep level — OB ใกล้ sweep เกิน = ไม่มีพื้นที่ accumulate):
+  Bear OB sweep gap: {f"{_ob_quality.get('bear_ob_sweep_gap_pts','?')}p → quality={_ob_quality.get('bear_ob_quality','?')}" if _ob_quality.get('bear_ob_quality') else "ไม่มีข้อมูล (ไม่มี sweep หรือ OB)"}
+  Bull OB sweep gap: {f"{_ob_quality.get('bull_ob_sweep_gap_pts','?')}p → quality={_ob_quality.get('bull_ob_quality','?')}" if _ob_quality.get('bull_ob_quality') else "ไม่มีข้อมูล"}
+  กฎ quality: HIGH(≥100p) = OB ดีมาก | MEDIUM(50-99p) = ใช้ได้ | LOW(<50p) = OB ใกล้ sweep เกิน → confidence ต่ำ ลด 10-20
+  เหตุผล: smart money ต้องการพื้นที่สะสม position ก่อน sweep ถ้า OB อยู่ชิด sweep = ไม่มี accumulation = rejection อ่อน
+
+🔄 POST-SWEEP CONTINUATION (pullback หลัง sweep+rejection — ใช้สำหรับ CASE H):
+{f"  ⚡ {_post_cont['direction']} continuation: sweep ที่ {_post_cont['sweep_level']} ({_post_cont['sweep_age_bars']} bars ago)" + chr(10) + f"  วิ่งไปแล้ว {_post_cont.get('initial_drop_pts') or _post_cont.get('initial_rise_pts')}p | pullback กลับมา {_post_cont['pullback_pts']}p ({_post_cont['pullback_pct']}%) → entry opportunity" if _post_cont else "  ไม่มี (ไม่มี sweep ล่าสุด หรือ pullback ยังไม่เกิด)"}
 
 {liq_map_block}
 
@@ -858,6 +875,10 @@ STEP 3 — ตัดสินใจและโหวต
 หลักการ: ซื้อแนวรับ ขายแนวต้าน — ราคาต้องถึง OB ก่อนเสมอ ไม่ trade กลางอากาศ
 
 ลำดับ priority (ไล่ตามความ confidence สูงสุด → ต่ำสุด):
+-2. 📐 OB Quality Check (ทำก่อนทุกอย่าง):
+    ดู ob_quality ใน MARKET DATA → ถ้า quality=LOW (<50p จาก sweep) → ลด confidence 15-20 คะแนน
+    เหตุผล: OB ที่อยู่ใกล้ sweep level เกิน = smart money ไม่มีพื้นที่ accumulate ก่อน sweep → rejection อ่อน
+    ตัวอย่าง: BSL sweep ที่ 3300 + Bear OB top ที่ 3298 (gap=20p) = LOW quality → confidence สูงสุดได้แค่ 60
 -1. ⛔ ตรวจ Liquidity Gate ก่อน: BUY + SSL intact < 500p + macro BEAR → NO_TRADE (รอ SSL sweep)
                                   SELL + BSL intact < 500p + macro BULL → NO_TRADE (รอ BSL sweep)
     🟡 ยกเว้น Liq Gate: ถ้า CASE G ผ่าน (ob rejection ชัดเจน) → ข้าม gate ได้ ไม่ต้องรอ sweep
@@ -880,6 +901,21 @@ STEP 3 — ตัดสินใจและโหวต
       vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bullish rejection ที่ Bull OB"
       SL: Bull OB bottom - 10-15 จุด | TP: nearest_bsl / PDH / Bear OB เหนือราคา
    ⚠️ CASE G confidence ต่ำกว่า CASE F เพราะไม่มี sweep confirmation — ระบุ confidence 50-70
+1.7. ★★ CASE H — Post-Sweep Continuation Pullback:
+   🔴 H1 — POST_SWEEP_PULLBACK_SELL:
+      BSL ถูก sweep แล้ว + ราคาวิ่งลงมาแล้ว + ตอนนี้มี pullback กลับขึ้น (15-65% retracement)
+      → SELL ที่ pullback นี้ ตามทิศ sweep rejection
+      Entry: ราคาปัจจุบัน หรือรอ pullback ชะลอ (ดู Bear OB ที่ใกล้ราคาสุดเป็น SL)
+      SL: Bear OB top + 10-15p (ถ้ามี) หรือ swing high ล่าสุด + 10p
+      TP: low ก่อนหน้า / nearest_ssl / Bull OB ใต้ราคา
+      setup_type = POST_SWEEP_PULLBACK_SELL
+      ⚠️ ลำดับความสำคัญ: ถ้าตอนนี้ pullback มาแตะ Bear OB พอดี → confidence สูงมาก (CASE F + H รวมกัน)
+         ถ้า pullback ไม่มี OB รองรับ → confidence ปานกลาง (50-65) แต่ก็ valid
+   🟢 H2 — POST_SWEEP_PULLBACK_BUY:
+      SSL ถูก sweep แล้ว + ราคาวิ่งขึ้นไปแล้ว + ตอนนี้มี pullback ลงมา (15-65% retracement)
+      → BUY ที่ pullback นี้ ตามทิศ sweep rejection
+      SL: Bull OB bottom - 10-15p (ถ้ามี) หรือ swing low ล่าสุด - 10p
+      setup_type = POST_SWEEP_PULLBACK_BUY
 2. ★★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (support+trend ตรงกัน)
    ★★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (resistance+trend ตรงกัน)
 3. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK
@@ -908,7 +944,7 @@ STEP 3 — ตัดสินใจและโหวต
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "BSL_SWEEP_SELL/SSL_SWEEP_BUY/OB_REJECTION_SELL/OB_REJECTION_BUY/TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "BSL_SWEEP_SELL/SSL_SWEEP_BUY/OB_REJECTION_SELL/OB_REJECTION_BUY/POST_SWEEP_PULLBACK_SELL/POST_SWEEP_PULLBACK_BUY/TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
   "sr_level": ราคา S/R ที่ใช้เป็น entry reference (เฉพาะ SR_SELL/SR_BUY) หรือ null,
   "liquidity_target": ราคา BSL หรือ SSL pool ที่ราคากำลังมุ่งหา (เฉพาะ F cases หรือ NO_TRADE ที่รอ sweep) หรือ null,
   "inducement_level": ราคา inducement pool ถ้ามี (minor pool ที่อยู่ระหว่างราคากับ target) หรือ null,

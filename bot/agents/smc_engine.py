@@ -1872,4 +1872,85 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             summary["recent_bear_ob_rejection"] = None
             summary["recent_bull_ob_rejection"] = None
 
+        # ── OB Quality: ระยะห่าง OB จาก sweep level ──────────────────────
+        # OB ที่ดีต้องไม่ใกล้ sweep เกิน (smart money ต้องมีพื้นที่ accumulate ก่อน sweep)
+        # OB ใกล้ sweep level เกิน = ไม่มีพื้นที่สะสม → rejection อ่อน
+        try:
+            _ob_quality = {}
+            if last_sweep and active_bear_ob:
+                # BSL sweep (high swept) + Bear OB
+                if last_sweep.kind == 'high':
+                    _gap = (last_sweep.level - active_bear_ob.top) * 10  # แปลงเป็น points
+                    _ob_quality["bear_ob_sweep_gap_pts"] = round(_gap, 0)
+                    _ob_quality["bear_ob_quality"] = (
+                        "HIGH" if _gap >= 100 else
+                        "MEDIUM" if _gap >= 50 else
+                        "LOW"  # OB ใกล้ sweep เกิน — ไม่มีพื้นที่ accumulate
+                    )
+            if last_sweep and active_bull_ob:
+                # SSL sweep (low swept) + Bull OB
+                if last_sweep.kind == 'low':
+                    _gap = (active_bull_ob.bottom - last_sweep.level) * 10
+                    _ob_quality["bull_ob_sweep_gap_pts"] = round(_gap, 0)
+                    _ob_quality["bull_ob_quality"] = (
+                        "HIGH" if _gap >= 100 else
+                        "MEDIUM" if _gap >= 50 else
+                        "LOW"
+                    )
+            summary["ob_quality"] = _ob_quality
+        except Exception:
+            summary["ob_quality"] = {}
+
+        # ── Post-Sweep Continuation Pullback ──────────────────────────────
+        # หลัง sweep + rejection → ราคาวิ่งตามทิศ → ตอนนี้มี pullback เล็กน้อย → entry ตามทิศ
+        try:
+            _adv_tmp = summary.get("advanced") or {}
+            _sw_age_h = int(_adv_tmp.get("sweep_h_age_bars") or 999)
+            _sw_age_l = int(_adv_tmp.get("sweep_l_age_bars") or 999)
+            _post_cont = None
+
+            if last_sweep and last_sweep.kind == 'high' and _sw_age_h <= 10:
+                # BSL swept → expect SELL continuation
+                _sw_lvl   = last_sweep.level
+                _bars_back = min(_sw_age_h, len(df) - 1)
+                _low_since = df['low'].iloc[-_bars_back:].min() if _bars_back > 0 else current_price
+                _initial_drop = (_sw_lvl - _low_since) * 10       # points — ราคาวิ่งลงไปเท่าไหร่
+                _pullback_now = (current_price - _low_since) * 10  # points — retrace กลับมาเท่าไหร่
+                if _initial_drop >= 30 and _pullback_now >= 10:
+                    _pb_pct = _pullback_now / _initial_drop
+                    if 0.15 <= _pb_pct <= 0.65:   # pullback 15-65% = valid re-entry zone
+                        _post_cont = {
+                            "direction":       "SELL",
+                            "sweep_level":     round(_sw_lvl, 2),
+                            "sweep_age_bars":  _sw_age_h,
+                            "initial_drop_pts": round(_initial_drop, 0),
+                            "pullback_pts":    round(_pullback_now, 0),
+                            "pullback_pct":    round(_pb_pct * 100, 0),
+                            "low_since_sweep": round(_low_since, 2),
+                        }
+
+            elif last_sweep and last_sweep.kind == 'low' and _sw_age_l <= 10:
+                # SSL swept → expect BUY continuation
+                _sw_lvl   = last_sweep.level
+                _bars_back = min(_sw_age_l, len(df) - 1)
+                _high_since = df['high'].iloc[-_bars_back:].max() if _bars_back > 0 else current_price
+                _initial_rise = (_high_since - _sw_lvl) * 10
+                _pullback_now = (_high_since - current_price) * 10
+                if _initial_rise >= 30 and _pullback_now >= 10:
+                    _pb_pct = _pullback_now / _initial_rise
+                    if 0.15 <= _pb_pct <= 0.65:
+                        _post_cont = {
+                            "direction":        "BUY",
+                            "sweep_level":      round(_sw_lvl, 2),
+                            "sweep_age_bars":   _sw_age_l,
+                            "initial_rise_pts": round(_initial_rise, 0),
+                            "pullback_pts":     round(_pullback_now, 0),
+                            "pullback_pct":     round(_pb_pct * 100, 0),
+                            "high_since_sweep": round(_high_since, 2),
+                        }
+
+            summary["post_sweep_continuation"] = _post_cont
+        except Exception:
+            summary["post_sweep_continuation"] = None
+
     return summary
