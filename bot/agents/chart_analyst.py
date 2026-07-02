@@ -840,9 +840,20 @@ STEP 3 — ตัดสินใจและโหวต
 ลำดับ priority (ไล่ตามความ confidence สูงสุด → ต่ำสุด):
 -1. ⛔ ตรวจ Liquidity Gate ก่อน: BUY + SSL intact < 500p + macro BEAR → NO_TRADE (รอ SSL sweep)
                                   SELL + BSL intact < 500p + macro BULL → NO_TRADE (รอ BSL sweep)
+    🟡 ยกเว้น Liq Gate: ถ้า CASE G ผ่าน (ob rejection ชัดเจน) → ข้าม gate ได้ ไม่ต้องรอ sweep
 0. ถ้าไม่มีอะไรผ่านเลย → NO_TRADE รอ แต่ระบุว่า liquidity target อยู่ตรงไหน
 1. ★★★ CASE F1 — nearest_bsl SWEPT + bearish reject → SELL, setup_type=BSL_SWEEP_SELL (liquidity sweep = highest conviction)
    ★★★ CASE F2 — nearest_ssl SWEPT + bullish reject → BUY,  setup_type=SSL_SWEEP_BUY  (liquidity sweep = highest conviction)
+1.5. ★★ CASE G — OB Rejection (ไม่ต้องรอ sweep ถ้า rejection ชัด):
+   🔴 G1 — OB_REJECTION_SELL: ราคาอยู่ใน Bear OB zone + bearish rejection candle (wick ยาวบน / bear engulf / strong close ลง)
+            → SELL | setup_type=OB_REJECTION_SELL
+            vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bearish rejection ที่ Bear OB"
+            SL: Bear OB top + 10-15 จุด | TP: nearest_ssl / PDL / Bull OB ใต้ราคา
+   🟢 G2 — OB_REJECTION_BUY: ราคาอยู่ใน Bull OB zone + bullish rejection candle (wick ยาวล่าง / bull engulf / strong close ขึ้น)
+            → BUY | setup_type=OB_REJECTION_BUY
+            vote_reasoning ต้องระบุว่า "ob rejection" หรือ "bullish rejection ที่ Bull OB"
+            SL: Bull OB bottom - 10-15 จุด | TP: nearest_bsl / PDH / Bear OB เหนือราคา
+   ⚠️ CASE G confidence ต่ำกว่า CASE F เพราะไม่มี sweep confirmation — ระบุ confidence 50-70
 2. ★★ ราคาที่ Bull OB + macro BULL → BUY, setup_type=TREND_OB (support+trend ตรงกัน)
    ★★ ราคาที่ Bear OB + macro BEAR → SELL, setup_type=TREND_OB (resistance+trend ตรงกัน)
 3. ★★ BOS ขึ้น + pullback มา Bear OB เดิม + macro BULL → BUY, setup_type=BREAKER_BLOCK
@@ -871,7 +882,7 @@ STEP 3 — ตัดสินใจและโหวต
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — ระบุ Case A/B/C + zone + เหตุผล",
   "signal": "BUY/SELL/NO_TRADE",
-  "setup_type": "BSL_SWEEP_SELL/SSL_SWEEP_BUY/TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
+  "setup_type": "BSL_SWEEP_SELL/SSL_SWEEP_BUY/OB_REJECTION_SELL/OB_REJECTION_BUY/TREND_OB/BREAKER_BLOCK/TREND_BOS_BREAK/BULL_OB_SWEEP_REJECT/BULL_OB_ENTRY/EQL_SWEEP_BUY/EQH_SWEEP_SELL/AMD_BUY/AMD_SELL/SR_SELL/SR_BUY/WAIT_FOR_OB/NO_TRADE",
   "sr_level": ราคา S/R ที่ใช้เป็น entry reference (เฉพาะ SR_SELL/SR_BUY) หรือ null,
   "liquidity_target": ราคา BSL หรือ SSL pool ที่ราคากำลังมุ่งหา (เฉพาะ F cases หรือ NO_TRADE ที่รอ sweep) หรือ null,
   "inducement_level": ราคา inducement pool ถ้ามี (minor pool ที่อยู่ระหว่างราคากับ target) หรือ null,

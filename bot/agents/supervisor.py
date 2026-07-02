@@ -97,13 +97,24 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
         _vote_reason = (analysis.get("vote_reasoning") or "").lower()
         _trade_plan  = (analysis.get("trade_plan") or "").lower()
         _reasoning   = (analysis.get("reasoning") or "").lower()
+        _all_text = _vote_reason + _trade_plan + _reasoning
+
+        # ── Bypass keywords: ถ้า Claude บอกว่า sweep เพิ่งเกิดแล้ว + rejection → ไม่ gate ──
+        _bypass_keywords = (
+            "bsl ถูก sweep", "ssl ถูก sweep", "sweep แล้ว", "swept already",
+            "rejection ที่ ob", "ob rejection", "wick rejection", "bearish rejection",
+            "bullish rejection", "rejection candle", "หลัง sweep", "after sweep",
+            "sweep เกิดแล้ว", "bsl swept", "ssl swept",
+        )
+        _is_post_sweep_rejection = any(kw in _all_text for kw in _bypass_keywords)
+
         _liq_keywords = ("รอ ssl", "รอ bsl", "liquidity gate", "ssl ยัง", "bsl ยัง",
                          "ยังไม่ถูก sweep", "wait for ssl", "wait for bsl", "ssl intact", "bsl intact")
-        if any(kw in _vote_reason + _trade_plan + _reasoning for kw in _liq_keywords):
+        if any(kw in _all_text for kw in _liq_keywords) and not _is_post_sweep_rejection:
             result["liq_gate_blocked"]  = True
             result["liq_gate_level"]    = analysis.get("liquidity_target")
             result["liq_gate_map_read"] = analysis.get("liquidity_map_read", "")
-            result["liq_gate_signal"]   = analysis.get("signal")  # BUY หรือ SELL ที่อยากเข้า
+            result["liq_gate_signal"]   = analysis.get("signal")
         return result
 
     # ── Stage 3: Bias Analyst (Sonnet, cached) — รู้ signal แล้ว ─
