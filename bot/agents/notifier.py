@@ -3039,7 +3039,8 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
     global _dashboard_scan_running
 
     # ข้ามนอก session window 06:00-23:00 Thai time
-    _now_th = datetime.now(tz=_THAI_TZ_RUN)
+    from datetime import timezone as _tz, timedelta as _tdd
+    _now_th = datetime.now(tz=_tz(_tdd(hours=7)))
     if not (6 <= _now_th.hour < 23):
         return
 
