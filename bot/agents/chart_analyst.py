@@ -109,6 +109,61 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
 
     return df5, summary
 
+def _haiku_precheck(smc_summary: dict) -> dict:
+    """
+    ถาม Haiku (ถูกกว่า 10x) ว่ามี SMC setup จริงๆมั้ย ก่อนส่ง Sonnet
+    คืน {"pass": bool, "reason": str}
+    """
+    price    = smc_summary.get("current_price", 0)
+    bias     = smc_summary.get("bias", "neutral")
+    bull_ob  = smc_summary.get("active_bull_ob") or {}
+    bear_ob  = smc_summary.get("active_bear_ob") or {}
+    sweep    = smc_summary.get("last_sweep")
+    liq      = smc_summary.get("liquidity") or {}
+    post_c   = smc_summary.get("post_sweep_continuation")
+    bear_rej = smc_summary.get("recent_bear_ob_rejection")
+    bull_rej = smc_summary.get("recent_bull_ob_rejection")
+    adv      = smc_summary.get("advanced") or {}
+
+    in_bull   = bull_ob.get("in_ob", False)
+    in_bear   = bear_ob.get("in_ob", False)
+    bull_dist = round(abs(price - (bull_ob.get("top") or price)) * 10) if bull_ob else 9999
+    bear_dist = round(abs(price - (bear_ob.get("bottom") or price)) * 10) if bear_ob else 9999
+    bsl_swept = (liq.get("nearest_bsl") or {}).get("swept", False)
+    ssl_swept = (liq.get("nearest_ssl") or {}).get("swept", False)
+
+    mini = (
+        f"XAUUSD M5 | price={price} | bias={bias}\n"
+        f"Bull OB: {bull_ob.get('bottom','?')}–{bull_ob.get('top','?')} {'IN_OB✅' if in_bull else f'dist={bull_dist}p'}\n"
+        f"Bear OB: {bear_ob.get('bottom','?')}–{bear_ob.get('top','?')} {'IN_OB✅' if in_bear else f'dist={bear_dist}p'}\n"
+        f"Last sweep: {f\"{sweep.get('kind')} at {sweep.get('level')}\" if sweep else 'none'}\n"
+        f"BSL swept: {bsl_swept} | SSL swept: {ssl_swept}\n"
+        f"Post-sweep pullback: {f\"{post_c.get('direction')} {post_c.get('pullback_pct')}%\" if post_c else 'none'}\n"
+        f"Recent OB rejection: bear={bool(bear_rej)} bull={bool(bull_rej)}\n"
+        f"BOS/CHoCH: {bool(smc_summary.get('last_bos'))} / {bool(smc_summary.get('last_choch'))}\n"
+        f"Momentum: bull={adv.get('momentum_bull',False)} bear={adv.get('momentum_bear',False)}"
+    )
+
+    try:
+        resp = client.messages.create(
+            model=MODEL_FAST,   # Haiku — 10x cheaper
+            max_tokens=20,
+            messages=[{"role": "user", "content": (
+                f"XAUUSD SMC snapshot:\n{mini}\n\n"
+                "Is there a valid entry setup RIGHT NOW?\n"
+                "YES if: price in/near OB (≤80p) AND (sweep happened OR rejection OR pullback detected)\n"
+                "NO if: price far from OB (>200p) with nothing actionable\n"
+                "Reply with only: YES or NO, then 3-5 words why"
+            )}]
+        )
+        txt = resp.content[0].text.strip()
+        passed = txt.upper().startswith("YES")
+        reason = txt[:60]
+        return {"pass": passed, "reason": reason}
+    except Exception as e:
+        return {"pass": True, "reason": f"haiku error→pass: {e}"}  # fail open
+
+
 def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     """
     เช็คเบื้องต้นว่ามี setup ที่น่าสนใจมั้ย (ไม่ใช้ Claude API)
@@ -294,6 +349,23 @@ def analyze(smc_summary: dict = None) -> dict:
             "reasoning": "SMC Engine ไม่พบ setup ที่ครบเงื่อนไข",
             "claude_called": False
         }
+
+    # ── Haiku Pre-check: ก่อนส่ง Sonnet ถาม Haiku ก่อนว่ามี setup จริงๆมั้ย ──
+    # Haiku ถูกกว่า 10x — ถ้า Haiku บอก NO → skip Sonnet ประหยัดเงิน
+    _pre = _haiku_precheck(smc_summary)
+    if not _pre["pass"]:
+        print(f"[Haiku pre-check] ❌ SKIP Sonnet — {_pre['reason']}")
+        return {
+            "signal": "NO_TRADE",
+            "confidence": 0,
+            "current_price": smc_summary.get("current_price"),
+            "analyzed_at": smc_summary.get("analyzed_at"),
+            "smc_bias": smc_summary.get("bias"),
+            "had_sweep": smc_summary.get("last_sweep") is not None,
+            "reasoning": f"[Haiku pre-check] {_pre['reason']}",
+            "claude_called": False,
+        }
+    print(f"[Haiku pre-check] ✅ PASS → calling Sonnet ({_pre['reason']})")
 
     adv  = smc_summary.get("advanced", {})
     sess = smc_summary.get("session", {})
@@ -978,7 +1050,7 @@ STEP 3 — ตัดสินใจและโหวต
 
     response = client.messages.create(
         model=MODEL_SMART,
-        max_tokens=3500,
+        max_tokens=2000,
         system=[{"type": "text", "text": _sys, "cache_control": {"type": "ephemeral"}}] if _sys else None,
         messages=[{"role": "user", "content": _usr}]
     )

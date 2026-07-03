@@ -1242,7 +1242,7 @@ async def _ask_ob_entry_in_watching(price, ob, ob_dir, liq_type, liq_level, char
         _ob_bot   = ob.get("bottom"); _ob_top = ob.get("top")
 
         resp = _client.messages.create(
-            model=MODEL_SMART, max_tokens=300,
+            model=MODEL_FAST, max_tokens=200,
             messages=[{"role": "user", "content": f"""XAUUSD SMC — ราคาเข้า OB zone ขณะที่ bot กำลัง watch liquidity sweep
 
 สถานการณ์:
