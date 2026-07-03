@@ -190,6 +190,14 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ IN_OB (M15) — bull_in={bull_ob.get('in_ob')} bear_in={bear_ob.get('in_ob')}")
         return True
 
+    # ── ชั้น 2.5: EQL/EQH Liquidity Sweep — CASE F priority ──────
+    # EQL = SSL, EQH = BSL — sweep เกิดแล้ว + recovered = สัญญาณแรง
+    eql_sweep = smc_summary.get("eql_sweep_signal")
+    eqh_sweep = smc_summary.get("eqh_sweep_signal")
+    if eql_sweep or eqh_sweep:
+        print(f"[has_signal] ✅ EQL/EQH SWEEP (CASE F equiv) — eql={eql_sweep} eqh={eqh_sweep}")
+        return True
+
     # ── ชั้น 3: TREND setup (priority รอง) ───────────────────────
     # NOTE: ถ้าอยากปิด cost filter นี้ → เปลี่ยน OB_NEARBY_THRESHOLD เป็น 9999
     OB_NEARBY_THRESHOLD  = 150  # จุด — ราคาต้องอยู่ภายในนี้จาก OB
@@ -231,13 +239,6 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     signal_type = smc_summary.get("signal_type")
     if signal_type and "C_" in str(signal_type):
         print(f"[has_signal] ✅ TYPE_C — signal_type={signal_type}")
-        return True
-
-    # ── ชั้น 5: EQL/EQH Liquidity Sweep signal ───────────────
-    eql_sweep = smc_summary.get("eql_sweep_signal")
-    eqh_sweep = smc_summary.get("eqh_sweep_signal")
-    if eql_sweep or eqh_sweep:
-        print(f"[has_signal] ✅ EQL/EQH SWEEP — eql={eql_sweep} eqh={eqh_sweep}")
         return True
 
     # ── ชั้น 6: AMD Pattern (Range→Sweep→CHoCH→BOS) ──────────

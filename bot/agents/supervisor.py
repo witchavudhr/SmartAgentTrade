@@ -21,7 +21,7 @@ def _md(text: str) -> str:
         text = text.replace(ch, f'\\{ch}')
     return text
 from datetime import datetime
-from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, USE_AGENT_SDK
+from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
 from agents.trade_log import get_performance_summary, get_loss_lesson_digest
 from agents.json_utils import safe_json_parse
@@ -84,15 +84,12 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
 
     result["stages"]["smc"] = "SIGNAL_FOUND"
 
-    # ── Stage 2: Chart Analyst (Sonnet or Agent SDK) ────────────
-    if USE_AGENT_SDK:
-        try:
-            from agents import chart_analyst_sdk
-            analysis = chart_analyst_sdk.analyze(smc_summary)
-        except Exception as _sdk_err:
-            print(f"[Supervisor] ⚠️ Agent SDK failed ({_sdk_err}) — falling back to chart_analyst")
-            analysis = chart_analyst.analyze(smc_summary)
-    else:
+    # ── Stage 2: Chart Analyst — SDK (subscription) → fallback API ──
+    try:
+        from agents import chart_analyst_agent
+        analysis = chart_analyst_agent.analyze(smc_summary)
+    except Exception as _sdk_err:
+        print(f"[Supervisor] ⚠️ Agent SDK failed ({_sdk_err}) — fallback to API")
         analysis = chart_analyst.analyze(smc_summary)
     signal     = analysis.get("signal", "NO_TRADE")
     confidence = analysis.get("confidence", 0)

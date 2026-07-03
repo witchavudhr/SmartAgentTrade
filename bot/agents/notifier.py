@@ -1267,12 +1267,13 @@ async def _ask_ob_entry_in_watching(price, ob, ob_dir, liq_type, liq_level, char
         return f"🤖 AI วิเคราะห์ไม่ได้: {_e}"
 
 
-async def _handle_scan_result(result: dict, send_fn):
+async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
     """
     ถ้ามี open trade ค้างอยู่ → Advisory mode (แจ้ง + confidence + ปุ่มให้กดเอง)
     ถ้าไม่มี open trade → Auto-execute ปกติ
-    Rejected → แจ้งสั้นๆ
+    Rejected → แจ้งสั้นๆ (ข้ามถ้า quiet=True)
     liq_gate_blocked → WATCHING alert (รอ SSL/BSL ถูก sweep)
+    quiet=True: ส่งเฉพาะ pattern alerts — ข้าม rejected + watching one-liner
     """
     from agents.smc_engine import get_session
 
@@ -1372,20 +1373,21 @@ async def _handle_scan_result(result: dict, send_fn):
                     parse_mode="Markdown"
                 )
             else:
-                # ไม่ใน OB — ส่ง one-liner ปกติ
-                _bull_dist = round(abs(_px - float(_bull_ob.get("top", _px))) * 10) if _bull_ob.get("top") else None
-                _bear_dist = round(abs(_px - float(_bear_ob.get("bottom", _px))) * 10) if _bear_ob.get("bottom") else None
-                _ob_dist_str = ""
-                if _bull_dist is not None:
-                    _ob_dist_str = f" | Bull OB ห่าง {_bull_dist}p"
-                elif _bear_dist is not None:
-                    _ob_dist_str = f" | Bear OB ห่าง {_bear_dist}p"
-                await _safe_send(
-                    send_fn,
-                    f"👁 *Watching {_pool_type} {_liq_line}* — ยังไม่ sweep _(since {_since})_\n"
-                    f"ราคา: `{_price}`{_ob_dist_str} | รอ {_pool_type} sweep แล้วค่อย {_liq_signal}",
-                    parse_mode="Markdown"
-                )
+                # ไม่ใน OB — ส่ง one-liner ปกติ (ข้ามถ้า quiet — ไม่ใช่ pattern ใหม่)
+                if not quiet:
+                    _bull_dist = round(abs(_px - float(_bull_ob.get("top", _px))) * 10) if _bull_ob.get("top") else None
+                    _bear_dist = round(abs(_px - float(_bear_ob.get("bottom", _px))) * 10) if _bear_ob.get("bottom") else None
+                    _ob_dist_str = ""
+                    if _bull_dist is not None:
+                        _ob_dist_str = f" | Bull OB ห่าง {_bull_dist}p"
+                    elif _bear_dist is not None:
+                        _ob_dist_str = f" | Bear OB ห่าง {_bear_dist}p"
+                    await _safe_send(
+                        send_fn,
+                        f"👁 *Watching {_pool_type} {_liq_line}* — ยังไม่ sweep _(since {_since})_\n"
+                        f"ราคา: `{_price}`{_ob_dist_str} | รอ {_pool_type} sweep แล้วค่อย {_liq_signal}",
+                        parse_mode="Markdown"
+                    )
         return
 
     if result.get("approved"):
@@ -1654,7 +1656,8 @@ async def _handle_scan_result(result: dict, send_fn):
         message += mt5_tag
         message += f"\n🤖 *Trade #{trade_id}* | `/closetrade` เมื่อปิด position"
         await _safe_send(send_fn, message, parse_mode="Markdown")
-    else:
+    elif not quiet:
+        # Rejected / NO_TRADE — ข้ามใน quiet mode (5-min auto scan)
         message = supervisor.format_alert(result)
         await _safe_send(send_fn, message, parse_mode="Markdown")
 
@@ -3255,7 +3258,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     async def send(text, **kw):
         await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
 
-    await _handle_scan_result(result, send)
+    await _handle_scan_result(result, send, quiet=quiet)
 
 # ── Main ───────────────────────────────────────────────
 
@@ -3412,16 +3415,13 @@ def run():
     # Free text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # 5-Minute Auto Scan — 06:00–18:00 Thai time (quiet mode, ไม่ส่ง scan notice)
-    # เดิมใช้ session-based 15-นาที — ปรับเป็น 5-นาที เพื่อ catch CHoCH+sweep เร็วขึ้น
-    # (ฟังก์ชัน _build_scan_windows() ยังอยู่เผื่อกลับมาใช้)
+    # 5-Minute Auto Scan — 06:00–23:00 Thai time (quiet mode)
     from datetime import timezone, timedelta as _td
     _THAI_TZ_RUN = timezone(timedelta(hours=7))
 
     async def _auto_scan_5min(ctx: ContextTypes.DEFAULT_TYPE):
-        """สแกนทุก 5 นาที 06:00–18:00 Thai time — quiet mode"""
         now_th = datetime.now(tz=_THAI_TZ_RUN)
-        if not (6 <= now_th.hour < 18):
+        if not (6 <= now_th.hour < 23):
             return
         if not bot_state.get("is_running", True):
             return

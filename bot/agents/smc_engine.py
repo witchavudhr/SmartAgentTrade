@@ -1804,10 +1804,35 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             pass
 
         # EQL / EQH Liquidity Sweep detection
+        # EQL = SSL (sell-side liquidity = equal lows)
+        # EQH = BSL (buy-side liquidity = equal highs)
+        # → ถ้า sweep เกิด ให้ยก last_sweep ขึ้นมา CASE F ด้วย
         try:
             eql_eqh = detect_eql_eqh_sweep(df, result)
             summary["eql_sweep_signal"] = eql_eqh.get("eql_sweep_signal")
             summary["eqh_sweep_signal"] = eql_eqh.get("eqh_sweep_signal")
+
+            # Unify EQL/EQH sweep กับ last_sweep — ให้ CASE F มองเห็นเหมือนกัน
+            _eql_sig = eql_eqh.get("eql_sweep_signal")
+            _eqh_sig = eql_eqh.get("eqh_sweep_signal")
+            if _eql_sig and not summary.get("last_sweep"):
+                # EQL swept = SSL swept → BUY opportunity
+                summary["last_sweep"] = {
+                    "kind":      "SSL",
+                    "level":     _eql_sig["eql_level"],
+                    "recovered": True,
+                    "source":    "EQL",
+                    "sweep_extreme": _eql_sig["sweep_low"],
+                }
+            elif _eqh_sig and not summary.get("last_sweep"):
+                # EQH swept = BSL swept → SELL opportunity
+                summary["last_sweep"] = {
+                    "kind":      "BSL",
+                    "level":     _eqh_sig["eqh_level"],
+                    "recovered": True,
+                    "source":    "EQH",
+                    "sweep_extreme": _eqh_sig["sweep_high"],
+                }
         except Exception:
             summary["eql_sweep_signal"] = None
             summary["eqh_sweep_signal"] = None
