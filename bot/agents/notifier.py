@@ -3037,6 +3037,12 @@ _dashboard_scan_running = False  # ป้องกัน concurrent scan จา�
 async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
     """Poll dashboard every 5s — if 'Scan Now' was clicked, run real supervisor.run()."""
     global _dashboard_scan_running
+
+    # ข้ามนอก session window 06:00-23:00 Thai time
+    _now_th = datetime.now(tz=_THAI_TZ_RUN)
+    if not (6 <= _now_th.hour < 23):
+        return
+
     if _dashboard_scan_running:
         return  # scan กำลังรันอยู่ ข้าม
 
@@ -3052,7 +3058,7 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         return
 
-    # Dashboard requested a scan — run supervisor with real MT5 data
+    # Dashboard requested a scan — quiet mode (alert เฉพาะตอนมี signal)
     _dashboard_scan_running = True
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
@@ -3062,12 +3068,7 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
         async def send(text, **kw):
             await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
 
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text="🖥️ *Dashboard Scan*",
-            parse_mode="Markdown"
-        )
-        await _handle_scan_result(result, send)
+        await _handle_scan_result(result, send, quiet=True)
     finally:
         _dashboard_scan_running = False
 
