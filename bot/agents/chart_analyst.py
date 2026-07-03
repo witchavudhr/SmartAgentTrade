@@ -278,6 +278,12 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ SWEEP_WATCH active — {_srw.get('direction')} watching since {_srw.get('watched_since')}")
         return True
 
+    # ── ชั้น 11: CASE K — CHoCH + Sweep → Rejection ─────────────────
+    _ck = smc_summary.get("choch_sweep_setup")
+    if _ck and _ck.get("confidence") in ("HIGH", "MEDIUM"):
+        print(f"[has_signal] ✅ CHOCH_SWEEP — dir={_ck['direction']} choch={_ck['choch_level']} sweep={_ck['sweep_level']} conf={_ck['confidence']}")
+        return True
+
     print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
     return False
 

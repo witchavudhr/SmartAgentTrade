@@ -3142,11 +3142,45 @@ def _update_pattern_state(result: dict, bot_state: dict) -> None:
     state_manager.set_field(bot_state, "ob_rejection_zones", _zones)
 
 
+async def _send_choch_sweep_alert(bot, choch_setup: dict) -> None:
+    """ส่ง Telegram alert แบบ lightweight เมื่อ CHoCH + Sweep ตรวจพบ (ไม่ต้องมี Claude)"""
+    direction  = choch_setup.get("direction", "?")
+    emoji      = "🟢" if direction == "BUY" else "🔴"
+    conf       = choch_setup.get("confidence", "?")
+    choch_lvl  = choch_setup.get("choch_level", "?")
+    sweep_lvl  = choch_setup.get("sweep_level", "?")
+    choch_age  = choch_setup.get("choch_age_bars", "?")
+    sweep_age  = choch_setup.get("sweep_age_bars", "?")
+    rej        = "✅ confirmed" if choch_setup.get("rejection_confirmed") else "⏳ watching"
+    price      = choch_setup.get("current_price", "?")
+
+    msg = (
+        f"👀 *CASE K — CHoCH + Sweep Alert*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{emoji} Direction: `{direction}` | Confidence: `{conf}`\n"
+        f"📐 CHoCH Level: `{choch_lvl}` ({choch_age} bars ago)\n"
+        f"💧 Sweep Level: `{sweep_lvl}` ({sweep_age} bars ago)\n"
+        f"🕯 Rejection: {rej}\n"
+        f"💰 Current: `{price}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ *เฝ้าระวัง* — รอ pullback กลับมา แล้วค่อย Confirm\n"
+        f"_Pullback ต้องไม่ทะลุ rejection level — ถ้าทะลุ = setup เสีย_\n"
+        f"_Rule-based alert เท่านั้น — ไม่ใช่ trade signal_"
+    )
+
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+    except Exception as _e:
+        print(f"[CASE K alert] Error: {_e}")
+
+
 async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     if not bot_state["is_running"]:
         return
 
-    session_label = (ctx.job.data or {}).get("session_label", "🔍 Auto Scan")
+    job_data = ctx.job.data or {}
+    session_label = job_data.get("session_label", "🔍 Auto Scan")
+    quiet = job_data.get("quiet", False)   # True = ไม่ส่ง scan notice (5-min auto scan)
 
     # ── ข้ามถ้าตลาดปิดสนิท (weekend / Christmas / New Year / Good Friday) ──
     from agents.smc_engine import is_market_holiday, get_holiday_warning
@@ -3161,22 +3195,24 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     blocked, block_reason = news_scout.should_block_trade()
     if blocked:
         print(f"[auto_scan] 📰 News block — {block_reason}")
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=f"📰 *Skip Scan — ข่าว High Impact*\n_{block_reason}_",
-            parse_mode="Markdown"
-        )
+        if not quiet:
+            await ctx.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"📰 *Skip Scan — ข่าว High Impact*\n_{block_reason}_",
+                parse_mode="Markdown"
+            )
         return
 
-    # แจ้งว่าเริ่ม scan session ไหน (+ holiday warning ถ้ามี)
-    scan_notice = f"{session_label} — กำลัง scan..."
-    if holiday_warn:
-        scan_notice += f"\n_{holiday_warn}_"
-    await ctx.bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
-        text=scan_notice,
-        parse_mode="Markdown"
-    )
+    # แจ้งว่าเริ่ม scan (เฉพาะ non-quiet mode เช่น /scan manual หรือ session window เดิม)
+    if not quiet:
+        scan_notice = f"{session_label} — กำลัง scan..."
+        if holiday_warn:
+            scan_notice += f"\n_{holiday_warn}_"
+        await ctx.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=scan_notice,
+            parse_mode="Markdown"
+        )
 
     _notify_scan_start()
     try:
@@ -3202,6 +3238,19 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── อัพเดต Pattern 1 & 3 state หลัง scan ─────────────────────
     _update_pattern_state(result, bot_state)
+
+    # ── CASE K: CHoCH + Sweep → ส่ง lightweight alert ────────────
+    _choch_setup = result.get("choch_sweep_setup")
+    if _choch_setup and _choch_setup.get("confidence") in ("HIGH", "MEDIUM"):
+        _choch_key = (
+            f"choch_{_choch_setup['direction']}"
+            f"_{_choch_setup['sweep_level']}"
+            f"_{_choch_setup['choch_level']}"
+        )
+        if bot_state.get("last_choch_alert_key") != _choch_key:
+            await _send_choch_sweep_alert(ctx.bot, _choch_setup)
+            bot_state["last_choch_alert_key"] = _choch_key
+            state_manager.save(bot_state)
 
     async def send(text, **kw):
         await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
@@ -3363,13 +3412,23 @@ def run():
     # Free text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Session-Based Scanning — 15 นาที ตามช่วง session จริง (DST-aware)
-    for scan_time, label in _build_scan_windows():
-        app.job_queue.run_daily(
-            auto_scan,
-            time=scan_time,
-            data={"session_label": label}
-        )
+    # 5-Minute Auto Scan — 06:00–18:00 Thai time (quiet mode, ไม่ส่ง scan notice)
+    # เดิมใช้ session-based 15-นาที — ปรับเป็น 5-นาที เพื่อ catch CHoCH+sweep เร็วขึ้น
+    # (ฟังก์ชัน _build_scan_windows() ยังอยู่เผื่อกลับมาใช้)
+    from datetime import timezone, timedelta as _td
+    _THAI_TZ_RUN = timezone(timedelta(hours=7))
+
+    async def _auto_scan_5min(ctx: ContextTypes.DEFAULT_TYPE):
+        """สแกนทุก 5 นาที 06:00–18:00 Thai time — quiet mode"""
+        now_th = datetime.now(tz=_THAI_TZ_RUN)
+        if not (6 <= now_th.hour < 18):
+            return
+        if not bot_state.get("is_running", True):
+            return
+        ctx.job.data = {**(ctx.job.data or {}), "quiet": True, "session_label": "🔄 5min"}
+        await auto_scan(ctx)
+
+    app.job_queue.run_repeating(_auto_scan_5min, interval=300, first=30)
 
     # Dashboard scan request poller — ทุก 5 วิ รับ Scan Now จาก UI
     app.job_queue.run_repeating(poll_dashboard_scan, interval=5, first=10)

@@ -35,6 +35,13 @@ _DEFAULT: dict = {
     # Pattern 3: จำ OB ที่โดน rejection ไว้ข้ามสแกน (TTL 60 นาที)
     # [{zone:[lo,hi], direction, rejected_at, expire_at, used}]
     "ob_rejection_zones": [],
+
+    # CASE K — dedup key ป้องกัน alert ซ้ำ CHoCH+sweep เดิม
+    "last_choch_alert_key": None,
+
+    # Agent SDK persistent IDs (สร้างครั้งเดียว)
+    "sdk_agent_id": None,
+    "sdk_env_id":   None,
 }
 
 

@@ -47,6 +47,10 @@ POSGUARD_CHECK_INTERVAL = int(os.getenv("POSGUARD_CHECK_INTERVAL", "10"))   # �
 MODEL_FAST = "claude-haiku-4-5"    # backtest confirm_signal (ถูก 12x)
 MODEL_SMART = "claude-sonnet-4-6"  # all voting agents + supervisor
 
+# Agent SDK — ใช้ Anthropic Managed Agents แทน messages.create()
+# ตั้งค่า USE_AGENT_SDK=true ใน .env เพื่อทดลอง (code เดิมยังอยู่)
+USE_AGENT_SDK = os.getenv("USE_AGENT_SDK", "false").lower() == "true"
+
 # Cache settings
 BIAS_CACHE_MINUTES = 60    # HTF bias cache 1 ชั่วโมง
 NEWS_CACHE_MINUTES = 30    # News cache 30 นาที

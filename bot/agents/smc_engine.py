@@ -1954,4 +1954,79 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         except Exception:
             summary["post_sweep_continuation"] = None
 
+        # ── CHoCH + Sweep → Rejection (CASE K) ──────────────────────────
+        # Pattern: CHoCH confirms reversal → sweep near CHoCH level → rejection → BUY/SELL alert
+        try:
+            summary["choch_sweep_setup"] = _detect_choch_sweep_setup(df, result, current_price)
+        except Exception:
+            summary["choch_sweep_setup"] = None
+
     return summary
+
+
+def _detect_choch_sweep_setup(df, result, current_price: float) -> dict | None:
+    """
+    CASE K — CHoCH + Liquidity Sweep → Rejection
+    มาบ่อยมาก: CHoCH ยืนยัน reversal → sweep ย้อนกลับ → rejection → BUY/SELL
+    """
+    n = len(df)
+    last_choch = result.last_choch
+    if not last_choch or n < 5:
+        return None
+
+    choch_age = n - 1 - last_choch.index
+    if choch_age > 30:  # CHoCH เก่าเกิน (30 bars = 2.5h บน M5)
+        return None
+
+    # BUY setup: bullish CHoCH + SSL sweep (sweep_low)
+    # SELL setup: bearish CHoCH + BSL sweep (sweep_high)
+    target_kind = "sweep_low" if last_choch.direction == "bullish" else "sweep_high"
+
+    best_sweep = None
+    best_age = 999
+    for s in (result.sweeps or []):
+        if s.kind != target_kind:
+            continue
+        s_age = n - 1 - s.index
+        if s_age <= 20 and s_age < best_age:
+            best_sweep = s
+            best_age = s_age
+
+    if not best_sweep:
+        return None
+
+    direction = "BUY" if last_choch.direction == "bullish" else "SELL"
+
+    # ตรวจ rejection candle ในช่วงหลัง sweep (≤5 แท่ง)
+    has_rejection = False
+    sweep_idx = best_sweep.index
+    for i in range(sweep_idx, min(sweep_idx + 6, n)):
+        row = df.iloc[i]
+        body = abs(row["close"] - row["open"])
+        total = row["high"] - row["low"]
+        if total < 0.01:
+            continue
+        if direction == "BUY" and row["close"] > row["open"] and body / total > 0.4:
+            has_rejection = True
+            break
+        elif direction == "SELL" and row["close"] < row["open"] and body / total > 0.4:
+            has_rejection = True
+            break
+
+    if has_rejection and best_age <= 5:
+        confidence = "HIGH"
+    elif best_age <= 12:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    return {
+        "direction":           direction,
+        "choch_level":         round(last_choch.level, 2),
+        "sweep_level":         round(best_sweep.level, 2),
+        "choch_age_bars":      int(choch_age),
+        "sweep_age_bars":      int(best_age),
+        "rejection_confirmed": has_rejection,
+        "confidence":          confidence,
+        "current_price":       round(current_price, 2),
+    }
