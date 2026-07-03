@@ -1819,10 +1819,11 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         except Exception:
             summary["amd"] = {"amd_signal": None, "amd_score": 0}
 
-        # ── Recent OB Rejection (ตรวจว่าเพิ่งมี rejection ที่ OB ใน 5 แท่งล่าสุด) ──
-        # ใช้เมื่อ price ออกจาก OB ไปแล้ว แต่ rejection เพิ่งเกิด → CASE G ยังใช้ได้
+        # ── Recent OB Rejection (ตรวจว่าเพิ่งมี rejection ที่ OB ใน 12 แท่งล่าสุด) ──
+        # ใช้เมื่อ price ออกจาก OB ไปแล้ว แต่ rejection เพิ่งเกิด → CASE G/I ยังใช้ได้
+        # 12 แท่ง = 60 นาทีบน M5 → จำ OB rejection ได้นานพอสำหรับ Pattern 3
         try:
-            _lookback = 5
+            _lookback = 12
             _recent   = df.iloc[-_lookback:].reset_index(drop=True)
 
             _bear_rej = None

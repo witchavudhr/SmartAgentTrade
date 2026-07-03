@@ -27,6 +27,14 @@ _DEFAULT: dict = {
     "scan_windows":     [1.0, 3.0, 7.25, 9.0, 11.0, 13.75, 15.75, 20.25, 22.75],
     "open_trade":       None,   # trade ที่กำลัง monitor trailing/reentry
     "updated_at":       None,
+
+    # Pattern 1: หลัง sweep+rejection รอ pullback 15-30 นาที
+    # {direction, sweep_level, rejection_price, ob_zone, watched_since, expire_at}
+    "sweep_rejection_watch": None,
+
+    # Pattern 3: จำ OB ที่โดน rejection ไว้ข้ามสแกน (TTL 60 นาที)
+    # [{zone:[lo,hi], direction, rejected_at, expire_at, used}]
+    "ob_rejection_zones": [],
 }
 
 

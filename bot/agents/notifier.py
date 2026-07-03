@@ -3071,6 +3071,77 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Auto scan job ──────────────────────────────────────
 
+def _update_pattern_state(result: dict, bot_state: dict) -> None:
+    """
+    อัพเดต Pattern 1 (sweep_rejection_watch) และ Pattern 3 (ob_rejection_zones)
+    หลังจาก scan แต่ละครั้ง
+    """
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    chart_s = result.get("stages", {}).get("chart", {})
+    setup_type  = chart_s.get("setup_type", "")
+    price       = float(result.get("current_price") or 0)
+    now_str     = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Pattern 1: ถ้า sweep+rejection detected → ตั้ง watching state ──
+    _sweep_setups = ("BSL_SWEEP_SELL", "SSL_SWEEP_BUY", "OB_REJECTION_SELL", "OB_REJECTION_BUY")
+    if setup_type in _sweep_setups and chart_s.get("vote") == "YES":
+        _dir     = chart_s.get("signal", "")
+        _sl      = chart_s.get("stop_loss")
+        _ob_zone = [chart_s.get("entry_zone", [None, None])]
+        _expire  = (now + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        existing = bot_state.get("sweep_rejection_watch")
+        # อย่า overwrite ถ้ายังไม่หมดอายุ และ direction เดิม
+        if not existing or existing.get("direction") != _dir:
+            state_manager.set_field(bot_state, "sweep_rejection_watch", {
+                "direction":       _dir,
+                "sweep_level":     chart_s.get("liquidity_target") or price,
+                "rejection_price": price,
+                "ob_zone":         _ob_zone,
+                "watched_since":   now_str,
+                "expire_at":       _expire,
+            })
+            print(f"[pattern1] ⚡ Sweep+Rejection watch set — {_dir} until {_expire}")
+
+    # ── Pattern 1: ล้าง watch ถ้าหมดอายุ ──────────────────────────
+    _srw = bot_state.get("sweep_rejection_watch")
+    if _srw and _srw.get("expire_at", "") <= now_str:
+        state_manager.set_field(bot_state, "sweep_rejection_watch", None)
+        print("[pattern1] ⏰ sweep_rejection_watch หมดอายุ — cleared")
+
+    # ── Pattern 3: เก็บ OB ที่โดน rejection ──────────────────────
+    # ดึงจาก stages.chart (recent_ob_rejection ใน smc_summary ถูกส่งผ่านมาใน chart stage)
+    _bear_rej = chart_s.get("recent_bear_ob_rejection")
+    _bull_rej = chart_s.get("recent_bull_ob_rejection")
+    _zones    = list(bot_state.get("ob_rejection_zones") or [])
+    _expire60 = (now + timedelta(minutes=60)).strftime("%Y-%m-%d %H:%M:%S")
+
+    for _rej, _dir in [(_bear_rej, "SELL"), (_bull_rej, "BUY")]:
+        if not _rej:
+            continue
+        _zone = _rej.get("ob_zone")  # [bottom, top]
+        if not _zone:
+            continue
+        # ตรวจว่ามี zone นี้อยู่แล้วหรือยัง (ใกล้กัน ±30p)
+        _already = any(
+            abs(z["zone"][0] - _zone[0]) * 10 < 30
+            for z in _zones if z.get("direction") == _dir and not z.get("used")
+        )
+        if not _already:
+            _zones.append({
+                "zone":        _zone,
+                "direction":   _dir,
+                "rejected_at": now_str,
+                "expire_at":   _expire60,
+                "used":        False,
+            })
+            print(f"[pattern3] 💾 OB rejection saved — {_dir} zone={_zone} expire={_expire60}")
+
+    # ล้าง zones ที่หมดอายุหรือถูกใช้แล้ว
+    _zones = [z for z in _zones if z.get("expire_at", "") > now_str and not z.get("used")]
+    state_manager.set_field(bot_state, "ob_rejection_zones", _zones)
+
+
 async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     if not bot_state["is_running"]:
         return
@@ -3109,7 +3180,14 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
 
     _notify_scan_start()
     try:
-        result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
+        # ── ส่ง Pattern 1 & 3 context ให้ supervisor ──────────────────
+        _ctx = {
+            "ob_rejection_zones":    bot_state.get("ob_rejection_zones", []),
+            "sweep_rejection_watch": bot_state.get("sweep_rejection_watch"),
+        }
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: supervisor.run(context=_ctx)
+        )
     except Exception as _e:
         import traceback
         _tb = traceback.format_exc()[-800:]
@@ -3121,6 +3199,9 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         return
     log_scan(result)
     _push_to_dashboard(result)
+
+    # ── อัพเดต Pattern 1 & 3 state หลัง scan ─────────────────────
+    _update_pattern_state(result, bot_state)
 
     async def send(text, **kw):
         await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)

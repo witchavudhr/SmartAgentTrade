@@ -29,7 +29,7 @@ from agents.json_utils import safe_json_parse
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def run(balance: float = 10000.0, force_session: bool = False) -> dict:
+def run(balance: float = 10000.0, force_session: bool = False, context: dict = None) -> dict:
     """
     รัน pipeline ทั้งหมด:
     1. SMC scan (ฟรี)
@@ -64,6 +64,16 @@ def run(balance: float = 10000.0, force_session: bool = False) -> dict:
         "ssl_pools":   _liq.get("ssl_pools", []),
         "bsl_pools":   _liq.get("bsl_pools", []),
     }
+
+    # ── Inject context จาก bot_state (Pattern 1 & 3) ──────────────
+    if context:
+        _orz = [z for z in (context.get("ob_rejection_zones") or [])
+                if not z.get("used") and z.get("expire_at", "") > datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+        if _orz:
+            smc_summary["stored_ob_rejections"] = _orz
+        _srw = context.get("sweep_rejection_watch")
+        if _srw and _srw.get("expire_at", "") > datetime.now().strftime("%Y-%m-%d %H:%M:%S"):
+            smc_summary["sweep_rejection_watch"] = _srw
 
     # Pre-filter: ถ้าไม่มี signal ไม่เรียก Claude เลย
     if not chart_analyst.has_signal(smc_summary, force_session=force_session):
