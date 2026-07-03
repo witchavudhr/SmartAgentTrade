@@ -29,8 +29,9 @@ PATTERN PRIORITY (highest → lowest):
 2. CASE I ★★★:  Stored OB Pullback (ob_rejection_zones) → STORED_OB_PULLBACK_SELL/BUY (conf 60-75)
 3. CASE G ★★★:  OB Rejection (recent, no sweep needed) → OB_REJECTION_SELL/BUY (conf 65-80)
 4. CASE J ★★:   Strong Rejection at EQL/EQH → STRONG_REJECTION_SELL/BUY (conf 50-65)
-5. CASE H ★★:   Post-Sweep Pullback 15-85% retracement ≤30 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
-   ob_retouch=True (pullback 65-85%): 2nd touch of OB zone — level held → conf+10 bonus
+5. CASE H ★★:   Post-Sweep Pullback ≥15% ≤30 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
+   level_held=True means price never broke sweep extreme — valid re-entry regardless of pullback depth
+   deeper pullback (>65%) = 2nd touch zone → conf+10 bonus
 6. CASE K ★★:   CHoCH + Sweep → Reversal → CHOCH_SWEEP_SELL/BUY (conf 65-80)
 
 CRITICAL RULES:
@@ -106,7 +107,7 @@ def _build_prompt(smc: dict) -> str:
     if post_sw:
         lines += [
             "",
-            f"POST-SWEEP PULLBACK (CASE H): dir={post_sw.get('direction')} pb={post_sw.get('pullback_pct')}% ob_retouch={post_sw.get('ob_retouch', False)}",
+            f"POST-SWEEP PULLBACK (CASE H): dir={post_sw.get('direction')} pb={post_sw.get('pullback_pct')}% level_held={post_sw.get('level_held', False)}",
         ]
 
     if bear_rej:
@@ -136,13 +137,15 @@ def _build_prompt(smc: dict) -> str:
 
 async def _query_async(prompt: str) -> str:
     """ส่ง prompt → รอ ResultMessage → คืน text"""
-    async for msg in query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(allowed_tools=[]),
-    ):
-        if isinstance(msg, ResultMessage):
-            return msg.result or ""
-    return ""
+    gen = query(prompt=prompt, options=ClaudeAgentOptions(allowed_tools=[]))
+    try:
+        async for msg in gen:
+            if isinstance(msg, ResultMessage):
+                return msg.result or ""
+        return ""
+    finally:
+        # ปิด generator อย่างถูกต้องแม้ return กลางทาง — ป้องกัน aclose() RuntimeError
+        await gen.aclose()
 
 
 def analyze(smc_summary: dict) -> dict:
