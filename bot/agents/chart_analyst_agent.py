@@ -11,7 +11,11 @@ Flow:
 """
 
 import asyncio
+import os
 import time
+
+# ต้อง pop ก่อน import claude_agent_sdk เพราะ SDK อ่าน env ตอน import
+os.environ.pop("ANTHROPIC_API_KEY", None)
 
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 

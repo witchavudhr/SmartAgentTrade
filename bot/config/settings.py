@@ -3,8 +3,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Claude API
+# Claude API — เก็บค่าไว้ใช้ใน fallback แต่ลบออกจาก env
+# เพื่อไม่ให้ claude_agent_sdk หยิบไปใช้แทน subscription
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+os.environ.pop("ANTHROPIC_API_KEY", None)
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
