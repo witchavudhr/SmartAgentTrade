@@ -973,6 +973,15 @@ STEP 3 — ตัดสินใจและโหวต
 หลักการ: ซื้อแนวรับ ขายแนวต้าน — ราคาต้องถึง OB ก่อนเสมอ ไม่ trade กลางอากาศ
 
 ลำดับ priority (ไล่ตามความ confidence สูงสุด → ต่ำสุด):
+-3. ⛔ PULLBACK VALIDITY RULE (สำคัญที่สุด — ตรวจก่อนทุก pattern):
+    Pullback หลัง rejection valid ก็ต่อเมื่อ: ราคา **ไม่ close เกิน rejection level**
+    🔴 SELL setup: pullback ขึ้นมา แต่ candle close ต้องอยู่ **ต่ำกว่า** rejection high
+    🟢 BUY setup: pullback ลงมา แต่ candle close ต้องอยู่ **สูงกว่า** rejection low
+    ❌ ถ้า price close ทะลุ rejection level = setup INVALIDATED → NO_TRADE
+    เหตุผล: rejection level ที่ถูกทะลุ = supply/demand นั้นอ่อนแอ → smart money ไม่อยู่แล้ว
+    ตัวอย่าง: BSL sweep ที่ 3300 → reject ลง → pullback ขึ้นมา 3298 (close ต่ำกว่า 3300) = VALID ENTRY
+              BSL sweep ที่ 3300 → reject ลง → pullback ขึ้นมา 3302 (close เกิน 3300) = INVALIDATED
+
 -2. 📐 OB Quality & Distance Check (ทำก่อนทุกอย่าง):
     (a) ob_quality: ดูจาก MARKET DATA → ถ้า quality=LOW (<50p จาก sweep) → ลด confidence 15-20 คะแนน
         เหตุผล: OB ใกล้ sweep เกิน = smart money ไม่มีพื้นที่ accumulate → rejection อ่อน
@@ -1007,7 +1016,9 @@ STEP 3 — ตัดสินใจและโหวต
            setup_type = STORED_OB_PULLBACK_SELL | SL = zone top + 10-15p
    🟢 I2: ราคา pullback มาใกล้ Stored BUY OB zone (≤150p) → BUY
            setup_type = STORED_OB_PULLBACK_BUY | SL = zone bottom - 10-15p
-   ⚠️ กฎ: ถ้า price หลุด zone (ทะลุ SL ไปแล้ว) → zone นั้นไม่ valid อีกต่อไป — ข้ามไป
+   ⚠️ PULLBACK CHECK: pullback valid ก็ต่อเมื่อ price ไม่ close เกิน rejection level
+      SELL: pullback close ต้องต่ำกว่า OB top (rejection high) — ถ้า close เกิน = INVALIDATED
+      BUY:  pullback close ต้องสูงกว่า OB bottom (rejection low) — ถ้า close เกิน = INVALIDATED
    confidence: 60-75 (OB ยังไม่ถูก invalidate → valid re-entry)
 
 1.6. ★★ CASE J — Strong Rejection at Key Level (Pattern 4 — ไม่ต้องมี OB):
@@ -1017,7 +1028,9 @@ STEP 3 — ตัดสินใจและโหวต
             SL: เหนือ rejection high + 10-15p | setup_type = STRONG_REJECTION_SELL
    🟢 J2 — STRONG_REJECTION_BUY: EQL/Swing Low ถูก sweep → bullish rejection candle แรง → BUY
             SL: ต่ำกว่า rejection low - 10-15p | setup_type = STRONG_REJECTION_BUY
-   ⚠️ กฎ: ถ้าราคา retest rejection level แล้วหลุด (close เกิน wick ที่ reject) → invalidated
+   ⚠️ PULLBACK CHECK (สำคัญมาก): pullback ต้องไม่ทะลุ rejection level
+      SELL: candle close ต้องต่ำกว่า EQH/Swing High ที่ sweep — ถ้า close เกินนั้น = INVALIDATED → NO_TRADE
+      BUY:  candle close ต้องสูงกว่า EQL/Swing Low ที่ sweep — ถ้า close เกินนั้น = INVALIDATED
    confidence: 50-65 (ไม่มี OB รองรับ — ใช้ EQL/EQH sweep confirmation เป็นหลัก)
 
 1.7. ★★ CASE H — Post-Sweep Continuation Pullback:
