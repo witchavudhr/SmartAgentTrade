@@ -29,7 +29,8 @@ PATTERN PRIORITY (highest → lowest):
 2. CASE I ★★★:  Stored OB Pullback (ob_rejection_zones) → STORED_OB_PULLBACK_SELL/BUY (conf 60-75)
 3. CASE G ★★★:  OB Rejection (recent, no sweep needed) → OB_REJECTION_SELL/BUY (conf 65-80)
 4. CASE J ★★:   Strong Rejection at EQL/EQH → STRONG_REJECTION_SELL/BUY (conf 50-65)
-5. CASE H ★★:   Post-Sweep Pullback 15-65% retracement ≤10 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
+5. CASE H ★★:   Post-Sweep Pullback 15-85% retracement ≤30 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
+   ob_retouch=True (pullback 65-85%): 2nd touch of OB zone — level held → conf+10 bonus
 6. CASE K ★★:   CHoCH + Sweep → Reversal → CHOCH_SWEEP_SELL/BUY (conf 65-80)
 
 CRITICAL RULES:
@@ -105,7 +106,7 @@ def _build_prompt(smc: dict) -> str:
     if post_sw:
         lines += [
             "",
-            f"POST-SWEEP PULLBACK (CASE H): dir={post_sw.get('direction')} pb={post_sw.get('pullback_pct')}%",
+            f"POST-SWEEP PULLBACK (CASE H): dir={post_sw.get('direction')} pb={post_sw.get('pullback_pct')}% ob_retouch={post_sw.get('ob_retouch', False)}",
         ]
 
     if bear_rej:

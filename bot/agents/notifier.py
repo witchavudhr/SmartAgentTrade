@@ -3417,7 +3417,7 @@ def run():
 
     # 5-Minute Auto Scan — 06:00–23:00 Thai time (quiet mode)
     from datetime import timezone, timedelta as _td
-    _THAI_TZ_RUN = timezone(timedelta(hours=7))
+    _THAI_TZ_RUN = timezone(_td(hours=7))
 
     async def _auto_scan_5min(ctx: ContextTypes.DEFAULT_TYPE):
         now_th = datetime.now(tz=_THAI_TZ_RUN)

@@ -1935,16 +1935,21 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             _sw_age_l = int(_adv_tmp.get("sweep_l_age_bars") or 999)
             _post_cont = None
 
-            if last_sweep and last_sweep.kind == 'high' and _sw_age_h <= 10:
+            if last_sweep and last_sweep.kind == 'high' and _sw_age_h <= 30:
                 # BSL swept → expect SELL continuation
                 _sw_lvl   = last_sweep.level
                 _bars_back = min(_sw_age_h, len(df) - 1)
                 _low_since = df['low'].iloc[-_bars_back:].min() if _bars_back > 0 else current_price
-                _initial_drop = (_sw_lvl - _low_since) * 10       # points — ราคาวิ่งลงไปเท่าไหร่
-                _pullback_now = (current_price - _low_since) * 10  # points — retrace กลับมาเท่าไหร่
+                _initial_drop = (_sw_lvl - _low_since) * 10
+                _pullback_now = (current_price - _low_since) * 10
                 if _initial_drop >= 30 and _pullback_now >= 10:
                     _pb_pct = _pullback_now / _initial_drop
-                    if 0.15 <= _pb_pct <= 0.65:   # pullback 15-65% = valid re-entry zone
+                    # ขยาย pullback 15-85%: รวม re-touch OB ครั้งที่สอง (65-85%)
+                    # เงื่อนไขเพิ่ม: ถ้า pullback > 65% ราคาต้องไม่ทะลุ sweep level ใหม่
+                    _valid_pb = (0.15 <= _pb_pct <= 0.65) or (
+                        0.65 < _pb_pct <= 0.85 and current_price < _sw_lvl
+                    )
+                    if _valid_pb:
                         _post_cont = {
                             "direction":       "SELL",
                             "sweep_level":     round(_sw_lvl, 2),
@@ -1953,9 +1958,10 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
                             "pullback_pts":    round(_pullback_now, 0),
                             "pullback_pct":    round(_pb_pct * 100, 0),
                             "low_since_sweep": round(_low_since, 2),
+                            "ob_retouch":      _pb_pct > 0.65,
                         }
 
-            elif last_sweep and last_sweep.kind == 'low' and _sw_age_l <= 10:
+            elif last_sweep and last_sweep.kind == 'low' and _sw_age_l <= 30:
                 # SSL swept → expect BUY continuation
                 _sw_lvl   = last_sweep.level
                 _bars_back = min(_sw_age_l, len(df) - 1)
@@ -1964,7 +1970,12 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
                 _pullback_now = (_high_since - current_price) * 10
                 if _initial_rise >= 30 and _pullback_now >= 10:
                     _pb_pct = _pullback_now / _initial_rise
-                    if 0.15 <= _pb_pct <= 0.65:
+                    # ขยาย pullback 15-85%: รวม re-touch OB ครั้งที่สอง
+                    # ไม่ทะลุ sweep low = ยังใช้ได้
+                    _valid_pb = (0.15 <= _pb_pct <= 0.65) or (
+                        0.65 < _pb_pct <= 0.85 and current_price > _sw_lvl
+                    )
+                    if _valid_pb:
                         _post_cont = {
                             "direction":        "BUY",
                             "sweep_level":      round(_sw_lvl, 2),
@@ -1973,6 +1984,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
                             "pullback_pts":     round(_pullback_now, 0),
                             "pullback_pct":     round(_pb_pct * 100, 0),
                             "high_since_sweep": round(_high_since, 2),
+                            "ob_retouch":       _pb_pct > 0.65,
                         }
 
             summary["post_sweep_continuation"] = _post_cont
