@@ -42,6 +42,8 @@ CRITICAL RULES:
 - PULLBACK VALIDITY: SELL pullback close must stay BELOW rejection high; BUY must stay ABOVE rejection low → if violated = INVALIDATED → NO_TRADE
 - ob_quality=LOW (<50p gap) → reduce confidence 15-20
 - When unsure → NO_TRADE (never force)
+- COUNTER-TREND BLOCK: if post_sweep_continuation=BUY (or last_sweep=SSL recovered) → do NOT signal SELL even if Bear OB is nearby above. BUY bias confirmed = OB may be consumed. Wait for BSL sweep to flip bias before any SELL.
+- Same rule inverse: if post_sweep_continuation=SELL (BSL swept) → do NOT signal BUY into nearby Bull OB below.
 
 OUTPUT (JSON only):
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}

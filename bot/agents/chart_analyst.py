@@ -198,6 +198,14 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ EQL/EQH SWEEP (CASE F equiv) — eql={eql_sweep} eqh={eqh_sweep}")
         return True
 
+    # ── Counter-Trend Block ────────────────────────────────────────
+    # ถ้า post-sweep BUY active → อย่าส่ง signal เพราะ Bear OB nearby เพียงอย่างเดียว
+    # (Bear OB อาจโดน consume) → รอ BSL sweep ก่อนถึงจะ SELL ได้
+    _post_dir = (smc_summary.get("post_sweep_continuation") or {}).get("direction")
+    _last_sw  = smc_summary.get("last_sweep") or {}
+    _buy_bias_active  = _post_dir == "BUY" or _last_sw.get("kind") == "low"
+    _sell_bias_active = _post_dir == "SELL" or _last_sw.get("kind") == "high"
+
     # ── ชั้น 3: TREND setup (priority รอง) ───────────────────────
     # NOTE: ถ้าอยากปิด cost filter นี้ → เปลี่ยน OB_NEARBY_THRESHOLD เป็น 9999
     OB_NEARBY_THRESHOLD  = 150  # จุด — ราคาต้องอยู่ภายในนี้จาก OB
@@ -251,11 +259,17 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     _bear_rej = smc_summary.get("recent_bear_ob_rejection")
     _bull_rej = smc_summary.get("recent_bull_ob_rejection")
     if _bear_rej and _bear_rej.get("bars_ago", 99) <= 3:
-        print(f"[has_signal] ✅ OB_REJECTION (BEAR) — zone={_bear_rej.get('ob_zone')} bars_ago={_bear_rej.get('bars_ago')}")
-        return True
+        if _buy_bias_active:
+            print(f"[has_signal] ⛔ COUNTER-TREND BLOCK — Bear OB rejection แต่ BUY sweep active, ข้าม")
+        else:
+            print(f"[has_signal] ✅ OB_REJECTION (BEAR) — zone={_bear_rej.get('ob_zone')} bars_ago={_bear_rej.get('bars_ago')}")
+            return True
     if _bull_rej and _bull_rej.get("bars_ago", 99) <= 3:
-        print(f"[has_signal] ✅ OB_REJECTION (BULL) — zone={_bull_rej.get('ob_zone')} bars_ago={_bull_rej.get('bars_ago')}")
-        return True
+        if _sell_bias_active:
+            print(f"[has_signal] ⛔ COUNTER-TREND BLOCK — Bull OB rejection แต่ SELL sweep active, ข้าม")
+        else:
+            print(f"[has_signal] ✅ OB_REJECTION (BULL) — zone={_bull_rej.get('ob_zone')} bars_ago={_bull_rej.get('bars_ago')}")
+            return True
 
     # ── ชั้น 8: Post-Sweep Continuation Pullback (CASE H) ────────────
     _post = smc_summary.get("post_sweep_continuation")
