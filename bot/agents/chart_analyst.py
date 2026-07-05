@@ -67,8 +67,8 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     price_source = "yfinance"
     try:
         import MetaTrader5 as mt5
-        df15 = _get_mt5_ohlcv(mt5.TIMEFRAME_M15, 400)
-        df5  = _get_mt5_ohlcv(mt5.TIMEFRAME_M5,  500)
+        df15 = _get_mt5_ohlcv(mt5.TIMEFRAME_M15, 700)   # ~7 วัน (M15)
+        df5  = _get_mt5_ohlcv(mt5.TIMEFRAME_M5,  2016)  # 7 วัน (M5: 288 bar/day × 7)
         if df15 is not None and df5 is not None:
             price_source = "MT5"
     except Exception:
@@ -77,11 +77,11 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     # ── Fallback: yfinance ─────────────────────────────────────────
     if df5 is None:
         ticker = yf.Ticker("GC=F")
-        df_yf15 = ticker.history(period="10d", interval="15m")
+        df_yf15 = ticker.history(period="7d", interval="15m")
         if not df_yf15.empty:
             df_yf15.columns = [c.lower() for c in df_yf15.columns]
             df15 = df_yf15[['open', 'high', 'low', 'close', 'volume']].dropna()
-        df_yf5 = ticker.history(period=period, interval=interval)
+        df_yf5 = ticker.history(period="7d", interval="5m")
         if df_yf5.empty:
             return None, None
         df_yf5.columns = [c.lower() for c in df_yf5.columns]

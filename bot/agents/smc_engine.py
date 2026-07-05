@@ -1510,7 +1510,7 @@ def detect_amd_pattern(df: pd.DataFrame, result: SMCResult, lookback: int = 40) 
 
 # ─── EQL / EQH Sweep Detector ────────────────────────────────────
 
-def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20) -> dict:
+def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 2016) -> dict:
     """
     ตรวจ EQL_SWEEP_BUY / EQH_SWEEP_SELL — Liquidity Sweep Entry
 
