@@ -279,7 +279,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         return result
 
     # ── Stage 7: Supervisor Final Decision — สำหรับ setup ที่ไม่ชัด ──
-    verdict = _supervisor_judge(analysis, bias, news, risk, vote_score, result["vote_details"])
+    verdict = _supervisor_judge(analysis, bias, news, risk, vote_score, result["vote_details"], smc_summary)
     result["stages"]["supervisor"] = verdict
 
     if verdict.get("approve"):
@@ -302,7 +302,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     return result
 
 
-def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict) -> dict:
+def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict, smc_summary: dict = None) -> dict:
     """
     Supervisor ตัดสินใจสุดท้าย — Claude Sonnet อ่าน reasoning ทุก agent
     ไม่ได้แค่นับ vote score แต่เข้าใจ WHY แต่ละ agent โหวต
@@ -338,6 +338,41 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
     liq_map_read = analysis.get("liquidity_map_read", "")
     setup_type_s = analysis.get("setup_type", "")
 
+    # ── Build M15 context ──────────────────────────────────────────
+    m15_ctx = ""
+    if smc_summary:
+        m15 = smc_summary.get("m15") or {}
+        liq  = smc_summary.get("liquidity") or {}
+        m15_bias   = m15.get("bias", "–")
+        m15_bos    = m15.get("last_bos") or {}
+        m15_choch  = m15.get("last_choch") or {}
+        m15_ob_b   = m15.get("active_bull_ob") or {}
+        m15_ob_bear= m15.get("active_bear_ob") or {}
+        w_bsl = liq.get("weekly_bsl_pools") or []
+        w_ssl = liq.get("weekly_ssl_pools") or []
+
+        def _fmt_pool(pools, n=5):
+            intact = [p for p in pools if not p.get("swept")][:n]
+            swept  = [p for p in pools if p.get("swept")][:3]
+            parts  = [f"{p['level']}({'M15' if p.get('timeframe')=='M15' else 'M5'}{'★' if p.get('size')=='major' else ''})" for p in intact]
+            parts += [f"{p['level']}(✓swept)" for p in swept]
+            return " | ".join(parts) if parts else "–"
+
+        m15_ctx = f"""
+🕐 M15 Context (ใช้เป็นเหตุผลประกอบ ไม่ใช่ vote):
+   Bias: {m15_bias}
+   BOS: {m15_bos.get('direction','–')} @ {m15_bos.get('level','–')}
+   CHoCH: {m15_choch.get('direction','–')} @ {m15_choch.get('level','–')}
+   Bull OB: {m15_ob_b.get('bottom','–')}–{m15_ob_b.get('top','–')} (in_ob={m15_ob_b.get('in_ob',False)})
+   Bear OB: {m15_ob_bear.get('bottom','–')}–{m15_ob_bear.get('top','–')} (in_ob={m15_ob_bear.get('in_ob',False)})
+   Weekly BSL (7d intact→swept): {_fmt_pool(w_bsl)}
+   Weekly SSL (7d intact→swept): {_fmt_pool(w_ssl)}
+   ★=EQH/EQL major level, M15=stronger level, ✓swept=โดน sweep ไปแล้ว
+   → ถ้า signal ตรงกับ M15 bias = confluence สูง
+   → ถ้า M15 Bear OB อยู่ใกล้ + BUY signal = OB นั้นอาจเป็น target หรือ resistance — ระบุในเหตุผล
+   → Weekly SSL ที่ยัง intact + ราคาใกล้ = แนวที่รอ sweep อยู่
+"""
+
     prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้าย APPROVE หรือ REJECT trade นี้
 Vote รวม {vote_score}/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง (ไม่ต้องนับเสียงข้างมาก)
 
@@ -367,7 +402,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
    → Risk: {news.get('risk_level')} | Key Event: {news.get('key_event')} | Gold Impact: {news.get('gold_impact')}
 
 ⚖️ Risk Manager: Lot={risk.get('lot')} | Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
-
+{m15_ctx}
 ═══ วิธีตัดสิน ═══
 
 ── กฎเหล็ก (ห้ามฝ่าฝืน) ──
