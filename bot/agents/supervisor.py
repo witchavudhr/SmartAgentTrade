@@ -444,23 +444,10 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
   "reasoning": "2-3 ประโยค ภาษาไทย — ระบุ: ① เข้าเงื่อนไขไหน ② liquidity อยู่ตรงไหน ③ ทำไมถึง approve/reject"
 }}"""
 
-    # ── Prompt Caching: split static rules → system (cached), dynamic trade context → user ──
-    _SPLIT = "═══ วิธีตัดสิน ═══"
-    if _SPLIT in prompt:
-        _idx = prompt.index(_SPLIT)
-        _usr, _sys = prompt[:_idx], prompt[_idx:]
-    else:
-        _usr, _sys = prompt, ""
-
-    response = client.messages.create(
-        model=MODEL_SMART,
-        max_tokens=1000,
-        system=[{"type": "text", "text": _sys, "cache_control": {"type": "ephemeral"}}] if _sys else None,
-        messages=[{"role": "user", "content": _usr}]
-    )
-
+    from agents.sdk_utils import sdk_query
+    raw = sdk_query(prompt, label="Supervisor")
     result = safe_json_parse(
-        response.content[0].text,
+        raw,
         fallback={"approve": vote_score >= 2, "confidence": 0, "reasoning": "JSON parse error — auto by vote score"}
     )
     result["confidence"] = int(result.get("confidence", 0))
@@ -518,14 +505,10 @@ FVG ใกล้สุด: {nearest_fvg}
   "caution": "ข้อควรระวัง 1 ประโยค" หรือ null
 }}"""
 
-    response = client.messages.create(
-        model=MODEL_SMART,
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
+    from agents.sdk_utils import sdk_query
+    raw = sdk_query(prompt, label="ReEntry")
     return safe_json_parse(
-        response.content[0].text,
+        raw,
         fallback={"reenter": False, "confidence": 0, "reasoning": "Parse error", "new_sl": None, "caution": None}
     )
 

@@ -181,18 +181,15 @@ def _haiku_precheck(smc_summary: dict) -> dict:
     )
 
     try:
-        resp = client.messages.create(
-            model=MODEL_FAST,   # Haiku — 10x cheaper
-            max_tokens=20,
-            messages=[{"role": "user", "content": (
-                f"XAUUSD SMC snapshot:\n{mini}\n\n"
-                "Is there a valid entry setup RIGHT NOW?\n"
-                "YES if: price in/near OB (≤80p) AND (sweep happened OR rejection OR pullback detected)\n"
-                "NO if: price far from OB (>200p) with nothing actionable\n"
-                "Reply with only: YES or NO, then 3-5 words why"
-            )}]
-        )
-        txt = resp.content[0].text.strip()
+        from agents.sdk_utils import sdk_query
+        txt = sdk_query(
+            f"XAUUSD SMC snapshot:\n{mini}\n\n"
+            "Is there a valid entry setup RIGHT NOW?\n"
+            "YES if: price in/near OB (≤80p) AND (sweep happened OR rejection OR pullback detected)\n"
+            "NO if: price far from OB (>200p) with nothing actionable\n"
+            "Reply with only: YES or NO, then 3-5 words why",
+            label="HaikuPrecheck"
+        ).strip()
         passed = txt.upper().startswith("YES")
         reason = txt[:60]
         return {"pass": passed, "reason": reason}
@@ -380,12 +377,8 @@ Last 5 bars: {bars_str}
 Reply JSON only: {{"confidence": 0-100, "reasoning": "1-2 sentences max"}}"""
 
     try:
-        resp = client.messages.create(
-            model=MODEL_FAST,
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        result = safe_json_parse(resp.content[0].text, fallback={"confidence": 0, "reasoning": "parse error"})
+        from agents.sdk_utils import sdk_query
+        result = safe_json_parse(sdk_query(prompt, label="ConfirmSignal"), fallback={"confidence": 0, "reasoning": "parse error"})
         entry = {
             "confidence": int(result.get("confidence", 0)),
             "reasoning":  str(result.get("reasoning", ""))[:200],
@@ -1157,24 +1150,8 @@ STEP 3 — ตัดสินใจและโหวต
   "reasoning": "ภาษาไทย: ① H1/H4 macro ② Liquidity map — nearest BSL/SSL swept แล้วหรือยัง ③ OB ที่ใกล้ที่สุดคือไหน ④ มี sweep+rejection มั้ย ⑤ setup ที่เลือก (Case ไหน) ⑥ pyramid plan ⑦ TP logic (Bear OB / BSL / PDH / swing)"
 }}"""
 
-    # ── Prompt Caching: split static rules → system (cached), dynamic data → user ──
-    _SPLIT = "════════════════════════════════════════════\n📌 หลักการหลัก"
-    if _SPLIT in prompt:
-        _idx = prompt.index(_SPLIT)
-        _usr, _sys = prompt[:_idx], prompt[_idx:]
-    else:
-        _usr, _sys = prompt, ""
-
-    response = client.messages.create(
-        model=MODEL_SMART,
-        max_tokens=2000,
-        system=[{"type": "text", "text": _sys, "cache_control": {"type": "ephemeral"}}] if _sys else None,
-        messages=[{"role": "user", "content": _usr}]
-    )
-
-    raw_text = response.content[0].text
-    # Log raw response เพื่อ debug — ดูว่า Claude ตอบอะไร
-    print(f"[ChartAnalyst] stop_reason={response.stop_reason} tokens={response.usage.output_tokens}")
+    from agents.sdk_utils import sdk_query
+    raw_text = sdk_query(prompt, label="ChartAnalyst")
     print(f"[ChartAnalyst] raw={raw_text[:300]}")
 
     result = safe_json_parse(

@@ -325,14 +325,10 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
   "reasoning": "อธิบาย news context สั้นๆ ภาษาไทย"
 }}"""
 
-        response = client.messages.create(
-            model=MODEL_SMART,
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}]
-        )
-
+        from agents.sdk_utils import sdk_query
+        raw = sdk_query(prompt, label="NewsScout")
         result = safe_json_parse(
-            response.content[0].text,
+            raw,
             fallback={
                 "vote": "NO" if blocked else "YES",
                 "vote_reasoning": "มีข่าว High Impact — ระวังด้วย" if blocked else "ข่าวยังห่างพอ",

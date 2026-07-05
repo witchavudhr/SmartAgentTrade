@@ -965,22 +965,18 @@ async def handle_question(update: Update, question: str):
     _, price_data = chart_analyst.get_price_data()
     price_info = f"ราคา Gold ปัจจุบัน: {price_data.get('current_price')}" if price_data else ""
 
-    response = claude.messages.create(
-        model=MODEL_SMART,
-        max_tokens=500,
-        messages=[{
-            "role": "user",
-            "content": f"""คุณคือ AI Trading Assistant ผู้เชี่ยวชาญ Gold (XAUUSD)
+    from agents.sdk_utils import sdk_query
+    answer = sdk_query(
+        f"""คุณคือ AI Trading Assistant ผู้เชี่ยวชาญ Gold (XAUUSD)
 ใช้หลัก Smart Money Concepts ในการวิเคราะห์
 ตอบเป็นภาษาไทย กระชับ ชัดเจน
 
 {price_info}
 
-คำถาม: {question}"""
-        }]
+คำถาม: {question}""",
+        label="AskCmd"
     )
-
-    await update.message.reply_text(response.content[0].text)
+    await update.message.reply_text(answer)
 
 # ── Auto-execute helper ────────────────────────────────
 
@@ -1230,20 +1226,15 @@ def _is_pool_swept(pool_type: str, level: float, current_price: float,
 async def _ask_ob_entry_in_watching(price, ob, ob_dir, liq_type, liq_level, chart_stage, result) -> str:
     """ถาม Claude สั้นๆ ว่าควรเข้า OB ไหม แม้ liq_gate ยังไม่ sweep"""
     try:
-        import anthropic as _anth
-        from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
-        _client = _anth.Anthropic(api_key=ANTHROPIC_API_KEY)
+        from agents.sdk_utils import sdk_query
 
         _bias_s   = result.get("stages", {}).get("bias", {})
         _h4       = _bias_s.get("overall_bias") or "?"
         _h1_dir   = _bias_s.get("trade_direction") or "?"
         _chart_r  = chart_stage.get("vote_reasoning") or chart_stage.get("reasoning") or "?"
-        _sl_zone  = ob.get("bottom") if ob_dir == "BUY" else ob.get("top")
         _ob_bot   = ob.get("bottom"); _ob_top = ob.get("top")
 
-        resp = _client.messages.create(
-            model=MODEL_FAST, max_tokens=200,
-            messages=[{"role": "user", "content": f"""XAUUSD SMC — ราคาเข้า OB zone ขณะที่ bot กำลัง watch liquidity sweep
+        _txt = sdk_query(f"""XAUUSD SMC — ราคาเข้า OB zone ขณะที่ bot กำลัง watch liquidity sweep
 
 สถานการณ์:
 - ราคา: {price} อยู่ใน {ob_dir} OB zone ({_ob_bot}–{_ob_top})
@@ -1253,9 +1244,7 @@ async def _ask_ob_entry_in_watching(price, ob, ob_dir, liq_type, liq_level, char
 
 คำถาม: ควรเข้า {ob_dir} ตอนนี้ไหม แม้ {liq_type} ยังไม่ sweep?
 
-ตอบสั้นๆ 2-3 บรรทัด: verdict (ENTER/WAIT/SKIP) + เหตุผลหลัก 1 ข้อ + ถ้า ENTER ให้ระบุ SL zone"""}]
-        )
-        _txt = resp.content[0].text.strip()
+ตอบสั้นๆ 2-3 บรรทัด: verdict (ENTER/WAIT/SKIP) + เหตุผลหลัก 1 ข้อ + ถ้า ENTER ให้ระบุ SL zone""", label="OBEntry").strip()
         # แปลง verdict เป็น emoji
         if "ENTER" in _txt.upper():
             return f"🤖 *AI: ควรเข้า*\n_{_txt}_"
@@ -2089,22 +2078,16 @@ async def _refresh_loss_digest():
                 f"→ {pips}{why}"
             )
 
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=300,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Loss trades ล่าสุดของ XAUUSD bot:\n" + "\n".join(lines) + "\n\n"
-                    "สรุปเป็น 3 bullet points (ภาษาไทย) ว่า Supervisor ควรระวังอะไร "
-                    "เพื่อหลีกเลี่ยง loss pattern แบบนี้ในครั้งต่อไป "
-                    "ให้กระชับ actionable เช่น setup ไหนควร reject, session ไหนอันตราย, "
-                    "confidence threshold ที่ควรยก ขึ้นต้นแต่ละ bullet ด้วย •"
-                )
-            }]
+        from agents.sdk_utils import sdk_query
+        raw = sdk_query(
+            f"Loss trades ล่าสุดของ XAUUSD bot:\n" + "\n".join(lines) + "\n\n"
+            "สรุปเป็น 3 bullet points (ภาษาไทย) ว่า Supervisor ควรระวังอะไร "
+            "เพื่อหลีกเลี่ยง loss pattern แบบนี้ในครั้งต่อไป "
+            "ให้กระชับ actionable เช่น setup ไหนควร reject, session ไหนอันตราย, "
+            "confidence threshold ที่ควรยก ขึ้นต้นแต่ละ bullet ด้วย •",
+            label="LossDigest"
         )
-        digest = "⚠️ *บทเรียนจาก loss ล่าสุด — Supervisor ระวัง:*\n" + resp.content[0].text.strip()
+        digest = "⚠️ *บทเรียนจาก loss ล่าสุด — Supervisor ระวัง:*\n" + raw.strip()
         save_loss_digest(digest)
         print(f"[loss_digest] refreshed — {len(losses)} trades analyzed")
     except Exception as e:
@@ -2136,7 +2119,7 @@ async def _analyze_loss_reason(ot: dict, entry: float, exit_price: float,
             if row:
                 setup_type, session, sl, tp, reasoning, confidence = row
 
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        from agents.sdk_utils import sdk_query
         prompt = (
             f"Trade นี้ขาดทุน {abs(pnl_pips):.1f} pips\n"
             f"Direction: {direction} | Setup: {setup_type or '?'} | Session: {session or '?'}\n"
@@ -2146,13 +2129,7 @@ async def _analyze_loss_reason(ot: dict, entry: float, exit_price: float,
             "วิเคราะห์ใน 1 ประโยค (ภาษาไทย) ว่าทำไมเทรดนี้ถึงขาดทุน "
             "เช่น entry ผิดจุด, bias ผิด, ข่าว, SL ใกล้เกินไป, หรือ market structure เปลี่ยน"
         )
-
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reason = resp.content[0].text.strip()
+        reason = sdk_query(prompt, label="LossReason").strip()
         print(f"[loss_analysis] trade#{trade_id}: {reason}")
         return reason
     except Exception as e:
@@ -2980,11 +2957,8 @@ async def weekly_feedback_job(ctx: ContextTypes.DEFAULT_TYPE):
     trades_text = "\n".join(trade_lines)
 
     try:
-        _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = _client.messages.create(
-            model=MODEL_SMART,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": f"""คุณคือ Trading Coach วิเคราะห์ผล trade XAUUSD SMC สัปดาห์นี้
+        from agents.sdk_utils import sdk_query
+        ai_insight = sdk_query(f"""คุณคือ Trading Coach วิเคราะห์ผล trade XAUUSD SMC สัปดาห์นี้
 
 trades ทั้งหมด ({len(trades)} ไม้ | W:{len(wins)} L:{len(losses)} | P&L: ${total_pnl:+.2f}):
 {trades_text}
@@ -2997,9 +2971,7 @@ trades ทั้งหมด ({len(trades)} ไม้ | W:{len(wins)} L:{len(los
 4. **ข้อแนะนำ supervisor** — 2-3 rule เฉพาะเจาะจงที่ควรปรับสัปดาห์หน้า
    (เช่น "เพิ่ม RR minimum เป็น 3.0 สำหรับ CAUTION MODE" หรือ "block SELL เมื่อ H4_BULL+H1_BULL")
 
-ห้ามทำ list ยาว — สรุปแบบ bullet สั้นๆ 1-2 ประโยคต่อข้อ"""}]
-        )
-        ai_insight = resp.content[0].text
+ห้ามทำ list ยาว — สรุปแบบ bullet สั้นๆ 1-2 ประโยคต่อข้อ""", label="WeeklyReview")
     except Exception as e:
         ai_insight = f"⚠️ วิเคราะห์ไม่ได้: {e}"
 
