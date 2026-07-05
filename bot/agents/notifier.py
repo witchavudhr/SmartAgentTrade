@@ -1664,10 +1664,7 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
             if _what:
                 _msg += f"\n👁 *รอ:* _{_what[:150]}_"
             await _safe_send(send_fn, _msg, parse_mode="Markdown")
-        elif not quiet:
-            # ไม่มี signal เลย — แสดงเฉพาะ manual scan
-            message = supervisor.format_alert(result)
-            await _safe_send(send_fn, message, parse_mode="Markdown")
+        # ไม่มี signal เลย → เงียบ (ไม่ว่าจะ quiet หรือ manual scan)
 
 
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
