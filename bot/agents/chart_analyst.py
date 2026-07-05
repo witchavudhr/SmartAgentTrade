@@ -89,13 +89,13 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
 
     # ── M15 summary (swing_length=50 ตรงกับ LuxAlgo swingsLengthInput=50) ────────
     m15_summary = None
+    res15 = None
     if df15 is not None and not df15.empty:
         res15 = smc_m15.analyze(df15)
         m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2))
         m15_summary["timeframe"] = "M15"
 
     # ── M5 summary ─────────────────────────────────────────────────
-    # ใช้ราคาจาก MT5 tick ถ้าได้ (แม่นที่สุด)
     mt5_price = _get_mt5_price() if price_source == "MT5" else None
     current_price = mt5_price or round(df5['close'].iloc[-1], 2)
 
@@ -106,6 +106,42 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     summary["analyzed_at"]  = now_str
     summary["price_source"] = price_source
     summary["m15"]          = m15_summary
+
+    # ── Merge M5 + M15 weekly pools ────────────────────────────────
+    # รวม SSL/BSL จากทั้งสองไทม์เฟรมเข้าด้วยกัน dedup โดย proximity 1.5 USD
+    if res15 is not None:
+        from agents.smc_engine import classify_liquidity as _cl
+        m15_liq = _cl(res15, current_price, timeframe="M15")
+        m5_liq  = summary.get("liquidity", {})
+        m5_bsl  = m5_liq.get("bsl_pools", [])
+        m5_ssl  = m5_liq.get("ssl_pools", [])
+        m15_bsl = m15_liq.get("bsl_pools", [])
+        m15_ssl = m15_liq.get("ssl_pools", [])
+
+        def _dedup_merge(a, b, proximity=1.5):
+            """รวม pool list, ถ้าระดับใกล้กัน < proximity USD ให้เก็บแค่อันที่ดีกว่า (M15 > M5, major > minor)"""
+            merged = list(a)
+            for pb in b:
+                close = [p for p in merged if abs(p["level"] - pb["level"]) < proximity]
+                if not close:
+                    merged.append(pb)
+                else:
+                    # ถ้า M15 level ยังไม่อยู่ใน list → replace minor ด้วย M15
+                    for existing in close:
+                        if pb["timeframe"] == "M15" and existing["timeframe"] == "M5":
+                            existing["timeframe"] = "M15"
+                            existing["size"] = "major" if existing["size"] == "major" or pb["size"] == "major" else "minor"
+                            existing["type"] = pb["type"] if pb["type"] in ("EQH","EQL") else existing["type"]
+            merged.sort(key=lambda x: x["dist_pts"])
+            return merged
+
+        weekly_bsl = _dedup_merge(m5_bsl, m15_bsl)
+        weekly_ssl = _dedup_merge(m5_ssl, m15_ssl)
+
+        if "liquidity" not in summary:
+            summary["liquidity"] = {}
+        summary["liquidity"]["weekly_bsl_pools"] = weekly_bsl
+        summary["liquidity"]["weekly_ssl_pools"] = weekly_ssl
 
     return df5, summary
 

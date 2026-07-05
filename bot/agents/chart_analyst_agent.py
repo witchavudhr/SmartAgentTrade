@@ -102,6 +102,21 @@ def _build_prompt(smc: dict) -> str:
         f"  Sweep ages: sweep_h={adv.get('sweep_h_age_bars','?')}bars sweep_l={adv.get('sweep_l_age_bars','?')}bars",
     ]
 
+    weekly_bsl = liq.get("weekly_bsl_pools") or []
+    weekly_ssl = liq.get("weekly_ssl_pools") or []
+    if weekly_bsl:
+        _bsl_str = " | ".join(
+            f"{p['level']}({'M15' if p['timeframe']=='M15' else 'M5'}{'★' if p['size']=='major' else ''}{'✓sw' if p['swept'] else ''})"
+            for p in weekly_bsl[:8]
+        )
+        lines += [f"  WEEKLY BSL (7d): {_bsl_str}"]
+    if weekly_ssl:
+        _ssl_str = " | ".join(
+            f"{p['level']}({'M15' if p['timeframe']=='M15' else 'M5'}{'★' if p['size']=='major' else ''}{'✓sw' if p['swept'] else ''})"
+            for p in weekly_ssl[:8]
+        )
+        lines += [f"  WEEKLY SSL (7d): {_ssl_str}"]
+
     if choch_k:
         lines += [
             "",

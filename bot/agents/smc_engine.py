@@ -503,7 +503,7 @@ def get_session() -> dict:
     }
 
 
-def classify_liquidity(result: "SMCResult", current_price: float) -> dict:
+def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str = "M5") -> dict:
     """
     จัด rank liquidity pools:
       BSL (Buy-Side Liquidity)  = เหนือราคา = stop ของคน Short
@@ -525,11 +525,12 @@ def classify_liquidity(result: "SMCResult", current_price: float) -> dict:
         is_major = any(abs(lv - e) < 1.0 for e in eqh_set)
         swept    = any(abs(lv - s) < 1.5 for s in swept_highs)
         bsl_pools.append({
-            "level":    lv,
-            "type":     "EQH" if is_major else "SwingHigh",
-            "size":     "major" if is_major else "minor",
-            "dist_pts": round((lv - current_price) * 10, 1),
-            "swept":    swept,
+            "level":     lv,
+            "type":      "EQH" if is_major else "SwingHigh",
+            "size":      "major" if is_major else "minor",
+            "dist_pts":  round((lv - current_price) * 10, 1),
+            "swept":     swept,
+            "timeframe": timeframe,
         })
 
     ssl_pools = []
@@ -540,11 +541,12 @@ def classify_liquidity(result: "SMCResult", current_price: float) -> dict:
         is_major = any(abs(lv - e) < 1.0 for e in eql_set)
         swept    = any(abs(lv - s) < 1.5 for s in swept_lows)
         ssl_pools.append({
-            "level":    lv,
-            "type":     "EQL" if is_major else "SwingLow",
-            "size":     "major" if is_major else "minor",
-            "dist_pts": round((current_price - lv) * 10, 1),
-            "swept":    swept,
+            "level":     lv,
+            "type":      "EQL" if is_major else "SwingLow",
+            "size":      "major" if is_major else "minor",
+            "dist_pts":  round((current_price - lv) * 10, 1),
+            "swept":     swept,
+            "timeframe": timeframe,
         })
 
     bsl_pools.sort(key=lambda x: x["dist_pts"])
@@ -553,7 +555,6 @@ def classify_liquidity(result: "SMCResult", current_price: float) -> dict:
     intact_bsl = [p for p in bsl_pools if not p["swept"]]
     intact_ssl = [p for p in ssl_pools if not p["swept"]]
 
-    # Inducement = nearest minor pool ระหว่างราคากับ major target
     def find_inducement(pools, target):
         if not target or target["size"] == "minor":
             return None
@@ -564,10 +565,10 @@ def classify_liquidity(result: "SMCResult", current_price: float) -> dict:
     nearest_ssl = intact_ssl[0] if intact_ssl else None
 
     return {
-        "bsl_pools":    bsl_pools[:5],
-        "ssl_pools":    ssl_pools[:5],
-        "nearest_bsl":  nearest_bsl,
-        "nearest_ssl":  nearest_ssl,
+        "bsl_pools":      bsl_pools,       # ทั้งหมด ไม่ cap
+        "ssl_pools":      ssl_pools,
+        "nearest_bsl":    nearest_bsl,
+        "nearest_ssl":    nearest_ssl,
         "bsl_inducement": find_inducement(intact_bsl, nearest_bsl),
         "ssl_inducement": find_inducement(intact_ssl, nearest_ssl),
     }
