@@ -1645,10 +1645,29 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         message += mt5_tag
         message += f"\n🤖 *Trade #{trade_id}* | `/closetrade` เมื่อปิด position"
         await _safe_send(send_fn, message, parse_mode="Markdown")
-    elif not quiet:
-        # Rejected / NO_TRADE — ข้ามใน quiet mode (5-min auto scan)
-        message = supervisor.format_alert(result)
-        await _safe_send(send_fn, message, parse_mode="Markdown")
+    else:
+        # Supervisor reject — ถ้ามี chart signal ให้แจ้งเตือนสั้นๆ เพื่อให้ human เปิดกราฟดู
+        _analysis = result.get("analysis") or {}
+        _chart_signal = _analysis.get("signal", "NO_TRADE")
+        if _chart_signal not in ("NO_TRADE", None, ""):
+            _setup   = _analysis.get("setup_type", "SIGNAL")
+            _conf    = _analysis.get("confidence", 0)
+            _price   = result.get("current_price", "?")
+            _sup     = result.get("stages", {}).get("supervisor", {})
+            _sup_r   = _sup.get("reasoning") or result.get("reject_reason", "–")
+            _what    = _sup.get("what_to_watch") or ""
+            _msg = (
+                f"📡 *{_chart_signal} — {_setup}*\n"
+                f"💰 ราคา: `{_price}` | Conf: {_conf}%\n"
+                f"🤖 _{_sup_r[:180]}_"
+            )
+            if _what:
+                _msg += f"\n👁 *รอ:* _{_what[:150]}_"
+            await _safe_send(send_fn, _msg, parse_mode="Markdown")
+        elif not quiet:
+            # ไม่มี signal เลย — แสดงเฉพาะ manual scan
+            message = supervisor.format_alert(result)
+            await _safe_send(send_fn, message, parse_mode="Markdown")
 
 
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
