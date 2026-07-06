@@ -3373,16 +3373,30 @@ def run():
 
     async def _auto_scan_15min(ctx: ContextTypes.DEFAULT_TYPE):
         now_th = datetime.now(tz=_THAI_TZ_RUN)
+        _time_str = now_th.strftime("%H:%M")
+        print(f"[scheduler] ⏰ {_time_str} — _auto_scan_15min fired")
         if not (6 <= now_th.hour < 23):
+            print(f"[scheduler] 💤 off-hours, skip")
             return
         if not bot_state.get("is_running", True):
+            print(f"[scheduler] ⛔ is_running=False, skip")
             return
-        _time_str = now_th.strftime("%H:%M")
         print(f"[auto_scan] ⏱ {_time_str} Thai — starting 15min scan")
         ctx.job.data = {**(ctx.job.data or {}), "quiet": True, "session_label": f"🔄 {_time_str}"}
-        await auto_scan(ctx)
+        try:
+            await auto_scan(ctx)
+        except Exception as _scan_err:
+            import traceback
+            print(f"[auto_scan] ❌ EXCEPTION in auto_scan: {_scan_err}")
+            print(traceback.format_exc()[-600:])
 
     app.job_queue.run_repeating(_auto_scan_15min, interval=900, first=30)
+
+    async def _heartbeat(ctx: ContextTypes.DEFAULT_TYPE):
+        now_th = datetime.now(tz=_THAI_TZ_RUN)
+        print(f"[heartbeat] 💓 {now_th.strftime('%H:%M:%S')} — scheduler alive")
+
+    app.job_queue.run_repeating(_heartbeat, interval=300, first=60)
 
     # Dashboard scan request poller — ทุก 5 วิ รับ Scan Now จาก UI
     app.job_queue.run_repeating(poll_dashboard_scan, interval=5, first=10)
