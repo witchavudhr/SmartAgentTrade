@@ -490,7 +490,7 @@ def get_session() -> dict:
     return {
         "session": name,
         "emoji": emoji,
-        "tradeable": (is_london or is_ny or is_tokyo) and not market_closed,
+        "tradeable": (6.0 <= t < 23.0) and not market_closed,
         "market_closed": market_closed,
         "holiday_name": holiday_name,
         "is_london": is_london,
