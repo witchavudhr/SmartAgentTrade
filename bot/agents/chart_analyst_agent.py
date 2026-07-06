@@ -62,7 +62,7 @@ OUTPUT (JSON only):
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 """
 
-_SDK_TIMEOUT = 90   # วินาที — ถ้า SDK ช้ากว่านี้ให้ supervisor skip scan
+_SDK_TIMEOUT = 150  # วินาที — hard cancel ถ้า SDK ไม่ตอบใน 150s
 
 
 def _fmt(val):
@@ -194,13 +194,18 @@ def analyze(smc_summary: dict) -> dict:
     prompt = _build_prompt(smc_summary)
 
     # asyncio.run() ได้เพราะถูกเรียกใน run_in_executor thread (ไม่มี event loop)
-    raw = asyncio.run(_query_async(prompt))
+    # asyncio.wait_for ทำ hard cancel ถ้า SDK ไม่ตอบภายใน _SDK_TIMEOUT วินาที
+    async def _run_with_timeout():
+        return await asyncio.wait_for(_query_async(prompt), timeout=_SDK_TIMEOUT)
+
+    try:
+        raw = asyncio.run(_run_with_timeout())
+    except asyncio.TimeoutError:
+        elapsed = round(time.time() - t0, 1)
+        raise TimeoutError(f"Agent SDK did not respond within {elapsed}s ({_SDK_TIMEOUT}s limit)")
 
     elapsed = round(time.time() - t0, 1)
     print(f"[AgentSDK] response in {elapsed}s: {raw[:120]}")
-
-    if elapsed > _SDK_TIMEOUT:
-        raise TimeoutError(f"Agent SDK took {elapsed}s > {_SDK_TIMEOUT}s limit")
 
     result = safe_json_parse(
         raw,

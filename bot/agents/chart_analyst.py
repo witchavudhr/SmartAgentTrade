@@ -274,25 +274,25 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     score = sum([has_sweep, has_ob_nearby, has_structure, has_liq_nearby])
 
     if score >= 2 and bias != "neutral":
-        print(f"[has_signal] ✅ TREND — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
+        print(f"[has_signal] ✅ {_now_th} TREND — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
         return True  # Trend setup viable — ให้ Claude วิเคราะห์ตำแหน่ง OB ต่อ
 
     # ── ชั้น 3: Swing Entry signal (fallback เมื่อ trend ไม่ครบ) ──
     rev = smc_summary.get("reversal", {})
     if rev.get("swing_signal") and rev.get("swing_score", 0) >= 3:
-        print(f"[has_signal] ✅ SWING — signal={rev.get('swing_signal')} score={rev.get('swing_score')}")
+        print(f"[has_signal] ✅ {_now_th} SWING — signal={rev.get('swing_signal')} score={rev.get('swing_score')}")
         return True
 
     # ── ชั้น 4: Type C indicator signal ──────────────────────────
     signal_type = smc_summary.get("signal_type")
     if signal_type and "C_" in str(signal_type):
-        print(f"[has_signal] ✅ TYPE_C — signal_type={signal_type}")
+        print(f"[has_signal] ✅ {_now_th} TYPE_C — signal_type={signal_type}")
         return True
 
     # ── ชั้น 6: AMD Pattern (Range→Sweep→CHoCH→BOS) ──────────
     amd = smc_summary.get("amd", {})
     if amd.get("amd_signal") and amd.get("amd_score", 0) >= 4:
-        print(f"[has_signal] ✅ AMD — {amd.get('amd_signal')} {amd.get('amd_stars','')} score={amd.get('amd_score')}")
+        print(f"[has_signal] ✅ {_now_th} AMD — {amd.get('amd_signal')} {amd.get('amd_stars','')} score={amd.get('amd_score')}")
         return True
 
     # ── ชั้น 7: Recent OB Rejection (CASE G) — rejection เพิ่งเกิดใน 5 แท่ง ──
@@ -300,21 +300,21 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     _bull_rej = smc_summary.get("recent_bull_ob_rejection")
     if _bear_rej and _bear_rej.get("bars_ago", 99) <= 3:
         if _buy_bias_active:
-            print(f"[has_signal] ⛔ COUNTER-TREND BLOCK — Bear OB rejection แต่ BUY sweep active, ข้าม")
+            print(f"[has_signal] ⛔ {_now_th} COUNTER-TREND BLOCK — Bear OB rejection แต่ BUY sweep active, ข้าม")
         else:
-            print(f"[has_signal] ✅ OB_REJECTION (BEAR) — zone={_bear_rej.get('ob_zone')} bars_ago={_bear_rej.get('bars_ago')}")
+            print(f"[has_signal] ✅ {_now_th} OB_REJECTION (BEAR) — zone={_bear_rej.get('ob_zone')} bars_ago={_bear_rej.get('bars_ago')}")
             return True
     if _bull_rej and _bull_rej.get("bars_ago", 99) <= 3:
         if _sell_bias_active:
-            print(f"[has_signal] ⛔ COUNTER-TREND BLOCK — Bull OB rejection แต่ SELL sweep active, ข้าม")
+            print(f"[has_signal] ⛔ {_now_th} COUNTER-TREND BLOCK — Bull OB rejection แต่ SELL sweep active, ข้าม")
         else:
-            print(f"[has_signal] ✅ OB_REJECTION (BULL) — zone={_bull_rej.get('ob_zone')} bars_ago={_bull_rej.get('bars_ago')}")
+            print(f"[has_signal] ✅ {_now_th} OB_REJECTION (BULL) — zone={_bull_rej.get('ob_zone')} bars_ago={_bull_rej.get('bars_ago')}")
             return True
 
     # ── ชั้น 8: Post-Sweep Continuation Pullback (CASE H) ────────────
     _post = smc_summary.get("post_sweep_continuation")
     if _post:
-        print(f"[has_signal] ✅ POST_SWEEP_CONT — dir={_post.get('direction')} pb={_post.get('pullback_pct')}% drop={_post.get('initial_drop_pts') or _post.get('initial_rise_pts')}p")
+        print(f"[has_signal] ✅ {_now_th} POST_SWEEP_CONT — dir={_post.get('direction')} pb={_post.get('pullback_pct')}% drop={_post.get('initial_drop_pts') or _post.get('initial_rise_pts')}p")
         return True
 
     # ── ชั้น 9: Pattern 3 — Stored OB Rejection (ข้ามสแกน, 60 นาที) ──
@@ -324,19 +324,19 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         _mid = (_lo + _hi) / 2
         _dist = abs(price - _mid) * 10
         if _dist <= 200:  # ราคาอยู่ใกล้ OB ที่เคย reject (<200p)
-            print(f"[has_signal] ✅ STORED_OB_REJ — {_z.get('direction')} zone={_z['zone']} dist={_dist:.0f}p")
+            print(f"[has_signal] ✅ {_now_th} STORED_OB_REJ — {_z.get('direction')} zone={_z['zone']} dist={_dist:.0f}p")
             return True
 
     # ── ชั้น 10: Pattern 1 — Sweep+Rejection Watch active ────────────
     _srw = smc_summary.get("sweep_rejection_watch")
     if _srw:
-        print(f"[has_signal] ✅ SWEEP_WATCH active — {_srw.get('direction')} watching since {_srw.get('watched_since')}")
+        print(f"[has_signal] ✅ {_now_th} SWEEP_WATCH active — {_srw.get('direction')} watching since {_srw.get('watched_since')}")
         return True
 
     # ── ชั้น 11: CASE K — CHoCH + Sweep → Rejection ─────────────────
     _ck = smc_summary.get("choch_sweep_setup")
     if _ck and _ck.get("confidence") in ("HIGH", "MEDIUM"):
-        print(f"[has_signal] ✅ CHOCH_SWEEP — dir={_ck['direction']} choch={_ck['choch_level']} sweep={_ck['sweep_level']} conf={_ck['confidence']}")
+        print(f"[has_signal] ✅ {_now_th} CHOCH_SWEEP — dir={_ck['direction']} choch={_ck['choch_level']} sweep={_ck['sweep_level']} conf={_ck['confidence']}")
         return True
 
     print(f"[has_signal] ❌ {_now_th} NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
