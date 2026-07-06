@@ -206,12 +206,16 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     1. SMC Engine: sweep + OB + structure
     2. Advanced: signal_type จาก indicator logic (A/B/C)
     """
+    import pytz
+    from datetime import datetime as _dt
+    _now_th = _dt.now(pytz.timezone("Asia/Bangkok")).strftime("%H:%M:%S")
+
     if not smc_summary:
         return False
 
     # ── ชั้น 1: session filter ────────────────────────────────
     if not force_session and not smc_summary.get("tradeable_session", True):
-        print(f"[has_signal] ❌ OFF-HOURS — session={smc_summary.get('session',{}).get('session','?')}")
+        print(f"[has_signal] ❌ {_now_th} OFF-HOURS — session={smc_summary.get('session',{}).get('session','?')}")
         return False  # Off-hours — ไม่เทรด (bypass ด้วย force_session=True)
 
     # ── ชั้น 2: ราคาอยู่ใน OB → ผ่านทันที (OB-first logic) ──────
@@ -228,16 +232,19 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     eql_sweep = smc_summary.get("eql_sweep_signal")
     eqh_sweep = smc_summary.get("eqh_sweep_signal")
     if eql_sweep or eqh_sweep:
-        print(f"[has_signal] ✅ EQL/EQH SWEEP (CASE F equiv) — eql={eql_sweep} eqh={eqh_sweep}")
+        print(f"[has_signal] ✅ {_now_th} EQL/EQH SWEEP (CASE F equiv) — eql={eql_sweep} eqh={eqh_sweep}")
         return True
 
     # ── Counter-Trend Block ────────────────────────────────────────
-    # ถ้า post-sweep BUY active → อย่าส่ง signal เพราะ Bear OB nearby เพียงอย่างเดียว
-    # (Bear OB อาจโดน consume) → รอ BSL sweep ก่อนถึงจะ SELL ได้
+    # ใช้ post_sweep_continuation (age ≤30 bars) + last_sweep เฉพาะตอน sweep ยัง fresh (≤50 bars)
     _post_dir = (smc_summary.get("post_sweep_continuation") or {}).get("direction")
     _last_sw  = smc_summary.get("last_sweep") or {}
-    _buy_bias_active  = _post_dir == "BUY" or _last_sw.get("kind") == "low"
-    _sell_bias_active = _post_dir == "SELL" or _last_sw.get("kind") == "high"
+    _adv      = smc_summary.get("advanced") or {}
+    _sw_l_age = int(_adv.get("sweep_l_age_bars") or 999)
+    _sw_h_age = int(_adv.get("sweep_h_age_bars") or 999)
+    _SWEEP_BLOCK_BARS = 50  # บล็อกแค่ 50 bars หลัง sweep (~4 ชั่วโมง M5)
+    _buy_bias_active  = _post_dir == "BUY"  or (_last_sw.get("kind") == "low"  and _sw_l_age <= _SWEEP_BLOCK_BARS)
+    _sell_bias_active = _post_dir == "SELL" or (_last_sw.get("kind") == "high" and _sw_h_age <= _SWEEP_BLOCK_BARS)
 
     # ── ชั้น 3: TREND setup (priority รอง) ───────────────────────
     # NOTE: ถ้าอยากปิด cost filter นี้ → เปลี่ยน OB_NEARBY_THRESHOLD เป็น 9999
@@ -332,7 +339,7 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         print(f"[has_signal] ✅ CHOCH_SWEEP — dir={_ck['direction']} choch={_ck['choch_level']} sweep={_ck['sweep_level']} conf={_ck['confidence']}")
         return True
 
-    print(f"[has_signal] ❌ NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
+    print(f"[has_signal] ❌ {_now_th} NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
     return False
 
 

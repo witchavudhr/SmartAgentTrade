@@ -1545,6 +1545,11 @@ def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20
         sweep_low  = swept['low'].min()
         sweep_iloc = recent['low'].values.argmin()
 
+        # sweep ต้องไม่เก่าเกิน 48 bars (4 ชั่วโมง M5) — ป้องกัน stale signal
+        bars_since_sweep = len(recent) - 1 - sweep_iloc
+        if bars_since_sweep > 48:
+            continue
+
         # ราคาปัจจุบันต้องกลับขึ้นมาเหนือ EQL แล้ว
         if current_price <= eql:
             continue
@@ -1576,6 +1581,11 @@ def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20
             continue
         sweep_high  = swept['high'].max()
         sweep_iloc  = recent['high'].values.argmax()
+
+        # sweep ต้องไม่เก่าเกิน 48 bars (4 ชั่วโมง M5)
+        bars_since_sweep = len(recent) - 1 - sweep_iloc
+        if bars_since_sweep > 48:
+            continue
 
         # ราคาปัจจุบันต้องลงมาต่ำกว่า EQH แล้ว
         if current_price >= eqh:

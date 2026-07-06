@@ -3371,16 +3371,18 @@ def run():
     from datetime import timezone, timedelta as _td
     _THAI_TZ_RUN = timezone(_td(hours=7))
 
-    async def _auto_scan_5min(ctx: ContextTypes.DEFAULT_TYPE):
+    async def _auto_scan_15min(ctx: ContextTypes.DEFAULT_TYPE):
         now_th = datetime.now(tz=_THAI_TZ_RUN)
         if not (6 <= now_th.hour < 23):
             return
         if not bot_state.get("is_running", True):
             return
-        ctx.job.data = {**(ctx.job.data or {}), "quiet": True, "session_label": "🔄 5min"}
+        _time_str = now_th.strftime("%H:%M")
+        print(f"[auto_scan] ⏱ {_time_str} Thai — starting 15min scan")
+        ctx.job.data = {**(ctx.job.data or {}), "quiet": True, "session_label": f"🔄 {_time_str}"}
         await auto_scan(ctx)
 
-    app.job_queue.run_repeating(_auto_scan_5min, interval=300, first=30)
+    app.job_queue.run_repeating(_auto_scan_15min, interval=900, first=30)
 
     # Dashboard scan request poller — ทุก 5 วิ รับ Scan Now จาก UI
     app.job_queue.run_repeating(poll_dashboard_scan, interval=5, first=10)

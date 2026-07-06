@@ -42,8 +42,9 @@ CRITICAL RULES:
 - PULLBACK VALIDITY: SELL pullback close must stay BELOW rejection high; BUY must stay ABOVE rejection low → if violated = INVALIDATED → NO_TRADE
 - ob_quality=LOW (<50p gap) → reduce confidence 15-20
 - When unsure → NO_TRADE (never force)
-- COUNTER-TREND BLOCK: if post_sweep_continuation=BUY (or last_sweep=SSL recovered) → do NOT signal SELL even if Bear OB is nearby above. BUY bias confirmed = OB may be consumed. Wait for BSL sweep to flip bias before any SELL.
-- Same rule inverse: if post_sweep_continuation=SELL (BSL swept) → do NOT signal BUY into nearby Bull OB below.
+- COUNTER-TREND BLOCK: if post_sweep_continuation=BUY (active, ≤30 bars) → do NOT signal SELL into nearby Bear OB. Wait for BSL sweep to flip bias.
+  Exception: if sweep age >50 bars → bias has reset, SELL at EQH/Bear OB is allowed again.
+- Same rule inverse: if post_sweep_continuation=SELL (active, ≤30 bars) → do NOT signal BUY into nearby Bull OB.
 
 SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
 - BSL_SWEEP_SELL: SL = last_sweep.level + 3.0 (3 pts above the swept BSL high)
