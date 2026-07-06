@@ -1543,14 +1543,21 @@ def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20
         if swept.empty:
             continue
         sweep_low  = swept['low'].min()
-        sweep_iloc = recent['low'].values.argmin()  # position in recent slice
+        sweep_iloc = recent['low'].values.argmin()
 
         # ราคาปัจจุบันต้องกลับขึ้นมาเหนือ EQL แล้ว
         if current_price <= eql:
             continue
 
-        # ไม่ควรมี new low หลังจุด sweep (bars after sweep_iloc in recent)
+        # แท่ง sweep ต้อง close กลับเหนือ EQL (rejection candle) หรือแท่งถัดไปต้องปิดเหนือ
+        sweep_bar = recent.iloc[sweep_iloc]
         after = recent.iloc[sweep_iloc + 1:]
+        rejection_on_sweep = sweep_bar['close'] >= eql
+        rejection_after    = (not after.empty) and (after['close'].iloc[0] >= eql)
+        if not (rejection_on_sweep or rejection_after):
+            continue  # sweep แล้วแต่ยังไม่มี rejection close — รอก่อน
+
+        # ไม่ควรมี new low หลังจุด sweep
         if not after.empty and after['low'].min() < sweep_low:
             continue  # มี new low — ยังไม่ bounce จริง
 
@@ -1574,8 +1581,15 @@ def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20
         if current_price >= eqh:
             continue
 
-        # ไม่ควรมี new high หลังจุด sweep
+        # แท่ง sweep ต้อง close กลับต่ำกว่า EQH (rejection candle) หรือแท่งถัดไป
+        sweep_bar = recent.iloc[sweep_iloc]
         after = recent.iloc[sweep_iloc + 1:]
+        rejection_on_sweep = sweep_bar['close'] <= eqh
+        rejection_after    = (not after.empty) and (after['close'].iloc[0] <= eqh)
+        if not (rejection_on_sweep or rejection_after):
+            continue  # sweep แล้วแต่ยังไม่มี rejection close — รอก่อน
+
+        # ไม่ควรมี new high หลังจุด sweep
         if not after.empty and after['high'].max() > sweep_high:
             continue  # มี new high — ยังไม่ reject จริง
 
