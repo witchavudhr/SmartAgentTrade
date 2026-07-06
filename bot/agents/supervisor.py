@@ -83,6 +83,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         return result
 
     result["stages"]["smc"] = "SIGNAL_FOUND"
+    # เก็บ smc setup ไว้เพื่อ notifier แสดงใน lightweight alert แม้ chart AI บอก NO_TRADE
+    _eql = smc_summary.get("eql_eqh_sweep") or {}
+    _sw  = smc_summary.get("last_sweep") or {}
+    _pc  = smc_summary.get("post_sweep_continuation") or {}
+    result["smc_setup"] = (
+        _eql.get("signal")
+        or (_sw.get("kind") and f"SWEEP_{_sw['kind'].upper()}")
+        or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
+        or "SIGNAL"
+    )
+    result["current_price"] = smc_summary.get("current_price")
 
     # ── Stage 2: Chart Analyst — SDK (subscription) ──
     try:

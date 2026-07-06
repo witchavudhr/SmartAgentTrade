@@ -1646,25 +1646,33 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         message += f"\n🤖 *Trade #{trade_id}* | `/closetrade` เมื่อปิด position"
         await _safe_send(send_fn, message, parse_mode="Markdown")
     else:
-        # Supervisor reject — ถ้ามี chart signal ให้แจ้งเตือนสั้นๆ เพื่อให้ human เปิดกราฟดู
-        _analysis = result.get("analysis") or {}
+        # Supervisor reject — ถ้า smc หรือ chart เจอ signal ให้แจ้งเตือนสั้นๆ
+        _analysis     = result.get("analysis") or {}
         _chart_signal = _analysis.get("signal", "NO_TRADE")
-        if _chart_signal not in ("NO_TRADE", None, ""):
-            _setup   = _analysis.get("setup_type", "SIGNAL")
-            _conf    = _analysis.get("confidence", 0)
-            _price   = result.get("current_price", "?")
-            _sup     = result.get("stages", {}).get("supervisor", {})
-            _sup_r   = _sup.get("reasoning") or result.get("reject_reason", "–")
-            _what    = _sup.get("what_to_watch") or ""
+        _smc_found    = result.get("stages", {}).get("smc") == "SIGNAL_FOUND"
+
+        if _chart_signal not in ("NO_TRADE", None, "") or _smc_found:
+            # ใช้ chart signal ถ้ามี ไม่งั้นใช้ smc setup
+            _display_signal = _chart_signal if _chart_signal not in ("NO_TRADE", None, "") else result.get("smc_setup", "SIGNAL")
+            _setup = _analysis.get("setup_type") or result.get("smc_setup", "")
+            _conf  = _analysis.get("confidence", 0)
+            _price = result.get("current_price", "?")
+            _sup   = result.get("stages", {}).get("supervisor", {})
+            _sup_r = _sup.get("reasoning") or result.get("reject_reason", "–")
+            _what  = _sup.get("what_to_watch") or ""
+            # log reasoning ชัดๆ ใน console
+            print(f"[notifier] 📡 SMC signal={_display_signal} chart={_chart_signal} | reject: {_sup_r[:120]}")
             _msg = (
-                f"📡 *{_chart_signal} — {_setup}*\n"
-                f"💰 ราคา: `{_price}` | Conf: {_conf}%\n"
-                f"🤖 _{_sup_r[:180]}_"
+                f"📡 *{_display_signal}*"
+                + (f" — {_setup}" if _setup and _setup != _display_signal else "")
+                + f"\n💰 ราคา: `{_price}`"
+                + (f" | Conf: {_conf}%" if _conf else "")
+                + f"\n🤖 _{_sup_r[:200]}_"
             )
             if _what:
                 _msg += f"\n👁 *รอ:* _{_what[:150]}_"
             await _safe_send(send_fn, _msg, parse_mode="Markdown")
-        # ไม่มี signal เลย → เงียบ (ไม่ว่าจะ quiet หรือ manual scan)
+        # ไม่มี signal เลย → เงียบ
 
 
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
