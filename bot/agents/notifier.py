@@ -3381,7 +3381,7 @@ def run():
         if not bot_state.get("is_running", True):
             print(f"[scheduler] ⛔ is_running=False, skip")
             return
-        print(f"[auto_scan] ⏱ {_time_str} Thai — starting 15min scan")
+        print(f"[auto_scan] ⏱ {_time_str} Thai — starting 5min scan")
         ctx.job.data = {**(ctx.job.data or {}), "quiet": True, "session_label": f"🔄 {_time_str}"}
         try:
             await auto_scan(ctx)
@@ -3390,7 +3390,7 @@ def run():
             print(f"[auto_scan] ❌ EXCEPTION in auto_scan: {_scan_err}")
             print(traceback.format_exc()[-600:])
 
-    app.job_queue.run_repeating(_auto_scan_15min, interval=900, first=30)
+    app.job_queue.run_repeating(_auto_scan_15min, interval=300, first=30)
 
     async def _heartbeat(ctx: ContextTypes.DEFAULT_TYPE):
         now_th = datetime.now(tz=_THAI_TZ_RUN)
