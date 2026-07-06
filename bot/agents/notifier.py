@@ -1306,6 +1306,7 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
 
         # Save watching_gate state (ถ้ายังไม่มี หรือ level ต่างกัน)
         _existing_watch = bot_state.get("watching_gate")
+        # save state เพื่อ auto-alert ตอน sweep จริง แต่ไม่ส่ง Telegram (รอ sweep ก่อน)
         if not _existing_watch or abs(float(_existing_watch.get("level") or 0) - float(_liq_level or 0)) > 5.0:
             state_manager.set_field(bot_state, "watching_gate", {
                 "pool_type": _pool_type,
@@ -1313,70 +1314,7 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                 "signal":    _liq_signal,
                 "since":     datetime.now().strftime("%H:%M %d/%m"),
             })
-            await _safe_send(
-                send_fn,
-                f"👁 *WATCHING — รอ Liquidity Sweep*\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"{_arrow} Setup: *{_liq_signal}* | ราคา: `{_price}`\n"
-                f"🔒 Gate: *{_pool_type}* {_liq_line} ยังไม่ถูก sweep\n"
-                f"⏳ รอราคาวิ่งดูด {_pool_type} ก่อน แล้วค่อย reverse{_map_line}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"_จะ alert อัตโนมัติเมื่อ {_pool_type} ถูก sweep_",
-                parse_mode="Markdown"
-            )
-        else:
-            # watching อยู่แล้ว — เช็ค OB ก่อนส่ง one-liner
-            _since = _existing_watch.get("since", "?")
-
-            # เช็คว่าราคาอยู่ใน OB zone ไหม (แม้ liq_gate ยังไม่ sweep)
-            _chart_s  = result.get("stages", {}).get("chart", {})
-            _bull_ob  = _chart_s.get("bull_ob_zone") or {}
-            _bear_ob  = _chart_s.get("bear_ob_zone") or {}
-            _px       = float(_price) if _price else 0
-            _in_bull  = _bull_ob and _bull_ob.get("bottom") and _bull_ob.get("top") and \
-                        float(_bull_ob["bottom"]) <= _px <= float(_bull_ob["top"])
-            _in_bear  = _bear_ob and _bear_ob.get("bottom") and _bear_ob.get("top") and \
-                        float(_bear_ob["bottom"]) <= _px <= float(_bear_ob["top"])
-
-            if _in_bull or _in_bear:
-                _ob      = _bull_ob if _in_bull else _bear_ob
-                _ob_label = f"Bull OB `{_ob.get('bottom')}–{_ob.get('top')}`" if _in_bull \
-                       else f"Bear OB `{_ob.get('bottom')}–{_ob.get('top')}`"
-                _ob_dir   = "BUY" if _in_bull else "SELL"
-
-                # ถาม Claude ว่าควรเข้าไหม แม้ liq_gate ยังไม่ sweep
-                _ob_verdict = await _ask_ob_entry_in_watching(
-                    price=_px, ob=_ob, ob_dir=_ob_dir,
-                    liq_type=_pool_type, liq_level=_liq_level,
-                    chart_stage=_chart_s, result=result,
-                )
-                await _safe_send(
-                    send_fn,
-                    f"⚠️ *ราคาเข้า OB ขณะ Watching!*\n"
-                    f"━━━━━━━━━━━━━━━━━\n"
-                    f"📍 ราคา `{_price}` อยู่ใน {_ob_label}\n"
-                    f"🔒 {_pool_type} {_liq_line} ยังไม่ sweep — gate ยังปิด\n"
-                    f"👁 _(Watching since {_since})_\n"
-                    f"━━━━━━━━━━━━━━━━━\n"
-                    f"{_ob_verdict}",
-                    parse_mode="Markdown"
-                )
-            else:
-                # ไม่ใน OB — ส่ง one-liner ปกติ (ข้ามถ้า quiet — ไม่ใช่ pattern ใหม่)
-                if not quiet:
-                    _bull_dist = round(abs(_px - float(_bull_ob.get("top", _px))) * 10) if _bull_ob.get("top") else None
-                    _bear_dist = round(abs(_px - float(_bear_ob.get("bottom", _px))) * 10) if _bear_ob.get("bottom") else None
-                    _ob_dist_str = ""
-                    if _bull_dist is not None:
-                        _ob_dist_str = f" | Bull OB ห่าง {_bull_dist}p"
-                    elif _bear_dist is not None:
-                        _ob_dist_str = f" | Bear OB ห่าง {_bear_dist}p"
-                    await _safe_send(
-                        send_fn,
-                        f"👁 *Watching {_pool_type} {_liq_line}* — ยังไม่ sweep _(since {_since})_\n"
-                        f"ราคา: `{_price}`{_ob_dist_str} | รอ {_pool_type} sweep แล้วค่อย {_liq_signal}",
-                        parse_mode="Markdown"
-                    )
+            print(f"[notifier] 👁 liq_gate watching {_pool_type} @ {_liq_level} — รอ sweep (เงียบ Telegram)")
         return
 
     if result.get("approved"):
@@ -1649,30 +1587,29 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         # Supervisor reject — ถ้า smc หรือ chart เจอ signal ให้แจ้งเตือนสั้นๆ
         _analysis     = result.get("analysis") or {}
         _chart_signal = _analysis.get("signal", "NO_TRADE")
-        _smc_found    = result.get("stages", {}).get("smc") == "SIGNAL_FOUND"
 
-        if _chart_signal not in ("NO_TRADE", None, "") or _smc_found:
-            # ใช้ chart signal ถ้ามี ไม่งั้นใช้ smc setup
-            _display_signal = _chart_signal if _chart_signal not in ("NO_TRADE", None, "") else result.get("smc_setup", "SIGNAL")
-            _setup = _analysis.get("setup_type") or result.get("smc_setup", "")
+        if _chart_signal not in ("NO_TRADE", None, ""):
+            _setup = _analysis.get("setup_type", "")
             _conf  = _analysis.get("confidence", 0)
             _price = result.get("current_price", "?")
             _sup   = result.get("stages", {}).get("supervisor", {})
             _sup_r = _sup.get("reasoning") or result.get("reject_reason", "–")
             _what  = _sup.get("what_to_watch") or ""
-            # log reasoning ชัดๆ ใน console
-            print(f"[notifier] 📡 SMC signal={_display_signal} chart={_chart_signal} | reject: {_sup_r[:120]}")
+            print(f"[notifier] 📡 chart={_chart_signal} setup={_setup} | reject: {_sup_r[:120]}")
             _msg = (
-                f"📡 *{_display_signal}*"
-                + (f" — {_setup}" if _setup and _setup != _display_signal else "")
-                + f"\n💰 ราคา: `{_price}`"
+                f"📡 *{_chart_signal} — {_setup}*\n"
+                f"💰 ราคา: `{_price}`"
                 + (f" | Conf: {_conf}%" if _conf else "")
                 + f"\n🤖 _{_sup_r[:200]}_"
             )
             if _what:
                 _msg += f"\n👁 *รอ:* _{_what[:150]}_"
             await _safe_send(send_fn, _msg, parse_mode="Markdown")
-        # ไม่มี signal เลย → เงียบ
+        else:
+            # chart NO_TRADE → log ใน console เฉยๆ ไม่ส่ง Telegram
+            _smc_setup = result.get("smc_setup", "")
+            _rej = result.get("reject_reason", "–")
+            print(f"[notifier] 🔇 smc={_smc_setup} chart=NO_TRADE | {_rej[:100]}")
 
 
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
