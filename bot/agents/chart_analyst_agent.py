@@ -49,7 +49,7 @@ OUTPUT (JSON only):
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 """
 
-_SDK_TIMEOUT = 45   # วินาที — ถ้า SDK ช้ากว่านี้ให้ supervisor fallback
+_SDK_TIMEOUT = 90   # วินาที — ถ้า SDK ช้ากว่านี้ให้ supervisor skip scan
 
 
 def _fmt(val):

@@ -84,13 +84,14 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
 
     result["stages"]["smc"] = "SIGNAL_FOUND"
 
-    # ── Stage 2: Chart Analyst — SDK (subscription) → fallback API ──
+    # ── Stage 2: Chart Analyst — SDK (subscription) ──
     try:
         from agents import chart_analyst_agent
         analysis = chart_analyst_agent.analyze(smc_summary)
     except Exception as _sdk_err:
-        print(f"[Supervisor] ⚠️ Agent SDK failed ({_sdk_err}) — fallback to API")
-        analysis = chart_analyst.analyze(smc_summary)
+        print(f"[Supervisor] ⚠️ Agent SDK failed ({_sdk_err}) — skip scan (no API fallback)")
+        result["reject_reason"] = f"SDK timeout/error — scan skipped"
+        return result
     signal     = analysis.get("signal", "NO_TRADE")
     confidence = analysis.get("confidence", 0)
     chart_vote = analysis.get("vote", "NO")
