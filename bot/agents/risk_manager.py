@@ -213,17 +213,20 @@ def evaluate(
     """
 
     signal = analysis.get("signal", "NO_TRADE")
-    entry = analysis.get("entry_zone")
+    entry = analysis.get("entry_zone") or analysis.get("entry")
     sl = analysis.get("stop_loss")
-    tp = analysis.get("take_profit")
+    tp = analysis.get("take_profit") or analysis.get("tp1")
     htf_aligned = bias.get("aligned", True)
     trade_dir = bias.get("trade_direction", "BOTH")
 
-    # คำนวณ SL เป็น pips
+    # คำนวณ SL เป็น pips — รองรับทั้ง entry_zone=[lo,hi] และ entry=scalar
     sl_pips = 0
     if entry and sl:
-        entry_mid = (entry[0] + entry[1]) / 2
-        sl_pips = abs(entry_mid - sl) * 10  # Gold: 1 pip = $0.1
+        if isinstance(entry, list) and len(entry) == 2:
+            entry_mid = (entry[0] + entry[1]) / 2
+        else:
+            entry_mid = float(entry)
+        sl_pips = abs(entry_mid - float(sl)) * 10  # Gold: 1 pip = $0.1
 
     # ── VETO checks ──────────────────────────────────────────────
 
