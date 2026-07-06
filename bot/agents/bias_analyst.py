@@ -329,7 +329,7 @@ NO  — ถ้า D หรือ E (ระบุชัดว่า H1/H4 ขั�
 }}"""
 
     from agents.sdk_utils import sdk_query
-    raw = sdk_query(prompt, label="BiasAnalyst")
+    raw = sdk_query(prompt, label="BiasAnalyst", timeout=150)
     result = safe_json_parse(
         raw,
         fallback={

@@ -922,6 +922,23 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         bsl_lines = _fmt_liq_list(liq.get("bsl_pools", []), "🔵")
         ssl_lines = _fmt_liq_list(liq.get("ssl_pools", []), "🟠")
 
+        # Weekly pools (M5+M15 merged, 7d)
+        def _fmt_weekly(pools, icon, max_n=8):
+            intact = [p for p in (pools or []) if not p.get("swept")][:max_n]
+            if not intact:
+                return f"  {icon} ไม่มี"
+            lines = []
+            for p in intact:
+                tf_tag  = "M15" if p.get("timeframe") == "M15" else "M5"
+                sz_tag  = "★" if p.get("size") == "major" else "·"
+                lines.append(f"  {icon} {sz_tag}`{p.get('level')}` ({tf_tag})")
+            return "\n".join(lines)
+
+        w_bsl = liq.get("weekly_bsl_pools") or []
+        w_ssl = liq.get("weekly_ssl_pools") or []
+        w_bsl_lines = _fmt_weekly(w_bsl, "🔵")
+        w_ssl_lines = _fmt_weekly(w_ssl, "🟠")
+
         src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"
         msg = (
             f"📦 *Order Blocks*\n"
@@ -935,10 +952,10 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  🟢 {_fmt(m15_bull, 'Bull OB')}\n"
             f"  🔴 {_fmt(m15_bear, 'Bear OB')}\n\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"🌊 *Liquidity Pools (ยังไม่ถูก sweep)*\n"
-            f"*BSL* (เหนือราคา — stop ของ shorts):\n{bsl_lines}\n\n"
-            f"*SSL* (ใต้ราคา — stop ของ longs):\n{ssl_lines}\n"
-            f"_★ = major (EQH/EQL) · · = minor (swing)_"
+            f"🌊 *Liquidity Pools — 7d (ยังไม่ถูก sweep)*\n"
+            f"*BSL* 🔵 (เหนือราคา):\n{w_bsl_lines}\n\n"
+            f"*SSL* 🟠 (ใต้ราคา):\n{w_ssl_lines}\n"
+            f"_★=major(EQH/EQL) ·=minor | M15=stronger_"
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
