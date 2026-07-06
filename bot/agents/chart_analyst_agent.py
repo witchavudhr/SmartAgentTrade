@@ -45,6 +45,18 @@ CRITICAL RULES:
 - COUNTER-TREND BLOCK: if post_sweep_continuation=BUY (or last_sweep=SSL recovered) → do NOT signal SELL even if Bear OB is nearby above. BUY bias confirmed = OB may be consumed. Wait for BSL sweep to flip bias before any SELL.
 - Same rule inverse: if post_sweep_continuation=SELL (BSL swept) → do NOT signal BUY into nearby Bull OB below.
 
+SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
+- BSL_SWEEP_SELL: SL = last_sweep.level + 3.0 (3 pts above the swept BSL high)
+- SSL_SWEEP_BUY:  SL = last_sweep.level - 3.0 (3 pts below the swept SSL low)
+- OB_REJECTION_SELL / STORED_OB_PULLBACK_SELL: SL = bear_ob.top + 3.0
+- OB_REJECTION_BUY  / STORED_OB_PULLBACK_BUY:  SL = bull_ob.bottom - 3.0
+- POST_SWEEP_PULLBACK_SELL: SL = last_sweep.level + 3.0
+- POST_SWEEP_PULLBACK_BUY:  SL = last_sweep.level - 3.0
+- CHOCH_SWEEP_SELL: SL = last_choch.level + 3.0
+- CHOCH_SWEEP_BUY:  SL = last_choch.level - 3.0
+- STRONG_REJECTION: SL = 3 pts beyond the rejection wick extreme
+If none of the above applies and SL cannot be calculated → NO_TRADE (do NOT vote YES with null SL)
+
 OUTPUT (JSON only):
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 """
@@ -90,7 +102,9 @@ def _build_prompt(smc: dict) -> str:
         f"  CHoCH: {choch.get('direction','none')} @ {choch.get('level','?')}",
         f"  BOS:   {bos.get('direction','none')} @ {bos.get('level','?')}",
         "",
-        f"LAST SWEEP: {sweep.get('kind','none')} @ {sweep.get('level','?')} recovered={sweep.get('recovered','?')}",
+        f"LAST SWEEP: {sweep.get('kind','none')} @ {sweep.get('level','?')} recovered={sweep.get('recovered','?')}"
+        + (f" → SL_ref={round(sweep.get('level',0)+3.0,2)}" if sweep.get('kind')=='high' else "")
+        + (f" → SL_ref={round(sweep.get('level',0)-3.0,2)}" if sweep.get('kind')=='low' else ""),
         "",
         "ORDER BLOCKS:",
         f"  Bear OB: {bear_ob.get('bottom','?')} – {bear_ob.get('top','?')} (in_ob={bear_ob.get('in_ob',False)})",
