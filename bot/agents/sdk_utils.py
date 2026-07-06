@@ -12,7 +12,7 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 
-_SDK_TIMEOUT = 60  # วินาที default
+_SDK_TIMEOUT = 90  # วินาที default
 
 
 async def _query_async(prompt: str) -> str:
@@ -30,11 +30,16 @@ def sdk_query(prompt: str, label: str = "SDK", timeout: int = _SDK_TIMEOUT) -> s
     """
     Sync wrapper — เรียกได้จาก thread ปกติ (asyncio.run สร้าง event loop ใหม่)
     คืน raw text response (string)
+    Raises TimeoutError ถ้า SDK ค้างเกิน timeout วินาที (ป้องกัน job ค้างใน APScheduler)
     """
     t0 = time.time()
-    raw = asyncio.run(_query_async(prompt))
+    try:
+        raw = asyncio.run(
+            asyncio.wait_for(_query_async(prompt), timeout=timeout)
+        )
+    except asyncio.TimeoutError:
+        elapsed = round(time.time() - t0, 1)
+        raise TimeoutError(f"[{label}] SDK ไม่ตอบภายใน {elapsed}s ({timeout}s limit) — job จะ terminate")
     elapsed = round(time.time() - t0, 1)
     print(f"[{label}] SDK response {elapsed}s: {raw[:80]}")
-    if elapsed > timeout:
-        raise TimeoutError(f"[{label}] SDK took {elapsed}s > {timeout}s")
     return raw
