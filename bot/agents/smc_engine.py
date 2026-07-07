@@ -391,28 +391,41 @@ class SMCEngine:
         for swing in highs:
             i = swing.index
             level = swing.price
-            # หาแท่งหลัง swing ที่ wick ทะลุแต่ close ไม่ทะลุ
+            # หาแท่งหลัง swing ที่ high ทะลุ level แล้ว close กลับต่ำกว่า level ภายใน 3 bars
+            # รองรับทั้ง single-bar wick sweep และ multi-bar close sweep
             for j in range(i + 1, min(i + 20, n)):
-                if df['high'].iloc[j] > level and df['close'].iloc[j] <= level:
-                    sweeps.append(LiquiditySweep(
-                        kind='sweep_high',
-                        level=level,
-                        index=j,
-                        recovered=True
-                    ))
-                    break
+                if df['high'].iloc[j] > level:
+                    sweep_idx = None
+                    for k in range(j, min(j + 4, n)):
+                        if df['close'].iloc[k] <= level:
+                            sweep_idx = k
+                            break
+                    if sweep_idx is not None:
+                        sweeps.append(LiquiditySweep(
+                            kind='sweep_high',
+                            level=level,
+                            index=sweep_idx,
+                            recovered=True
+                        ))
+                    break  # หยุดที่ sweep bar แรก ไม่ว่าจะ recover หรือไม่
 
         for swing in lows:
             i = swing.index
             level = swing.price
             for j in range(i + 1, min(i + 20, n)):
-                if df['low'].iloc[j] < level and df['close'].iloc[j] >= level:
-                    sweeps.append(LiquiditySweep(
-                        kind='sweep_low',
-                        level=level,
-                        index=j,
-                        recovered=True
-                    ))
+                if df['low'].iloc[j] < level:
+                    sweep_idx = None
+                    for k in range(j, min(j + 4, n)):
+                        if df['close'].iloc[k] >= level:
+                            sweep_idx = k
+                            break
+                    if sweep_idx is not None:
+                        sweeps.append(LiquiditySweep(
+                            kind='sweep_low',
+                            level=level,
+                            index=sweep_idx,
+                            recovered=True
+                        ))
                     break
 
         return sorted(sweeps, key=lambda x: x.index)
@@ -1676,7 +1689,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         } if last_choch else None,
 
         "last_sweep": {
-            "kind": last_sweep.kind,
+            "kind": "high" if last_sweep.kind == "sweep_high" else "low",
             "level": last_sweep.level,
             "recovered": last_sweep.recovered,
         } if last_sweep else None,
