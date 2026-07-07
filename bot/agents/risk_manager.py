@@ -83,7 +83,8 @@ def calculate_scale_in(
     balance: float,
     risk_pct: float = None,
     sweep_buffer_pips: float = 10.0,
-    direction: str = "bullish"
+    direction: str = "bullish",
+    sweep_wick_extreme: float = None,  # wick extreme จาก SSL/BSL sweep — ใช้เป็น SL base ถ้ามี
 ) -> dict:
     """
     คำนวณ Scale-in entries แบบ Pyramid In ใน OB zone
@@ -112,12 +113,19 @@ def calculate_scale_in(
         e1 = round(ob_top, 2)
         e2 = round(ob_middle, 2)
         e3 = round(ob_bottom - sweep_buf, 2)
-        sl = round(ob_bottom - sweep_buf - 0.5, 2)
+        # SL: ใช้ sweep wick extreme - 3 ถ้ามี ไม่งั้นใช้ OB bottom - 10 pts (ไม่ให้แคบเกิน)
+        if sweep_wick_extreme is not None:
+            sl = round(sweep_wick_extreme - 3.0, 2)
+        else:
+            sl = round(ob_bottom - max(sweep_buf + 0.5, 10.0), 2)
     else:  # bearish
         e1 = round(ob_bottom, 2)
         e2 = round(ob_middle, 2)
         e3 = round(ob_top + sweep_buf, 2)
-        sl = round(ob_top + sweep_buf + 0.5, 2)
+        if sweep_wick_extreme is not None:
+            sl = round(sweep_wick_extreme + 3.0, 2)
+        else:
+            sl = round(ob_top + max(sweep_buf + 0.5, 10.0), 2)
 
     # SL distance จาก average entry (weighted 20/40/40)
     avg_entry = (e1 * 0.20 + e2 * 0.40 + e3 * 0.40)

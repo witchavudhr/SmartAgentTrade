@@ -48,6 +48,7 @@ class LiquiditySweep:
     level: float
     index: int
     recovered: bool  # กลับเข้า range แล้วมั้ย
+    wick_extreme: float = 0.0  # จุดสุดของ wick จริง (low สำหรับ sweep_low, high สำหรับ sweep_high)
 
 @dataclass
 class SMCResult:
@@ -395,8 +396,10 @@ class SMCEngine:
             for j in range(i + 1, n):
                 if df['high'].iloc[j] > level:
                     sweep_idx = None
+                    wick_high = df['high'].iloc[j]  # track จุดสูงสุดของ wick จริง
                     # ขยาย recovery window เป็น 8 bars รองรับ slow recovery หลัง sweep
                     for k in range(j, min(j + 8, n)):
+                        wick_high = max(wick_high, df['high'].iloc[k])
                         if df['close'].iloc[k] <= level:
                             sweep_idx = k
                             break
@@ -405,7 +408,8 @@ class SMCEngine:
                             kind='sweep_high',
                             level=level,
                             index=sweep_idx,
-                            recovered=True
+                            recovered=True,
+                            wick_extreme=round(wick_high, 2),
                         ))
                     break  # หยุดที่ sweep bar แรก ไม่ว่าจะ recover หรือไม่
 
@@ -416,8 +420,10 @@ class SMCEngine:
             for j in range(i + 1, n):
                 if df['low'].iloc[j] < level:
                     sweep_idx = None
+                    wick_low = df['low'].iloc[j]  # track จุดต่ำสุดของ wick จริง
                     # ขยาย recovery window เป็น 8 bars
                     for k in range(j, min(j + 8, n)):
+                        wick_low = min(wick_low, df['low'].iloc[k])
                         if df['close'].iloc[k] >= level:
                             sweep_idx = k
                             break
@@ -426,7 +432,8 @@ class SMCEngine:
                             kind='sweep_low',
                             level=level,
                             index=sweep_idx,
-                            recovered=True
+                            recovered=True,
+                            wick_extreme=round(wick_low, 2),
                         ))
                     break
 
@@ -1694,6 +1701,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             "kind": "high" if last_sweep.kind == "sweep_high" else "low",
             "level": last_sweep.level,
             "recovered": last_sweep.recovered,
+            "wick_extreme": last_sweep.wick_extreme,
         } if last_sweep else None,
 
         "active_ob": {
