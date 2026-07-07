@@ -213,6 +213,14 @@ def analyze(smc_summary: dict) -> dict:
     except asyncio.TimeoutError:
         elapsed = round(time.time() - t0, 1)
         raise TimeoutError(f"Agent SDK did not respond within {elapsed}s ({_SDK_TIMEOUT}s limit)")
+    except Exception as e:
+        err_str = str(e).lower()
+        elapsed = round(time.time() - t0, 1)
+        # Rate limit / usage limit — ไม่ crash process แค่ skip scan นี้
+        if any(k in err_str for k in ("rate limit", "429", "usage limit", "quota", "overloaded", "529")):
+            print(f"[AgentSDK] ⚠️ Rate/usage limit ({elapsed}s): {e}")
+            raise RuntimeError(f"AgentSDK rate limit — skip this scan: {e}")
+        raise  # error อื่น propagate ตามปกติ
 
     elapsed = round(time.time() - t0, 1)
     print(f"[AgentSDK] response in {elapsed}s: {raw[:120]}")
