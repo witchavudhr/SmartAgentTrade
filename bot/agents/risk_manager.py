@@ -239,17 +239,8 @@ def evaluate(
 
     # ── VETO checks ──────────────────────────────────────────────
 
-    # 1. Loss streak
+    # 1. Loss streak — ปิดการ VETO, แค่เก็บ streak ไว้แสดงใน notes
     streak = check_loss_streak()
-    if streak >= 3:
-        return {
-            "approved": False,
-            "veto": True,
-            "veto_reason": f"🚫 Loss streak {streak} ครั้งติด — หยุดพักก่อน",
-            "lot": 0,
-            "risk_pct": 0,
-            "notes": "แนะนำ review strategy ก่อนเทรดต่อ"
-        }
 
     # 2. Daily loss limit
     daily_pnl = get_daily_pnl_pct(balance)
