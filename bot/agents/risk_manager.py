@@ -221,6 +221,7 @@ def evaluate(
 
     # คำนวณ SL เป็น pips — รองรับทั้ง entry_zone=[lo,hi] และ entry=scalar
     sl_pips = 0
+    entry_mid = None
     if entry and sl:
         if isinstance(entry, list) and len(entry) == 2:
             entry_mid = (entry[0] + entry[1]) / 2
@@ -265,8 +266,15 @@ def evaluate(
             "notes": "ต้องมี SL ก่อนเสมอ"
         }
 
-    # 4. RR ต่ำเกินไป
+    # 4. RR ต่ำเกินไป — คำนวณจาก entry/SL/TP เอง (Claude ไม่ได้ส่ง rr_ratio มา)
     rr = analysis.get("rr_ratio", 0) or 0
+    if rr == 0 and entry_mid and sl and tp:
+        try:
+            tp_dist = abs(float(tp) - entry_mid)
+            sl_dist = abs(entry_mid - float(sl))
+            rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
+        except (TypeError, ValueError, ZeroDivisionError):
+            rr = 0
     if rr < 1.5:
         return {
             "approved": False,
