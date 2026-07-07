@@ -56,6 +56,15 @@ SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
 - STRONG_REJECTION: SL = 3 pts beyond the rejection wick extreme
 If none of the above applies and SL cannot be calculated → NO_TRADE (do NOT vote YES with null SL)
 
+TP SELECTION (must achieve RR ≥ 1:1.5):
+- Calculate required_tp = entry + (entry - stop_loss) × 1.5  [BUY]
+                        = entry - (stop_loss - entry) × 1.5  [SELL]
+- For BUY: scan WEEKLY BSL pools from nearest to farthest — pick the FIRST BSL ≥ required_tp
+  If no BSL meets required_tp, use the farthest available BSL as tp1
+- For SELL: scan WEEKLY SSL pools from nearest to farthest — pick the FIRST SSL ≤ required_tp
+  If no SSL meets required_tp, use the farthest available SSL as tp1
+- NEVER use the nearest BSL/SSL blindly — always verify RR ≥ 1.5 first
+
 OUTPUT (JSON only):
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 """
