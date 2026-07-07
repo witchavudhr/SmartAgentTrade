@@ -45,10 +45,11 @@ CRITICAL RULES:
 - BIAS CONTEXT: post_sweep_continuation and sweep ages are informational — use to assess context but do NOT hard-block signals. A fresh BUY sweep followed by a bounce into Bear OB is a valid SELL setup (distribution). Trust price action over bias lock.
 
 PULLBACK ENTRY RULE (strictly enforced):
-- FIRST pullback (pullback_status=FIRST): VALID — enter normally, highest confidence
-- SECOND pullback (pullback_status=SECOND): VALID only if price is within ±$10 of the original sweep/rejection level — this is a re-test of the zone after a failed first attempt; reduce confidence by 10
-- EXPIRED (pullback_status=EXPIRED): NO_TRADE — setup is stale, do not enter regardless of other signals
-- NONE (no sweep/rejection): follow normal OB rules without pullback restriction
+- FIRST pullback (pullback_status=FIRST): VALID — price just bounced from sweep, first retracement candle near sweep level = entry. OB is the TP target, NOT the entry zone.
+- SECOND pullback (pullback_status=SECOND): VALID — price moved away then returned within ±$10 of sweep level; reduce confidence by 10
+- EXPIRED (pullback_status=EXPIRED): NO_TRADE — setup stale, price too far from sweep zone
+- NONE: follow normal OB rules
+⚠️ For sweep setups: set entry = current price (near sweep level), NOT at active OB. The OB zone is TP1/TP2.
 
 SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
 - BSL_SWEEP_SELL: SL = last_sweep.wick_extreme (the actual wick high IS the buffer — no extra offset needed)
@@ -188,14 +189,15 @@ def _build_prompt(smc: dict) -> str:
     _dist        = round(abs(price - _sweep_level), 1) if _sweep_level else 999
     _in_any_ob   = bull_ob.get("in_ob", False) or bear_ob.get("in_ob", False)
 
+    # entry หลัง sweep อยู่ใกล้ sweep level ไม่ใช่ที่ OB (OB คือ TP)
     if not sweep:
         _pb = "NONE"
     elif _sweep_age > 48:
         _pb = "EXPIRED"
-    elif _in_any_ob:
-        _pb = "FIRST"   # price อยู่ใน OB = กำลัง pullback เข้า zone ครั้งแรก
+    elif _sweep_age <= 12 and _dist <= 15.0:
+        _pb = "FIRST"   # ยังใกล้ sweep zone — แท่งแดงแรกหลัง bounce = entry
     elif _dist <= 10.0:
-        _pb = "SECOND"  # price ออกจาก OB แล้ว แต่ยังอยู่ใกล้ sweep level ±$10
+        _pb = "SECOND"  # price ออกไปแล้วแต่กลับมา ±$10 = second chance entry
     else:
         _pb = "EXPIRED"
 
@@ -209,7 +211,7 @@ def _build_prompt(smc: dict) -> str:
         _ob_dist = round(abs(price - _ob_mid), 1) if _ob_mid else 999
         if _ob_age > 48:
             _ob_pb = "EXPIRED"
-        elif _in_any_ob:
+        elif _ob_age <= 12 and _ob_dist <= 15.0:
             _ob_pb = "FIRST"
         elif _ob_dist <= 10.0:
             _ob_pb = "SECOND"
