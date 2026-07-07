@@ -3390,7 +3390,14 @@ def run():
             print(f"[auto_scan] ❌ EXCEPTION in auto_scan: {_scan_err}")
             print(traceback.format_exc()[-600:])
 
-    app.job_queue.run_repeating(_auto_scan_15min, interval=300, first=30)
+    # align first run ให้ตรงกับ :x0 หรือ :x5 (M5 candle close) + 10s เผื่อ data settle
+    def _secs_to_next_5min() -> float:
+        _now = datetime.now(tz=timezone.utc)
+        _elapsed = (_now.minute % 5) * 60 + _now.second
+        _remaining = 300 - _elapsed  # วินาทีจนถึง candle close ถัดไป
+        return (_remaining + 10) if _remaining > 10 else (_remaining + 310)
+
+    app.job_queue.run_repeating(_auto_scan_15min, interval=300, first=_secs_to_next_5min())
 
     async def _heartbeat(ctx: ContextTypes.DEFAULT_TYPE):
         now_th = datetime.now(tz=_THAI_TZ_RUN)
