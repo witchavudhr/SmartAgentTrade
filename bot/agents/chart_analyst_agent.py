@@ -45,13 +45,13 @@ CRITICAL RULES:
 - BIAS CONTEXT: post_sweep_continuation and sweep ages are informational — use to assess context but do NOT hard-block signals. A fresh BUY sweep followed by a bounce into Bear OB is a valid SELL setup (distribution). Trust price action over bias lock.
 
 SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
-- BSL_SWEEP_SELL: SL = last_sweep.wick_extreme + 1.0 (1 pt ABOVE the actual wick high, NOT just the BSL level)
-- SSL_SWEEP_BUY:  SL = last_sweep.wick_extreme - 1.0 (1 pt BELOW the actual wick low, NOT just the SSL level)
-  ⚠️ NEVER place SL at the SSL/BSL level itself — that IS the liquidity zone and will be swept again
+- BSL_SWEEP_SELL: SL = last_sweep.wick_extreme (the actual wick high IS the buffer — no extra offset needed)
+- SSL_SWEEP_BUY:  SL = last_sweep.wick_extreme (the actual wick low IS the buffer — SSL was ~5pts above it)
+  ⚠️ NEVER place SL at the SSL/BSL pool level itself — wick_extreme is already below/above the pool
 - OB_REJECTION_SELL / STORED_OB_PULLBACK_SELL: SL = bear_ob.top + 3.0
 - OB_REJECTION_BUY  / STORED_OB_PULLBACK_BUY:  SL = bull_ob.bottom - 3.0
-- POST_SWEEP_PULLBACK_SELL: SL = last_sweep.wick_extreme + 1.0
-- POST_SWEEP_PULLBACK_BUY:  SL = last_sweep.wick_extreme - 1.0
+- POST_SWEEP_PULLBACK_SELL: SL = last_sweep.wick_extreme
+- POST_SWEEP_PULLBACK_BUY:  SL = last_sweep.wick_extreme
 - CHOCH_SWEEP_SELL: SL = last_choch.level + 3.0
 - CHOCH_SWEEP_BUY:  SL = last_choch.level - 3.0
 - STRONG_REJECTION: SL = 3 pts beyond the rejection wick extreme
@@ -115,8 +115,8 @@ def _build_prompt(smc: dict) -> str:
         f"  BOS:   {bos.get('direction','none')} @ {bos.get('level','?')}",
         "",
         f"LAST SWEEP: {sweep.get('kind','none')} @ {sweep.get('level','?')} recovered={sweep.get('recovered','?')}"
-        + (f" | wick_extreme={sweep.get('wick_extreme','?')} → SL_ref={round((sweep.get('wick_extreme') or sweep.get('level',0))+1.0,2)}" if sweep.get('kind')=='high' else "")
-        + (f" | wick_extreme={sweep.get('wick_extreme','?')} → SL_ref={round((sweep.get('wick_extreme') or sweep.get('level',0))-1.0,2)}" if sweep.get('kind')=='low' else ""),
+        + (f" | wick_extreme={sweep.get('wick_extreme','?')} → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='high' else "")
+        + (f" | wick_extreme={sweep.get('wick_extreme','?')} → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='low' else ""),
         "",
         "ORDER BLOCKS:",
         f"  Bear OB: {bear_ob.get('bottom','?')} – {bear_ob.get('top','?')} (in_ob={bear_ob.get('in_ob',False)})",
