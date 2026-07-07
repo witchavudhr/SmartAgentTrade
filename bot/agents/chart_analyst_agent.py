@@ -59,11 +59,14 @@ If none of the above applies and SL cannot be calculated → NO_TRADE (do NOT vo
 TP SELECTION (must achieve RR ≥ 1:1.5):
 - Calculate required_tp = entry + (entry - stop_loss) × 1.5  [BUY]
                         = entry - (stop_loss - entry) × 1.5  [SELL]
-- For BUY: scan WEEKLY BSL pools from nearest to farthest — pick the FIRST BSL ≥ required_tp
-  If no BSL meets required_tp, use the farthest available BSL as tp1
-- For SELL: scan WEEKLY SSL pools from nearest to farthest — pick the FIRST SSL ≤ required_tp
-  If no SSL meets required_tp, use the farthest available SSL as tp1
-- NEVER use the nearest BSL/SSL blindly — always verify RR ≥ 1.5 first
+- For BUY: scan ALL WEEKLY BSL pools (nearest to farthest, including ✓sw swept ones) — pick the FIRST BSL ≥ required_tp
+  ✓sw (swept) BSL pools are VALID TP targets: after SSL sweep, price often revisits previously swept BSLs for a second liquidity grab (especially if a Bear OB sits at that level)
+  If no BSL pool meets required_tp, use active_bear_ob.top as TP (price runs into OB zones)
+  If still no TP achieves RR ≥ 1.5, output NO_TRADE
+- For SELL: scan ALL WEEKLY SSL pools (including ✓sw) — pick the FIRST SSL ≤ required_tp
+  If no SSL meets required_tp, use active_bull_ob.bottom as TP
+  If still no TP achieves RR ≥ 1.5, output NO_TRADE
+- NEVER pick the nearest pool without verifying RR ≥ 1.5 — scan further until you find one that qualifies
 
 OUTPUT (JSON only):
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}

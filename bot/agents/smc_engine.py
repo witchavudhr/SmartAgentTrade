@@ -391,12 +391,12 @@ class SMCEngine:
         for swing in highs:
             i = swing.index
             level = swing.price
-            # หาแท่งหลัง swing ที่ high ทะลุ level แล้ว close กลับต่ำกว่า level ภายใน 3 bars
-            # รองรับทั้ง single-bar wick sweep และ multi-bar close sweep
-            for j in range(i + 1, min(i + 20, n)):
+            # สแกนทุก bar หลัง swing (ไม่จำกัด 20) เพราะ sweep อาจเกิดช้ามาก
+            for j in range(i + 1, n):
                 if df['high'].iloc[j] > level:
                     sweep_idx = None
-                    for k in range(j, min(j + 4, n)):
+                    # ขยาย recovery window เป็น 8 bars รองรับ slow recovery หลัง sweep
+                    for k in range(j, min(j + 8, n)):
                         if df['close'].iloc[k] <= level:
                             sweep_idx = k
                             break
@@ -412,10 +412,12 @@ class SMCEngine:
         for swing in lows:
             i = swing.index
             level = swing.price
-            for j in range(i + 1, min(i + 20, n)):
+            # สแกนทุก bar หลัง swing — Weak Low อาจถูก sweep ช้ามาก (หลาย session)
+            for j in range(i + 1, n):
                 if df['low'].iloc[j] < level:
                     sweep_idx = None
-                    for k in range(j, min(j + 4, n)):
+                    # ขยาย recovery window เป็น 8 bars
+                    for k in range(j, min(j + 8, n)):
                         if df['close'].iloc[k] >= level:
                             sweep_idx = k
                             break
