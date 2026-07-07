@@ -178,40 +178,38 @@ def _build_prompt(smc: dict) -> str:
 
     # ── Pullback status ──────────────────────────────────────────────
     # sweep-based pullback status
+    # FIRST  = sweep ≤48 bars + price อยู่ใน OB zone (กำลัง pullback เข้า OB ครั้งแรก)
+    # SECOND = sweep ≤48 bars + price ออกจาก OB ไปแล้ว แต่กลับมาใน ±$10 ของ sweep level
+    # EXPIRED = sweep >48 bars + price ห่าง level, หรือ setup หมดอายุ
     _sweep_kind  = sweep.get("kind")
     _sweep_level = sweep.get("level") or 0
     _age_key     = ("sweep_l_age_bars" if _sweep_kind == "low" else "sweep_h_age_bars") if _sweep_kind else None
     _sweep_age   = adv.get(_age_key, 999) if _age_key else 999
     _dist        = round(abs(price - _sweep_level), 1) if _sweep_level else 999
+    _in_any_ob   = bull_ob.get("in_ob", False) or bear_ob.get("in_ob", False)
 
     if not sweep:
         _pb = "NONE"
-    elif _sweep_age <= 6:
-        _pb = "FIRST"
+    elif _sweep_age > 48:
+        _pb = "EXPIRED"
+    elif _in_any_ob:
+        _pb = "FIRST"   # price อยู่ใน OB = กำลัง pullback เข้า zone ครั้งแรก
     elif _dist <= 10.0:
-        _pb = "SECOND"
+        _pb = "SECOND"  # price ออกจาก OB แล้ว แต่ยังอยู่ใกล้ sweep level ±$10
     else:
         _pb = "EXPIRED"
 
     # OB rejection-based pullback status (CASE G)
     _ob_pb = "NONE"
-    if bear_rej:
-        _ob_age  = bear_rej.get("bars_ago", 999)
-        _ob_zone = bear_rej.get("ob_zone", [0, 0])
+    _ob_rej = bear_rej or bull_rej
+    if _ob_rej:
+        _ob_age  = _ob_rej.get("bars_ago", 999)
+        _ob_zone = _ob_rej.get("ob_zone", [0, 0])
         _ob_mid  = (_ob_zone[0] + _ob_zone[1]) / 2 if isinstance(_ob_zone, list) and len(_ob_zone) == 2 else 0
         _ob_dist = round(abs(price - _ob_mid), 1) if _ob_mid else 999
-        if _ob_age <= 6:
-            _ob_pb = "FIRST"
-        elif _ob_dist <= 10.0:
-            _ob_pb = "SECOND"
-        else:
+        if _ob_age > 48:
             _ob_pb = "EXPIRED"
-    elif bull_rej:
-        _ob_age  = bull_rej.get("bars_ago", 999)
-        _ob_zone = bull_rej.get("ob_zone", [0, 0])
-        _ob_mid  = (_ob_zone[0] + _ob_zone[1]) / 2 if isinstance(_ob_zone, list) and len(_ob_zone) == 2 else 0
-        _ob_dist = round(abs(price - _ob_mid), 1) if _ob_mid else 999
-        if _ob_age <= 6:
+        elif _in_any_ob:
             _ob_pb = "FIRST"
         elif _ob_dist <= 10.0:
             _ob_pb = "SECOND"
@@ -220,7 +218,7 @@ def _build_prompt(smc: dict) -> str:
 
     lines += [
         "",
-        f"PULLBACK STATUS: sweep={_pb} (age={_sweep_age}bars dist={_dist}pts) | ob_rejection={_ob_pb}",
+        f"PULLBACK STATUS: sweep={_pb} (age={_sweep_age}bars dist={_dist}pts in_ob={_in_any_ob}) | ob_rejection={_ob_pb}",
         "",
         f"ADVANCED: signal_type={adv.get('signal_type','?')} "
         f"bull_grab={adv.get('bull_grab',False)} bear_grab={adv.get('bear_grab',False)}",
