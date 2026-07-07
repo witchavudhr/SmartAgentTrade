@@ -51,6 +51,12 @@ PULLBACK ENTRY RULE (strictly enforced):
 - NONE: follow normal OB rules
 ⚠️ For sweep setups: set entry = current price (near sweep level), NOT at active OB. The OB zone is TP1/TP2.
 
+SWEEP DEPTH BONUS (depth = how far wick went beyond SSL/BSL level):
+- depth ≥ 5 pts:  conf +5  (meaningful sweep)
+- depth ≥ 10 pts: conf +10 (significant liquidity grab)
+- depth ≥ 20 pts: conf +20 (major sweep — highest priority, stops heavily collected)
+The deeper the sweep, the more stops were collected → stronger reversal → higher conviction
+
 SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
 - BSL_SWEEP_SELL: SL = last_sweep.wick_extreme (the actual wick high IS the buffer — no extra offset needed)
 - SSL_SWEEP_BUY:  SL = last_sweep.wick_extreme (the actual wick low IS the buffer — SSL was ~5pts above it)
@@ -122,8 +128,8 @@ def _build_prompt(smc: dict) -> str:
         f"  BOS:   {bos.get('direction','none')} @ {bos.get('level','?')}",
         "",
         f"LAST SWEEP: {sweep.get('kind','none')} @ {sweep.get('level','?')} recovered={sweep.get('recovered','?')}"
-        + (f" | wick_extreme={sweep.get('wick_extreme','?')} → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='high' else "")
-        + (f" | wick_extreme={sweep.get('wick_extreme','?')} → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='low' else ""),
+        + (f" | wick_extreme={sweep.get('wick_extreme','?')} depth={_sweep_depth}pts → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='high' else "")
+        + (f" | wick_extreme={sweep.get('wick_extreme','?')} depth={_sweep_depth}pts → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='low' else ""),
         "",
         "ORDER BLOCKS:",
         f"  Bear OB: {bear_ob.get('bottom','?')} – {bear_ob.get('top','?')} (in_ob={bear_ob.get('in_ob',False)})",
@@ -189,12 +195,18 @@ def _build_prompt(smc: dict) -> str:
     _dist        = round(abs(price - _sweep_level), 1) if _sweep_level else 999
     _in_any_ob   = bull_ob.get("in_ob", False) or bear_ob.get("in_ob", False)
 
+    # sweep depth = ระยะที่ wick ทะลุเกิน SSL/BSL level (ยิ่งลึกยิ่ง significant)
+    _wick_ext    = sweep.get("wick_extreme") or _sweep_level
+    _sweep_depth = round(abs(_sweep_level - _wick_ext), 2) if _sweep_level and _wick_ext else 0
+    # FIRST window กว้างขึ้นตาม sweep depth (deep sweep → bounce ไกลกว่าก่อน pullback)
+    _first_window = max(15.0, _sweep_depth * 2.5)
+
     # entry หลัง sweep อยู่ใกล้ sweep level ไม่ใช่ที่ OB (OB คือ TP)
     if not sweep:
         _pb = "NONE"
     elif _sweep_age > 48:
         _pb = "EXPIRED"
-    elif _sweep_age <= 12 and _dist <= 15.0:
+    elif _sweep_age <= 12 and _dist <= _first_window:
         _pb = "FIRST"   # ยังใกล้ sweep zone — แท่งแดงแรกหลัง bounce = entry
     elif _dist <= 10.0:
         _pb = "SECOND"  # price ออกไปแล้วแต่กลับมา ±$10 = second chance entry
@@ -220,7 +232,7 @@ def _build_prompt(smc: dict) -> str:
 
     lines += [
         "",
-        f"PULLBACK STATUS: sweep={_pb} (age={_sweep_age}bars dist={_dist}pts in_ob={_in_any_ob}) | ob_rejection={_ob_pb}",
+        f"PULLBACK STATUS: sweep={_pb} (age={_sweep_age}bars dist={_dist}pts depth={_sweep_depth}pts) | ob_rejection={_ob_pb}",
         "",
         f"ADVANCED: signal_type={adv.get('signal_type','?')} "
         f"bull_grab={adv.get('bull_grab',False)} bear_grab={adv.get('bear_grab',False)}",
