@@ -117,6 +117,11 @@ def _build_prompt(smc: dict) -> str:
     ssl_lvl = ssl_raw.get("level") if isinstance(ssl_raw, dict) else ssl_raw
     bsl_lvl = bsl_raw.get("level") if isinstance(bsl_raw, dict) else bsl_raw
 
+    # compute sweep_depth ก่อน lines = [...] เพราะถูกใช้ใน LAST SWEEP line
+    _sweep_level_early = sweep.get("level") or 0
+    _wick_ext_early    = sweep.get("wick_extreme") or _sweep_level_early
+    _sweep_depth       = round(abs(_sweep_level_early - _wick_ext_early), 2) if _sweep_level_early else 0
+
     lines = [
         _INSTRUCTIONS,
         "",
@@ -195,9 +200,6 @@ def _build_prompt(smc: dict) -> str:
     _dist        = round(abs(price - _sweep_level), 1) if _sweep_level else 999
     _in_any_ob   = bull_ob.get("in_ob", False) or bear_ob.get("in_ob", False)
 
-    # sweep depth = ระยะที่ wick ทะลุเกิน SSL/BSL level (ยิ่งลึกยิ่ง significant)
-    _wick_ext    = sweep.get("wick_extreme") or _sweep_level
-    _sweep_depth = round(abs(_sweep_level - _wick_ext), 2) if _sweep_level and _wick_ext else 0
     # FIRST window กว้างขึ้นตาม sweep depth (deep sweep → bounce ไกลกว่าก่อน pullback)
     _first_window = max(15.0, _sweep_depth * 2.5)
 
