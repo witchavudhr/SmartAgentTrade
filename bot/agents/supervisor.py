@@ -203,7 +203,19 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         return result
 
     setup_type = analysis.get("setup_type", "")
+    # rr_ratio: Claude ส่งมาโดยตรง (ถ้าคำนวณเอง) หรือคำนวณจาก entry/sl/tp
     rr         = float(analysis.get("rr_ratio") or 0)
+    if rr == 0:
+        _tp_sv  = analysis.get("take_profit") or analysis.get("tp1")
+        _sl_sv  = analysis.get("stop_loss")
+        _ez_sv  = analysis.get("entry_zone") or analysis.get("entry")
+        _em_sv  = ((_ez_sv[0] + _ez_sv[1]) / 2 if isinstance(_ez_sv, list) and len(_ez_sv) == 2
+                   else float(_ez_sv) if _ez_sv else None)
+        if _em_sv and _sl_sv and _tp_sv:
+            try:
+                rr = round(abs(float(_tp_sv) - _em_sv) / abs(_em_sv - float(_sl_sv)), 2)
+            except (TypeError, ValueError, ZeroDivisionError):
+                rr = 0
 
     # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
     # เพิ่มเงื่อนไข: TREND_OB ต้องมี entry zone ใกล้ OB จริงๆ
@@ -276,7 +288,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         result["caution_mode"]     = risk.get("caution_mode", False)
         result["entry_zone"]       = analysis.get("entry_zone")
         result["stop_loss"]        = analysis.get("stop_loss")
-        result["take_profit"]      = analysis.get("take_profit")
+        result["take_profit"]      = analysis.get("take_profit") or analysis.get("tp1")
         result["rr_ratio"]         = rr
         result["reasoning"]        = auto_reason
         result["entry_condition"]  = analysis.get("vote_reasoning", auto_reason)
@@ -302,8 +314,8 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         result["caution_mode"]      = risk.get("caution_mode", False)
         result["entry_zone"]        = analysis.get("entry_zone")
         result["stop_loss"]         = analysis.get("stop_loss")
-        result["take_profit"]       = analysis.get("take_profit")
-        result["rr_ratio"]          = analysis.get("rr_ratio")
+        result["take_profit"]       = analysis.get("take_profit") or analysis.get("tp1")
+        result["rr_ratio"]          = rr
         result["reasoning"]         = verdict.get("reasoning")
         result["entry_condition"]   = verdict.get("entry_condition", "")
         result["liquidity_summary"] = verdict.get("liquidity_summary", "")

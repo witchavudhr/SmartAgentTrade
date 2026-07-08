@@ -70,20 +70,28 @@ SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
 - STRONG_REJECTION: SL = 3 pts beyond the rejection wick extreme
 If none of the above applies and SL cannot be calculated → NO_TRADE (do NOT vote YES with null SL)
 
-TP SELECTION (must achieve RR ≥ 1:1.5):
-- Calculate required_tp = entry + (entry - stop_loss) × 1.5  [BUY]
-                        = entry - (stop_loss - entry) × 1.5  [SELL]
-- For BUY: scan ALL WEEKLY BSL pools (nearest to farthest, including ✓sw swept ones) — pick the FIRST BSL ≥ required_tp
-  ✓sw (swept) BSL pools are VALID TP targets: after SSL sweep, price often revisits previously swept BSLs for a second liquidity grab (especially if a Bear OB sits at that level)
-  If no BSL pool meets required_tp, use active_bear_ob.top as TP (price runs into OB zones)
-  If still no TP achieves RR ≥ 1.5, output NO_TRADE
-- For SELL: scan ALL WEEKLY SSL pools (including ✓sw) — pick the FIRST SSL ≤ required_tp
-  If no SSL meets required_tp, use active_bull_ob.bottom as TP
-  If still no TP achieves RR ≥ 1.5, output NO_TRADE
-- NEVER pick the nearest pool without verifying RR ≥ 1.5 — scan further until you find one that qualifies
+TP SELECTION (must achieve RR ≥ 1:1.5 — verified mathematically before outputting):
+Step 1: risk_distance = abs(entry - stop_loss)
+Step 2: required_tp [BUY]  = entry + risk_distance × 1.5   (must be ABOVE entry)
+        required_tp [SELL] = entry - risk_distance × 1.5   (must be BELOW entry)
+Step 3a [BUY]:  scan WEEKLY BSL pools ordered nearest→farthest (include ✓sw swept ones)
+                pick the FIRST pool where pool_level >= required_tp
+                if none → try active_bear_ob.top (must also be >= required_tp)
+                if still none → output signal=NO_TRADE (do NOT guess a TP)
+Step 3b [SELL]: scan WEEKLY SSL pools ordered nearest→farthest (include ✓sw swept ones)
+                pick the FIRST pool where pool_level <= required_tp
+                if none → try active_bull_ob.bottom (must also be <= required_tp)
+                if still none → output signal=NO_TRADE (do NOT guess a TP)
+Step 4: VERIFY before output — compute actual_rr = abs(take_profit - entry) / risk_distance
+        if actual_rr < 1.5 → go back to Step 3 and scan for a farther pool
+        NEVER output take_profit that results in actual_rr < 1.5
+⚠️ NEVER pick the nearest pool without verifying actual_rr ≥ 1.5 — scan farther until one qualifies
+⚠️ A pool that is closer than required_tp does NOT qualify even if it is the only one available → NO_TRADE
+✓sw (swept) BSL/SSL pools are VALID TP targets — price often revisits them for a second liquidity grab
 
 OUTPUT (JSON only):
-{"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"tp1":price|null,"tp2":price|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
+{"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"take_profit":price|null,"rr_ratio":number|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
+NOTE: "take_profit" = primary TP (replaces tp1). "rr_ratio" = abs(take_profit-entry)/abs(entry-stop_loss) — compute and include it. If rr_ratio < 1.5, set signal=NO_TRADE instead.
 """
 
 _SDK_TIMEOUT = 150  # วินาที — hard cancel ถ้า SDK ไม่ตอบใน 150s
