@@ -259,6 +259,10 @@ async def _query_async(prompt: str) -> str:
         await gen.aclose()
 
 
+_MAX_RETRIES = 2   # retry กี่ครั้งก่อน give up
+_RETRY_DELAY = 8   # วินาทีที่รอระหว่าง retry
+
+
 def analyze(smc_summary: dict) -> dict:
     """
     SDK version of chart_analyst.analyze()
@@ -268,24 +272,32 @@ def analyze(smc_summary: dict) -> dict:
 
     prompt = _build_prompt(smc_summary)
 
-    # asyncio.run() ได้เพราะถูกเรียกใน run_in_executor thread (ไม่มี event loop)
-    # asyncio.wait_for ทำ hard cancel ถ้า SDK ไม่ตอบภายใน _SDK_TIMEOUT วินาที
     async def _run_with_timeout():
         return await asyncio.wait_for(_query_async(prompt), timeout=_SDK_TIMEOUT)
 
-    try:
-        raw = asyncio.run(_run_with_timeout())
-    except asyncio.TimeoutError:
-        elapsed = round(time.time() - t0, 1)
-        raise TimeoutError(f"Agent SDK did not respond within {elapsed}s ({_SDK_TIMEOUT}s limit)")
-    except Exception as e:
-        err_str = str(e).lower()
-        elapsed = round(time.time() - t0, 1)
-        # Rate limit / usage limit — ไม่ crash process แค่ skip scan นี้
-        if any(k in err_str for k in ("rate limit", "429", "usage limit", "quota", "overloaded", "529")):
-            print(f"[AgentSDK] ⚠️ Rate/usage limit ({elapsed}s): {e}")
-            raise RuntimeError(f"AgentSDK rate limit — skip this scan: {e}")
-        raise  # error อื่น propagate ตามปกติ
+    raw = None
+    last_err = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            raw = asyncio.run(_run_with_timeout())
+            break  # สำเร็จ — ออกจาก retry loop
+        except asyncio.TimeoutError:
+            elapsed = round(time.time() - t0, 1)
+            last_err = TimeoutError(f"Agent SDK timeout {elapsed}s (attempt {attempt+1})")
+        except Exception as e:
+            err_str = str(e).lower()
+            elapsed = round(time.time() - t0, 1)
+            if any(k in err_str for k in ("rate limit", "429", "usage limit", "quota", "overloaded", "529")):
+                print(f"[AgentSDK] ⚠️ Rate limit ({elapsed}s): {e}")
+                raise RuntimeError(f"AgentSDK rate limit — skip: {e}")
+            last_err = e
+
+        if attempt < _MAX_RETRIES:
+            print(f"[AgentSDK] ⚠️ attempt {attempt+1} failed — retry in {_RETRY_DELAY}s ({last_err})")
+            time.sleep(_RETRY_DELAY)
+
+    if raw is None:
+        raise last_err or RuntimeError("AgentSDK failed after retries")
 
     elapsed = round(time.time() - t0, 1)
     print(f"[AgentSDK] response in {elapsed}s: {raw[:120]}")
