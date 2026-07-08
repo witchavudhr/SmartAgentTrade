@@ -1606,21 +1606,66 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         _chart_signal = _analysis.get("signal", "NO_TRADE")
 
         if _chart_signal not in ("NO_TRADE", None, ""):
-            _setup = _analysis.get("setup_type", "")
-            _conf  = _analysis.get("confidence", 0)
-            _price = result.get("current_price", "?")
-            _sup   = result.get("stages", {}).get("supervisor", {})
-            _sup_r = _sup.get("reasoning") or result.get("reject_reason", "–")
-            _what  = _sup.get("what_to_watch") or ""
+            _setup  = _analysis.get("setup_type", "")
+            _conf   = _analysis.get("confidence", 0)
+            _price  = result.get("current_price", "?")
+            _sup    = result.get("stages", {}).get("supervisor", {}) or {}
+            _sup_r  = _sup.get("reasoning") or result.get("reject_reason", "–")
+            _what   = _sup.get("what_to_watch") or ""
+            _bias_s = result.get("stages", {}).get("bias", {}) or {}
+            _bias_d = _bias_s.get("trade_direction") or _bias_s.get("overall_bias") or "?"
             print(f"[notifier] 📡 chart={_chart_signal} setup={_setup} | reject: {_sup_r[:120]}")
+
+            # entry / SL / TP / RR
+            _entry_raw = _analysis.get("entry_zone") or _analysis.get("entry")
+            _sl  = _analysis.get("stop_loss") or _analysis.get("sl")
+            _tp  = _analysis.get("take_profit") or _analysis.get("tp")
+            _rr  = _analysis.get("rr_ratio") or result.get("rr_ratio")
+            if _entry_raw and isinstance(_entry_raw, list) and len(_entry_raw) == 2:
+                _entry_str = f"`{_entry_raw[0]} – {_entry_raw[1]}`"
+            elif _entry_raw:
+                _entry_str = f"`{_entry_raw}`"
+            else:
+                _entry_str = "N/A"
+
+            # sweep info
+            _sweep = result.get("last_sweep") or {}
+            _sweep_str = ""
+            if _sweep and _sweep.get("kind"):
+                _sw_kind  = _sweep.get("kind", "")
+                _sw_level = _sweep.get("level", "")
+                _sw_wick  = _sweep.get("wick_extreme", "")
+                _sw_age   = _sweep.get("age_bars", "")
+                _pb       = _analysis.get("pullback_status") or "?"
+                _sweep_str = (
+                    f"\n🌊 *Sweep:* `{_sw_kind}` lvl `{_sw_level}` wick `{_sw_wick}` "
+                    f"({_sw_age}bars) PB: `{_pb}`"
+                )
+
+            # vote breakdown
+            _votes = result.get("votes", {})
+            def _vi(v): return "✅" if v else "❌"
+            _vote_line = (
+                f"{_vi(_votes.get('chart'))}Chart "
+                f"{_vi(_votes.get('bias'))}Bias "
+                f"{_vi(_votes.get('news'))}News"
+            )
+
+            _dir_icon = "🟢" if _chart_signal == "BUY" else "🔴"
             _msg = (
-                f"📡 *{_chart_signal} — {_setup}*\n"
-                f"💰 ราคา: `{_price}`"
-                + (f" | Conf: {_conf}%" if _conf else "")
-                + f"\n🤖 _{_sup_r[:200]}_"
+                f"📡 *{_dir_icon} {_chart_signal} — {_setup}*\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"💰 ราคา: `{_price}` | Conf: `{_conf}%`\n"
+                f"📐 Entry: {_entry_str}\n"
+                f"🛑 SL: `{_sl}` | 🎯 TP: `{_tp}`"
+                + (f" | RR: `1:{_rr}`" if _rr else "")
+                + f"\n🧭 Bias: `{_bias_d}`"
+                + _sweep_str
+                + f"\n\n*Vote:* {_vote_line}\n"
+                f"🚫 _{_sup_r[:250]}_"
             )
             if _what:
-                _msg += f"\n👁 *รอ:* _{_what[:150]}_"
+                _msg += f"\n👁 *รอ:* _{_what[:180]}_"
             await _safe_send(send_fn, _msg, parse_mode="Markdown")
         else:
             # chart NO_TRADE → log ใน console เฉยๆ ไม่ส่ง Telegram
