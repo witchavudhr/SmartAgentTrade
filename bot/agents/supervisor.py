@@ -254,14 +254,16 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             _too_close = False
             _prox_pts  = 0.0  # distance in pts (1 pt = $1 for XAUUSD)
             if signal == "BUY":
-                # BUY OB: ราคาต้องอยู่เหนือ ob_top ≥10 pts (มี room ที่จะ pullback เข้า OB)
+                # _prox_pts > 0  = ราคายังอยู่เหนือ ob_top (กำลังเข้าใกล้ แต่ยังไม่ถึง)
+                # _prox_pts <= 0 = ราคาอยู่ใน/ต่ำกว่า OB แล้ว (valid rejection) → ไม่ filter
                 _prox_pts = round(_cur_px - _ob_t, 1)
-                if _prox_pts < 15:
+                if 0 < _prox_pts < 15:
                     _too_close = True
             else:
-                # SELL OB: ราคาต้องอยู่ต่ำกว่า ob_bottom ≥15 pts (มี room ที่จะ rally เข้า OB)
+                # _prox_pts > 0  = ราคายังอยู่ต่ำกว่า ob_bottom (กำลังเข้าใกล้ แต่ยังไม่ถึง)
+                # _prox_pts <= 0 = ราคาอยู่ใน/เหนือ OB แล้ว (valid rejection) → ไม่ filter
                 _prox_pts = round(_ob_b - _cur_px, 1)
-                if _prox_pts < 15:
+                if 0 < _prox_pts < 15:
                     _too_close = True
             if _too_close:
                 result["reject_reason"] = (
