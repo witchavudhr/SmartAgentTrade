@@ -236,6 +236,41 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             except (TypeError, ValueError, ZeroDivisionError):
                 rr = 0
 
+    # ── OB PROXIMITY GUARD — ก่อน fast-approve ──────────────────
+    # OB_REJECTION / STORED_OB_PULLBACK: OB ต้องห่างจากราคาปัจจุบัน ≥10 pts
+    # ถ้า OB ใกล้เกินไป → ราคาจะผ่านทะลุทันที ไม่มี significance
+    _ob_prox_setups = {
+        "OB_REJECTION_BUY", "OB_REJECTION_SELL",
+        "STORED_OB_PULLBACK_BUY", "STORED_OB_PULLBACK_SELL",
+    }
+    _cur_px = result.get("current_price") or 0
+    if setup_type in _ob_prox_setups and _cur_px:
+        _ez_prox  = analysis.get("entry_zone") or analysis.get("entry")
+        _ob_t     = (_ez_prox[1] if isinstance(_ez_prox, list) and len(_ez_prox) == 2
+                     else float(_ez_prox) if _ez_prox else None)
+        _ob_b     = (_ez_prox[0] if isinstance(_ez_prox, list) and len(_ez_prox) == 2
+                     else float(_ez_prox) if _ez_prox else None)
+        if _ob_t and _ob_b:
+            _too_close = False
+            _prox_pts  = 0.0  # distance in pts (1 pt = $1 for XAUUSD)
+            if signal == "BUY":
+                # BUY OB: ราคาต้องอยู่เหนือ ob_top ≥10 pts (มี room ที่จะ pullback เข้า OB)
+                _prox_pts = round(_cur_px - _ob_t, 1)
+                if _prox_pts < 10:
+                    _too_close = True
+            else:
+                # SELL OB: ราคาต้องอยู่ต่ำกว่า ob_bottom ≥10 pts (มี room ที่จะ rally เข้า OB)
+                _prox_pts = round(_ob_b - _cur_px, 1)
+                if _prox_pts < 10:
+                    _too_close = True
+            if _too_close:
+                result["reject_reason"] = (
+                    f"OB ใกล้เกินไป — ราคา {_cur_px} ห่าง OB {_ob_b}–{_ob_t} แค่ {_prox_pts} pts "
+                    f"(ต้องการ ≥10 pts)\n"
+                    f"OB ที่ไม่มี room จะถูกทะลุทันที — รอ OB ที่ไกลกว่าหรือรอ setup ใหม่"
+                )
+                return result
+
     # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
     # เพิ่มเงื่อนไข: TREND_OB ต้องมี entry zone ใกล้ OB จริงๆ
     # ป้องกัน Claude return TREND_OB แต่ entry zone ไม่ใช่ OB (กลางอากาศ)

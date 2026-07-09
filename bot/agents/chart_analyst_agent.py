@@ -50,6 +50,13 @@ CRITICAL RULES:
 - ob_quality=LOW (<50p gap) → reduce confidence 15-20
 - When unsure → NO_TRADE (never force)
 - BIAS CONTEXT: post_sweep_continuation and sweep ages are informational — use to assess context but do NOT hard-block signals. A fresh BUY sweep followed by a bounce into Bear OB is a valid SELL setup (distribution). Trust price action over bias lock.
+- OB MIN DISTANCE (strictly enforced for OB_REJECTION and STORED_OB_PULLBACK setups):
+  BUY OB: current_price must be >= ob_top + 10  (price must be ≥10 pts ABOVE OB top before pulling back in)
+           If current_price < ob_top + 10 → OB too close, price will blow through → NO_TRADE
+  SELL OB: current_price must be <= ob_bottom - 10  (price must be ≥10 pts BELOW OB bottom)
+            If current_price > ob_bottom - 10 → OB too close → NO_TRADE
+  Rationale: an OB that is right at current price provides no S/R significance — it will be consumed immediately.
+             Only flag OBs where price needs a meaningful pullback (≥10 pts) to reach the zone.
 
 PULLBACK ENTRY RULE (strictly enforced):
 - FIRST pullback (pullback_status=FIRST): VALID — price just bounced from sweep, first retracement candle near sweep level = entry. OB is the TP target, NOT the entry zone.
