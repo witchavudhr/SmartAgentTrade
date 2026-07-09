@@ -13,6 +13,7 @@ Pipeline:
 
 import anthropic
 import json
+import time
 
 
 def _md(text: str) -> str:
@@ -21,6 +22,24 @@ def _md(text: str) -> str:
         text = text.replace(ch, f'\\{ch}')
     return text
 from datetime import datetime
+
+# ── Bias cache (15 นาที) — H1/H4 ไม่เปลี่ยนทุก 5 นาที ──────────────────
+_BIAS_CACHE_TTL = 15 * 60  # 900 วินาที
+_bias_cache: dict | None = None
+_bias_cache_ts: float = 0.0
+
+
+def _get_bias(signal_direction: str) -> dict:
+    global _bias_cache, _bias_cache_ts
+    age = time.time() - _bias_cache_ts
+    if _bias_cache is not None and age < _BIAS_CACHE_TTL:
+        print(f"[Supervisor] ♻️ bias cache hit ({int(age)}s old, TTL={_BIAS_CACHE_TTL}s)")
+        return _bias_cache
+    result = bias_analyst.analyze(signal_direction=signal_direction)
+    _bias_cache = result
+    _bias_cache_ts = time.time()
+    print(f"[Supervisor] 🔄 bias refreshed (cache miss, age was {int(age)}s)")
+    return result
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
 from agents.trade_log import get_performance_summary, get_loss_lesson_digest
@@ -145,8 +164,8 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             result["liq_gate_signal"]   = analysis.get("signal")
         return result
 
-    # ── Stage 3: Bias Analyst (Sonnet, cached) — รู้ signal แล้ว ─
-    bias = bias_analyst.analyze(signal_direction=signal)
+    # ── Stage 3: Bias Analyst (cached 15 นาที) — รู้ signal แล้ว ──
+    bias = _get_bias(signal_direction=signal)
     bias_vote = bias.get("vote", "NO")
 
     result["stages"]["bias"] = {
