@@ -30,13 +30,20 @@ PATTERN PRIORITY (highest → lowest):
 1. CASE F ★★★★: BSL/SSL Sweep + Rejection → BSL_SWEEP_SELL / SSL_SWEEP_BUY (conf 75-90)
    NOTE: EQL (Equal Lows) = SSL pool; EQH (Equal Highs) = BSL pool — treat identically as CASE F
    last_sweep.source="EQL" → SSL_SWEEP_BUY | last_sweep.source="EQH" → BSL_SWEEP_SELL
-2. CASE I ★★★:  Stored OB Pullback (ob_rejection_zones) → STORED_OB_PULLBACK_SELL/BUY (conf 60-75)
-3. CASE G ★★★:  OB Rejection (recent, no sweep needed) → OB_REJECTION_SELL/BUY (conf 65-80)
-4. CASE J ★★:   Strong Rejection at EQL/EQH → STRONG_REJECTION_SELL/BUY (conf 50-65)
-5. CASE H ★★:   Post-Sweep Pullback ≥15% ≤30 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
+2. CASE L ★★★: Post-BOS CHoCH Retest → POST_BOS_CHOCH_RETEST_SELL/BUY (conf 65-80)
+   BOS bearish → minor bullish CHoCH (bounce) → price returns near CHoCH swing high → SELL
+   BOS bullish → minor bearish CHoCH (dip) → price returns near CHoCH swing low → BUY
+   Entry: at/near CHoCH swing high (SELL) or swing low (BUY) — the retracement extreme
+   SL: post_bos_choch_retest.sl_ref (3 pts beyond swing_extreme)
+   Conf bonus: +10 if rejection_confirmed=True | reduce -10 if retrace_pct > 60 (deep = risky)
+   ⚡ This is the "pullback to CHoCH level after BOS" — trend continuation, HIGH probability
+3. CASE I ★★★:  Stored OB Pullback (ob_rejection_zones) → STORED_OB_PULLBACK_SELL/BUY (conf 60-75)
+4. CASE G ★★★:  OB Rejection (recent, no sweep needed) → OB_REJECTION_SELL/BUY (conf 65-80)
+5. CASE J ★★:   Strong Rejection at EQL/EQH → STRONG_REJECTION_SELL/BUY (conf 50-65)
+6. CASE H ★★:   Post-Sweep Pullback ≥15% ≤30 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
    level_held=True means price never broke sweep extreme — valid re-entry regardless of pullback depth
    deeper pullback (>65%) = 2nd touch zone → conf+10 bonus
-6. CASE K ★★:   CHoCH + Sweep → Reversal → CHOCH_SWEEP_SELL/BUY (conf 65-80)
+7. CASE K ★★:   CHoCH + Sweep → Reversal → CHOCH_SWEEP_SELL/BUY (conf 65-80)
 
 CRITICAL RULES:
 - PULLBACK VALIDITY: SELL pullback close must stay BELOW rejection high; BUY must stay ABOVE rejection low → if violated = INVALIDATED → NO_TRADE
@@ -90,7 +97,7 @@ Step 4: VERIFY before output — compute actual_rr = abs(take_profit - entry) / 
 ✓sw (swept) BSL/SSL pools are VALID TP targets — price often revisits them for a second liquidity grab
 
 OUTPUT (JSON only):
-{"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"take_profit":price|null,"rr_ratio":number|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
+{"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"POST_BOS_CHOCH_RETEST_SELL"|"POST_BOS_CHOCH_RETEST_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"take_profit":price|null,"rr_ratio":number|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 NOTE: "take_profit" = primary TP (replaces tp1). "rr_ratio" = abs(take_profit-entry)/abs(entry-stop_loss) — compute and include it. If rr_ratio < 1.5, set signal=NO_TRADE instead.
 """
 
@@ -168,6 +175,16 @@ def _build_prompt(smc: dict) -> str:
             for p in weekly_ssl[:8]
         )
         lines += [f"  WEEKLY SSL (7d): {_ssl_str}"]
+
+    pb_bos_choch = smc.get("post_bos_choch_retest")
+    if pb_bos_choch:
+        lines += [
+            "",
+            f"CASE L — POST-BOS CHoCH RETEST: dir={pb_bos_choch['direction']} retrace={pb_bos_choch['retrace_pct']}%",
+            f"  BOS @ {pb_bos_choch['bos_level']} ({pb_bos_choch['bos_age_bars']}bars ago)",
+            f"  CHoCH @ {pb_bos_choch['choch_level']} ({pb_bos_choch['choch_age_bars']}bars ago) | swing_extreme={pb_bos_choch['swing_extreme']}",
+            f"  dist_to_choch={pb_bos_choch['dist_pts']}pts | rejection={pb_bos_choch['rejection_confirmed']} | SL_ref={pb_bos_choch['sl_ref']}",
+        ]
 
     if choch_k:
         lines += [

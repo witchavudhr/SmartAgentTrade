@@ -2038,6 +2038,14 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         except Exception:
             summary["choch_sweep_setup"] = None
 
+        # ── Post-BOS CHoCH Retest (CASE L) ───────────────────────────────
+        # Pattern: BOS bearish → minor bullish CHoCH (bounce) → price returns to CHoCH level → SELL
+        #          BOS bullish → minor bearish CHoCH (dip) → price returns to CHoCH level → BUY
+        try:
+            summary["post_bos_choch_retest"] = _detect_post_bos_choch_retest(df, result, current_price)
+        except Exception:
+            summary["post_bos_choch_retest"] = None
+
     return summary
 
 
@@ -2105,5 +2113,116 @@ def _detect_choch_sweep_setup(df, result, current_price: float) -> dict | None:
         "sweep_age_bars":      int(best_age),
         "rejection_confirmed": has_rejection,
         "confidence":          confidence,
+        "current_price":       round(current_price, 2),
+    }
+
+
+def _detect_post_bos_choch_retest(df, result, current_price: float) -> dict | None:
+    """
+    CASE L — Post-BOS CHoCH Retest (Trend Continuation)
+
+    Pattern:
+      BOS bearish → minor bullish CHoCH (bounce) → price returns near CHoCH level → SELL
+      BOS bullish → minor bearish CHoCH (dip) → price returns near CHoCH level → BUY
+
+    Entry zone = CHoCH swing high (for SELL) / swing low (for BUY)
+    ↳ ที่วงกลมในชาร์ต: BOS ลง → แท่งเขียวเด้ง (CHoCH) → แดงแรกหลังถึง CHoCH high = entry
+    """
+    n = len(df)
+    last_bos   = result.last_bos
+    last_choch = result.last_choch
+
+    if not last_bos or not last_choch or n < 10:
+        return None
+
+    bos_age   = n - 1 - last_bos.index
+    choch_age = n - 1 - last_choch.index
+
+    # BOS ต้องยังไม่เก่าเกิน (60 bars = 5h M5)
+    if bos_age > 60:
+        return None
+
+    # CHoCH ต้องเกิดหลัง BOS (choch_age < bos_age = CHoCH ล่าสุดกว่า)
+    if choch_age >= bos_age:
+        return None
+
+    # CHoCH ต้องทวนทิศ BOS (= retracement ไม่ใช่ reversal ใหม่)
+    #   BOS bearish → CHoCH bullish (bounce ขึ้น)
+    #   BOS bullish → CHoCH bearish (dip ลง)
+    if last_bos.direction == "bearish" and last_choch.direction != "bullish":
+        return None
+    if last_bos.direction == "bullish" and last_choch.direction != "bearish":
+        return None
+
+    direction   = "SELL" if last_bos.direction == "bearish" else "BUY"
+    choch_level = last_choch.level
+    dist        = abs(current_price - choch_level)
+
+    # price ต้องอยู่ใกล้ CHoCH level (≤25pts) — กำลัง approach หรือ retest
+    if dist > 25:
+        return None
+
+    # คำนวณ CHoCH swing extreme (high สำหรับ SELL, low สำหรับ BUY)
+    # หาค่า max high / min low ในช่วง ±5 bars รอบ CHoCH
+    ch_i   = last_choch.index
+    window = df.iloc[max(0, ch_i - 3): min(n, ch_i + 6)]
+    if direction == "SELL":
+        swing_extreme = float(window["high"].max())
+        sl_ref = round(swing_extreme + 3.0, 2)
+    else:
+        swing_extreme = float(window["low"].min())
+        sl_ref = round(swing_extreme - 3.0, 2)
+
+    # retracement depth — deep retracement (>70% of BOS move) = อาจ reverse จริง ไม่ใช่ pullback
+    bos_level = last_bos.level
+    bos_start_idx = last_bos.index
+    if direction == "SELL":
+        # BOS bearish: BOS level = swing high ที่ถูกทะลุลงมา (หรือ swing low ที่ break)
+        # retracement = ระยะที่ price วิ่งกลับขึ้นหลัง BOS
+        price_at_bos = float(df["close"].iloc[bos_start_idx])
+        low_since_bos = float(df["low"].iloc[bos_start_idx:n].min())
+        bos_move = price_at_bos - low_since_bos
+        retracement = choch_level - low_since_bos
+    else:
+        price_at_bos = float(df["close"].iloc[bos_start_idx])
+        high_since_bos = float(df["high"].iloc[bos_start_idx:n].max())
+        bos_move = high_since_bos - price_at_bos
+        retracement = high_since_bos - choch_level
+
+    retrace_pct = round((retracement / bos_move * 100) if bos_move > 0 else 0, 0)
+
+    # ถ้า retracement > 80% = reversal ไม่ใช่ pullback → ไม่นับ
+    if retrace_pct > 80:
+        return None
+
+    # ตรวจ rejection candle ใน 6 bars ล่าสุด ใกล้ CHoCH level
+    has_rejection = False
+    for i in range(max(0, n - 6), n):
+        row  = df.iloc[i]
+        body  = abs(row["close"] - row["open"])
+        total = row["high"] - row["low"]
+        if total < 0.01:
+            continue
+        near = abs(((row["high"] + row["low"]) / 2) - choch_level) <= 10
+        if not near:
+            continue
+        if direction == "SELL" and row["close"] < row["open"] and body / total > 0.35:
+            has_rejection = True
+            break
+        elif direction == "BUY" and row["close"] > row["open"] and body / total > 0.35:
+            has_rejection = True
+            break
+
+    return {
+        "direction":           direction,
+        "bos_level":           round(bos_level, 2),
+        "bos_age_bars":        int(bos_age),
+        "choch_level":         round(choch_level, 2),
+        "choch_age_bars":      int(choch_age),
+        "swing_extreme":       round(swing_extreme, 2),
+        "sl_ref":              sl_ref,
+        "dist_pts":            round(dist, 1),
+        "retrace_pct":         int(retrace_pct),
+        "rejection_confirmed": has_rejection,
         "current_price":       round(current_price, 2),
     }
