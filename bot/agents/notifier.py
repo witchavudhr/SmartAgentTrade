@@ -1528,23 +1528,35 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                             f"_รอราคาเข้าใกล้ {sr_level} ก่อน_"
                         )
             elif is_ob_setup:
-                # ราคาต้องอยู่ใน OB zone (เผื่อ spread 3pts)
-                in_ob_zone = (ob_bottom - 3) <= current_mkt <= (ob_top + 3)
-                if not in_ob_zone:
+                # GUARD: ถ้า Claude ไม่ส่ง entry_zone เป็น [bottom, top] → ห้าม execute
+                # (entry_zone=None ทำให้ ob_top=ob_bottom=entry_price → check ผ่านเสมอ → bug)
+                if not isinstance(entry_raw2, list) or len(entry_raw2) != 2:
                     entry_far = True
-                    dist_p = round(abs(ob_bottom - current_mkt) * 10) if current_mkt < ob_bottom else round(abs(current_mkt - ob_top) * 10)
-                    if direction == "SELL":
-                        entry_far_msg = (
-                            f"⏳ *รอ Rally — ราคายังไม่ถึง Bear OB*\n"
-                            f"ราคา `{current_mkt}` ห่าง OB `{ob_bottom}–{ob_top}` อยู่ `{dist_p}p`\n"
-                            f"_รอราคาขึ้นมาใน OB zone ก่อน_"
-                        )
-                    else:
-                        entry_far_msg = (
-                            f"⏳ *รอ Pullback — ราคายังไม่ถึง Bull OB*\n"
-                            f"ราคา `{current_mkt}` ห่าง OB `{ob_bottom}–{ob_top}` อยู่ `{dist_p}p`\n"
-                            f"_รอราคาลงมาใน OB zone ก่อน_"
-                        )
+                    entry_far_msg = (
+                        f"⏳ *รอ — ไม่มี OB zone ชัดเจน*\n"
+                        f"OB setup ต้องระบุ entry\\_zone [bottom, top]\n"
+                        f"_Claude ส่งมาเป็น scalar หรือ None — skip execute เพื่อความปลอดภัย_"
+                    )
+                else:
+                    # ราคาต้องอยู่ใน OB zone (เผื่อ spread 3pts)
+                    in_ob_zone = (ob_bottom - 3) <= current_mkt <= (ob_top + 3)
+                    if not in_ob_zone:
+                        entry_far = True
+                        dist_p = round(abs(ob_bottom - current_mkt) * 10) if current_mkt < ob_bottom else round(abs(current_mkt - ob_top) * 10)
+                        ob_label = f"`{ob_bottom}–{ob_top}`"
+                        if direction == "SELL":
+                            entry_far_msg = (
+                                f"⏳ *รอ Rally — ราคายังไม่ถึง Bear OB*\n"
+                                f"ราคา `{current_mkt}` ห่าง OB {ob_label} อยู่ `{dist_p}p`\n"
+                                f"_รอราคาขึ้นมาใน OB zone ก่อน_"
+                            )
+                        else:
+                            entry_far_msg = (
+                                f"⏳ *รอ Pullback — ราคายังไม่ถึง Bull OB*\n"
+                                f"ราคา `{current_mkt}` ห่าง OB {ob_label} อยู่ `{dist_p}p`\n"
+                                f"_รอราคาลงมาใน OB zone ก่อน_"
+                            )
+                    # else: ราคาอยู่ใน OB zone แล้ว → execute ได้
             else:
                 # Non-OB setup: threshold กว้าง 25pts
                 if direction == "BUY" and (current_mkt - ob_top) > 25:
