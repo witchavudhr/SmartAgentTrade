@@ -41,7 +41,7 @@ def disconnect():
         mt5.shutdown()
 
 
-def get_current_price() -> float:
+def get_mid_price() -> float:
     """ดึงราคาปัจจุบันของ MT5_SYMBOL (mid price) — คืน 0.0 ถ้าเชื่อมไม่ได้"""
     ok, _ = _connect()
     if not ok:

@@ -57,8 +57,8 @@ def _sync_stats_to_dashboard():
                 pass
         current_price = 0.0
         try:
-            from agents.mt5_executor import get_current_price
-            current_price = get_current_price()
+            from agents.mt5_executor import get_mid_price
+            current_price = get_mid_price()
         except Exception:
             pass
         data = json.dumps({
@@ -107,8 +107,8 @@ def _push_to_dashboard(result: dict):
                 pass
         current_price = 0.0
         try:
-            from agents.mt5_executor import get_current_price
-            current_price = get_current_price()
+            from agents.mt5_executor import get_mid_price
+            current_price = get_mid_price()
         except Exception:
             pass
         data = json.dumps({
@@ -1009,6 +1009,25 @@ def _price_is_better(new_price: float, ex_price: float, direction: str) -> bool:
     return new_price > ex_price
 
 
+def _format_pnl_line(existing_trade: dict, mt5_positions: list, current_price) -> str:
+    """
+    P&L ของไม้ที่ถืออยู่ — ใช้ profit จริงจาก MT5 (broker คำนวณให้ ถูกต้องที่สุด)
+    fallback → เทียบ current_price กับ entry เฉยๆ (ไม่มี Claude call, ฟรี)
+    """
+    if mt5_positions:
+        total_profit = sum(p.get("profit", 0) for p in mt5_positions)
+        icon = "🟢" if total_profit > 0 else "🔴" if total_profit < 0 else "⚪"
+        return f"{icon} *P&L ปัจจุบัน: `${total_profit:+.2f}`*"
+
+    entry     = existing_trade.get("entry")
+    direction = existing_trade.get("direction")
+    if not entry or not direction or not current_price:
+        return ""
+    pts = (current_price - entry) if direction == "BUY" else (entry - current_price)
+    icon = "🟢" if pts > 0 else "🔴" if pts < 0 else "⚪"
+    return f"{icon} *ราคาปัจจุบัน `{current_price}` vs entry `{entry}`: `{pts:+.2f}p`*"
+
+
 async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
     """
     Pyramid auto-execute — ราคาดีกว่าไม้แรก = เปิดทันที ไม่รอ approve
@@ -1396,6 +1415,7 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
             ex_dir = existing_trade.get("direction", "?")
             ex_tid = existing_trade.get("trade_id", "?")
             new_dir = result.get("analysis", {}).get("signal", "")
+            pnl_line = _format_pnl_line(existing_trade, mt5_positions, result.get("current_price"))
 
             if new_dir == ex_dir:
                 # inject lot + session ก่อนทุก path
@@ -1409,6 +1429,8 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                 # (ราคาไม่ดี = _execute_pyramid_auto จะ skip + แจ้ง Telegram เอง)
                 confidence = int(_sig.get("confidence") or 0)
                 print(f"[notifier] 🔺 Auto-pyramid — confidence={confidence}% (no approval needed)")
+                if pnl_line:
+                    await _safe_send(send_fn, pnl_line, parse_mode="Markdown")
                 await _execute_pyramid_auto(result, existing_trade, send_fn)
                 return
             else:
@@ -1416,7 +1438,8 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                     send_fn,
                     f"🔒 *มีไม้ {ex_dir} ค้างอยู่ — ห้ามเปิด {new_dir} สวน*\n"
                     f"Trade #{ex_tid} ยังเปิดอยู่\n"
-                    f"_ปิดก่อนด้วย `/closetrade` แล้วค่อย scan ใหม่_",
+                    + (f"{pnl_line}\n" if pnl_line else "")
+                    + f"_ปิดก่อนด้วย `/closetrade` แล้วค่อย scan ใหม่_",
                     parse_mode="Markdown"
                 )
                 return
@@ -1588,8 +1611,13 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                     f"_EA POS Guard จัดการ exit — ไม่มี fixed TP_"
                 )
                 # save open_trade เฉพาะตอน MT5 execute สำเร็จ
+                # ใช้ราคา fill จริงจาก MT5 แทนราคาประมาณจาก scan (อาจ stale ไปหลายวินาที)
+                # ป้องกัน pyramid ไม้ถัดไปเทียบราคากับ entry ที่ผิด
                 if _open_trade_draft:
                     _open_trade_draft["mt5_ticket"] = ex["ticket"]
+                    if ex.get("price"):
+                        _open_trade_draft["entry"]      = float(ex["price"])
+                        _open_trade_draft["peak_price"]  = float(ex["price"])
                     state_manager.set_field(bot_state, "open_trade", _open_trade_draft)
                 try:
                     from agents.trade_log import update_mt5_ticket
