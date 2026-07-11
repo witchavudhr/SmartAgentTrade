@@ -16,6 +16,7 @@ Usage:
 """
 
 import sys
+import json
 import argparse
 import yfinance as yf
 import pandas as pd
@@ -121,6 +122,17 @@ def download_data(days: int = 30) -> pd.DataFrame:
     df.columns = [c.lower() for c in df.columns]
     df = df[['open','high','low','close','volume']].dropna()
     print(f"✅ ได้ {len(df)} candles ({df.index[0].date()} → {df.index[-1].date()})")
+    return df
+
+
+def load_csv_data(path: str) -> pd.DataFrame:
+    """โหลดข้อมูล M5 จาก CSV ที่ export จาก MT5 (export_mt5_csv.py) — ราคาจริงจาก broker"""
+    print(f"📥 โหลดข้อมูลจาก {path} ...")
+    df = pd.read_csv(path, parse_dates=["time"])
+    df = df.set_index("time")
+    df = df.rename(columns={"tick_volume": "volume"})
+    df = df[['open','high','low','close','volume']].dropna()
+    print(f"✅ ได้ {len(df)} candles ({df.index[0]} → {df.index[-1]})")
     return df
 
 
@@ -285,6 +297,83 @@ def simulate_trade(df: pd.DataFrame, entry_bar_idx: int, signal: dict,
     outcome     = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
     note        = "max_hold" + ("+trail" if trail_active else "")
     return _trade_result(outcome, max_hold, entry_price, close_price, pnl_pips, rr_plan, signal, note)
+
+
+def simulate_entry_sl_only(df: pd.DataFrame, entry_bar_idx: int, signal: dict,
+                            max_hold: int = 48, ea_protect_pips: float = 400.0,
+                            ea_lock_pips: float = 5.0) -> dict:
+    """
+    จำลองแค่ entry + SL — ไม่มี TP (EA จัดการ exit เอง)
+    เลียนแบบ EA breakeven guard: กำไรถึง ea_protect_pips → SL ล็อคที่ entry+ea_lock_pips
+    หลังจากนั้นแม้ราคาย้อนกลับมาแตะ SL เดิม ก็จะออกที่จุดล็อค (win เล็กๆ) ไม่ใช่ loss เต็ม
+
+    ผล:
+      LOSS      — โดน SL ก่อนเคยกำไรถึง ea_protect_pips
+      PROTECTED — เคยกำไรถึง ea_protect_pips แล้ว, ออกที่จุดล็อคหรือยังถืออยู่ (ไม่ขาดทุน)
+      OPEN      — ยังไม่โดน SL และยังไม่ถึง ea_protect_pips ภายใน max_hold (ต้องไปดูกราฟเอง)
+    """
+    entry_price = df['open'].iloc[entry_bar_idx]
+    sl          = signal['sl']
+    direction   = signal['signal']
+    sl_dist     = abs(entry_price - sl)
+    sl_pips     = round(sl_dist * 10, 1)
+
+    protected     = False
+    locked_sl     = None
+    mfe_pips      = 0.0
+
+    for i in range(entry_bar_idx, min(entry_bar_idx + max_hold, len(df))):
+        bar = df.iloc[i]
+
+        if direction == "BUY":
+            profit_now = round((bar['high'] - entry_price) * 10, 1)
+            mfe_pips   = max(mfe_pips, profit_now)
+            if not protected and mfe_pips >= ea_protect_pips:
+                protected = True
+                locked_sl = round(entry_price + ea_lock_pips / 10.0, 2)
+
+            active_sl = locked_sl if protected else sl
+            if bar['low'] <= active_sl:
+                pnl_pips = round((active_sl - entry_price) * 10, 1)
+                outcome  = "PROTECTED" if protected else "LOSS"
+                return _entry_sl_result(outcome, i - entry_bar_idx, entry_price, active_sl,
+                                         pnl_pips, mfe_pips, sl_pips, signal)
+        else:  # SELL
+            profit_now = round((entry_price - bar['low']) * 10, 1)
+            mfe_pips   = max(mfe_pips, profit_now)
+            if not protected and mfe_pips >= ea_protect_pips:
+                protected = True
+                locked_sl = round(entry_price - ea_lock_pips / 10.0, 2)
+
+            active_sl = locked_sl if protected else sl
+            if bar['high'] >= active_sl:
+                pnl_pips = round((entry_price - active_sl) * 10, 1)
+                outcome  = "PROTECTED" if protected else "LOSS"
+                return _entry_sl_result(outcome, i - entry_bar_idx, entry_price, active_sl,
+                                         pnl_pips, mfe_pips, sl_pips, signal)
+
+    # ไม่โดน SL/locked-SL ภายใน max_hold — ยังเปิดอยู่ (หรือ protected ถ้าเคยถึง 400p)
+    last_close = df['close'].iloc[min(entry_bar_idx + max_hold - 1, len(df) - 1)]
+    pnl_pips   = round(((last_close - entry_price) if direction == "BUY" else (entry_price - last_close)) * 10, 1)
+    outcome    = "PROTECTED" if protected else "OPEN"
+    return _entry_sl_result(outcome, max_hold, entry_price, last_close, pnl_pips, mfe_pips, sl_pips, signal)
+
+
+def _entry_sl_result(outcome, bars_held, entry, exit_price, pnl_pips, mfe_pips, sl_pips, signal):
+    return {
+        "outcome":   outcome,
+        "bars_held": bars_held,
+        "entry":     round(entry, 2),
+        "exit":      round(exit_price, 2),
+        "pnl_pips":  pnl_pips,
+        "mfe_pips":  mfe_pips,
+        "sl_pips":   sl_pips,
+        "score":     signal.get("score", 0),
+        "stars":     signal.get("stars", ""),
+        "signal":    signal.get("signal"),
+        "reasons":   signal.get("reasons", []),
+        "setup_type": signal.get("setup_type", ""),
+    }
 
 
 def _trade_result(outcome, bars_held, entry, exit_price, pnl_pips, rr_plan, signal, note=""):
@@ -489,8 +578,9 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
                  session_open_only=True, h4_filter=True, news_filter=True,
                  max_sl=0, breakeven=False, trail_pips=0,
                  use_ai=False, ai_confidence=60,
-                 live_pipeline=False, live_confidence=70):
-    df = download_data(days)
+                 live_pipeline=False, live_confidence=70,
+                 csv_path=None, entry_sl_only=False):
+    df = load_csv_data(csv_path) if csv_path else download_data(days)
     n  = len(df)
 
     # ── News Block: Hybrid — Finnhub calendar + always-block US pre-market ─
@@ -625,8 +715,11 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
             signal["vote_score"]    = lp_result.get("vote_score", 0)
 
         # Simulate trade
-        trade = simulate_trade(df, i + 1, signal, max_hold,
-                               trail_pips=trail_pips, breakeven=breakeven)
+        if entry_sl_only:
+            trade = simulate_entry_sl_only(df, i + 1, signal, max_hold)
+        else:
+            trade = simulate_trade(df, i + 1, signal, max_hold,
+                                   trail_pips=trail_pips, breakeven=breakeven)
         trade["bar_idx"]    = i
         trade["bar_time"]   = str(bar_time)[:16]
         trade["h4_bias"]    = signal.get("h4_bias", "?")
@@ -636,20 +729,30 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
 
         setup     = signal.get("setup_type", "")
         setup_tag = "🔄REV" if setup == "REVERSAL" else "📈TRD" if setup == "TREND" else "   "
-        icon      = "✅" if trade["outcome"] == "win" else "❌" if trade["outcome"] == "loss" else "↔️"
         if live_pipeline:
             ai_tag = f" 🧠{signal.get('ai_confidence','')}% [{signal.get('vote_score',0)}/3]"
         elif use_ai:
             ai_tag = f" 🤖{signal.get('ai_confidence','')}%"
         else:
             ai_tag = ""
-        print(
-            f"  {icon} [{trade['bar_time']}] {setup_tag} {trade['signal']:4s} H4={trade['h4_bias']:7s} "
-            f"{trade['stars'] or '':<3} score={trade['score']}{ai_tag} | "
-            f"entry={trade['entry']} → {trade['exit']} | "
-            f"{'+' if trade['pnl_pips'] >= 0 else ''}{trade['pnl_pips']}p | "
-            f"RR={trade['rr_actual']} | {trade['note'] or ''}"
-        )
+
+        if entry_sl_only:
+            icon = {"PROTECTED": "🛡️", "LOSS": "❌", "OPEN": "⏳"}.get(trade["outcome"], "?")
+            print(
+                f"  {icon} [{trade['bar_time']}] {setup_tag} {trade['signal']:4s} H4={trade['h4_bias']:7s} "
+                f"{trade['stars'] or '':<3} score={trade['score']}{ai_tag} | "
+                f"entry={trade['entry']} SL={signal['sl']} ({trade['sl_pips']}p) | "
+                f"MFE={trade['mfe_pips']}p | {trade['outcome']}"
+            )
+        else:
+            icon = "✅" if trade["outcome"] == "win" else "❌" if trade["outcome"] == "loss" else "↔️"
+            print(
+                f"  {icon} [{trade['bar_time']}] {setup_tag} {trade['signal']:4s} H4={trade['h4_bias']:7s} "
+                f"{trade['stars'] or '':<3} score={trade['score']}{ai_tag} | "
+                f"entry={trade['entry']} → {trade['exit']} | "
+                f"{'+' if trade['pnl_pips'] >= 0 else ''}{trade['pnl_pips']}p | "
+                f"RR={trade['rr_actual']} | {trade['note'] or ''}"
+            )
 
     if news_filter:
         src = news_cal.source if news_cal else "-"
@@ -662,6 +765,38 @@ def run_backtest(days=30, min_score=3, min_rr=1.5, max_hold=48, cooldown=20,
         print(f"{label}: {ai_confirmed} confirmed | {ai_filtered} filtered ({pct}% rejection rate)")
 
     return trades
+
+
+# ── Print Entry+SL Summary (ไม่มี TP — EA จัดการ exit เอง) ────────
+def print_entry_sl_summary(trades: list):
+    if not trades:
+        print("\nไม่มี trade")
+        return
+
+    n_loss      = sum(1 for t in trades if t["outcome"] == "LOSS")
+    n_protected = sum(1 for t in trades if t["outcome"] == "PROTECTED")
+    n_open      = sum(1 for t in trades if t["outcome"] == "OPEN")
+    total       = len(trades)
+    loss_pips   = sum(t["pnl_pips"] for t in trades if t["outcome"] == "LOSS")
+
+    print("\n" + "═" * 78)
+    print("  📋  ENTRY + SL ONLY — ไม่จำลอง TP (EA จัดการ exit)")
+    print("═" * 78)
+    print(f"{'#':>3} {'Date/Time':17s} {'Dir':5s} {'Entry':>9s} {'SL':>9s} {'SL(p)':>7s} {'MFE(p)':>8s}  Outcome")
+    print("─" * 78)
+    for idx, t in enumerate(trades, 1):
+        icon = {"PROTECTED": "🛡️ ", "LOSS": "❌", "OPEN": "⏳"}.get(t["outcome"], "?")
+        print(f"{idx:>3} {t['bar_time']:17s} {t['signal']:5s} {t['entry']:>9.2f} "
+              f"{t['exit'] if t['outcome']=='LOSS' else '-':>9} {t['sl_pips']:>7.1f} "
+              f"{t['mfe_pips']:>8.1f}  {icon} {t['outcome']}")
+
+    print("─" * 78)
+    print(f"  รวม {total} ไม้ | 🛡️ PROTECTED (กำไรพ้น 400p) {n_protected} | "
+          f"❌ LOSS {n_loss} | ⏳ OPEN (ยังไม่ถึง SL/protect) {n_open}")
+    if n_loss:
+        print(f"  ขาดทุนรวม (เฉพาะไม้ LOSS): {loss_pips:+.1f}p")
+    print("═" * 78)
+    print("  ⏳ OPEN = ยังไม่โดน SL และยังไม่กำไรพ้น 400p ภายใน max_hold — ไปดูกราฟจริงเอง")
 
 
 # ── Print Trade History ───────────────────────────────────────────
@@ -831,6 +966,8 @@ if __name__ == "__main__":
     parser.add_argument("--ai-confidence",    type=int,   default=60,  help="Confidence threshold สำหรับ AI filter (default=60)")
     parser.add_argument("--live-pipeline",    action="store_true",     help="Sonnet 4-agent pipeline (Chart+Supervisor Sonnet, เสมือน live จริง)")
     parser.add_argument("--live-confidence",  type=int,   default=70,  help="Supervisor confidence threshold สำหรับ live pipeline (default=70)")
+    parser.add_argument("--csv",              type=str,   default=None, help="โหลดข้อมูลจาก MT5 export CSV แทน yfinance (ดู export_mt5_csv.py)")
+    parser.add_argument("--entry-sl-only",    action="store_true",     help="ดูแค่ entry+SL ไม่จำลอง TP (EA ล็อคกำไรที่ 400p กันขาดทุน)")
     args = parser.parse_args()
 
     session_open_only = not args.no_session_open
@@ -868,6 +1005,11 @@ if __name__ == "__main__":
         ai_confidence    = args.ai_confidence,
         live_pipeline    = args.live_pipeline,
         live_confidence  = args.live_confidence,
+        csv_path         = args.csv,
+        entry_sl_only    = args.entry_sl_only,
     )
-    print_trade_history(trades)
-    print_stats(trades, args.min_score)
+    if args.entry_sl_only:
+        print_entry_sl_summary(trades)
+    else:
+        print_trade_history(trades)
+        print_stats(trades, args.min_score)

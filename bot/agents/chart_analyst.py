@@ -71,6 +71,15 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
         df5  = _get_mt5_ohlcv(mt5.TIMEFRAME_M5,  2016)  # 7 วัน (M5: 288 bar/day × 7)
         if df15 is not None and df5 is not None:
             price_source = "MT5"
+            try:
+                from agents.bar_cache import save_bars, merge_with_cache
+                # เติม gap ที่ copy_rates_from_pos รอบนี้อาจดึงมาไม่ครบ ด้วยข้อมูล
+                # ที่ cache สะสมไว้จาก scan สดรอบก่อนๆ (สะอาดกว่า ไม่มี gap)
+                df5 = merge_with_cache(df5)
+                # แล้วบันทึกแท่งสดของรอบนี้ (รวมของที่เพิ่ง merge มา) ลง cache ต่อ
+                save_bars(df5)
+            except Exception:
+                pass
     except Exception:
         pass
 

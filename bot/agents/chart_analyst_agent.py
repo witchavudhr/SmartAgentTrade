@@ -226,10 +226,14 @@ def _build_prompt(smc: dict) -> str:
     # FIRST  = sweep ≤48 bars + price อยู่ใน OB zone (กำลัง pullback เข้า OB ครั้งแรก)
     # SECOND = sweep ≤48 bars + price ออกจาก OB ไปแล้ว แต่กลับมาใน ±$10 ของ sweep level
     # EXPIRED = sweep >48 bars + price ห่าง level, หรือ setup หมดอายุ
+    # BUG FIX: เดิมดึง age จาก adv.sweep_l/h_age_bars (20-bar rolling mechanism,
+    # คนละตัวกับ "sweep" ที่มาจาก last_sweep — full-history scan) ทำให้ age มัก
+    # อ่านได้ 999 (sentinel "ไม่เจอ") แม้ sweep จะสดจริง → EXPIRED ผิดๆ บ่อยมาก
+    # ตอนนี้ใช้ sweep["age_bars"] ที่คำนวณจาก object เดียวกันโดยตรงแทน
     _sweep_kind  = sweep.get("kind")
     _sweep_level = sweep.get("level") or 0
-    _age_key     = ("sweep_l_age_bars" if _sweep_kind == "low" else "sweep_h_age_bars") if _sweep_kind else None
-    _sweep_age   = adv.get(_age_key, 999) if _age_key else 999
+    _sweep_age   = sweep.get("age_bars")
+    _sweep_age   = _sweep_age if _sweep_age is not None else 999
     _dist        = round(abs(price - _sweep_level), 1) if _sweep_level else 999
     _in_any_ob   = bull_ob.get("in_ob", False) or bear_ob.get("in_ob", False)
 

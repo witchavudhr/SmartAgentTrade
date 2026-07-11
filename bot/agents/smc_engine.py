@@ -596,6 +596,78 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
     }
 
 
+def find_liquidity_zones(df: pd.DataFrame, current_price: float, lookback: int = 500,
+                          cluster_width: float = 1.5, min_visits: int = 3,
+                          visit_gap_bars: int = 5, min_span_bars: int = 80,
+                          max_zones_per_side: int = 3) -> list[dict]:
+    """
+    หาโซนสะสม (liquidity accumulation zone) — ราคาเทสซ้ำๆ ในช่วงแคบหลายชั่วโมง
+    ต่างจาก fractal swing (จุดเดียวต่ำสุด/สูงสุดใน window) — นี่จับ "โซน" ที่มี
+    touch density สูง แม้จะไม่มีจุดไหนเป็น the-single-lowest-point ก็ตาม
+
+    Rally ใหญ่ๆ มักวิ่งไปกิน liquidity zone (โซนสะสม) ก่อน แล้วค่อยไป sweep SSL/BSL
+    ต่อเพื่อกิน stop ของคนเล่นตามเทรนด์
+
+    วิธี: fixed-anchor clustering ตามราคา (กัน chaining ข้ามไปไกล) แล้วนับ
+    "visit" ที่แยกกันจริง (ห่างกัน > visit_gap_bars ถึงนับเป็น visit ใหม่)
+    แทนการนับ touch ดิบ — กันไม่ให้ 1 แท่งลงยาวติดกันถูกนับเป็นโซนสะสมปลอมๆ
+    zone ต้องมี visit >= min_visits และกินเวลา >= min_span_bars
+    """
+    n = len(df)
+    if n < min_span_bars:
+        return []
+    lb = min(lookback, n)
+    recent = df.iloc[-lb:].reset_index(drop=True)
+
+    zones = []
+    for col, kind in (("low", "support"), ("high", "resistance")):
+        prices = recent[col].values
+        order = sorted(range(len(prices)), key=lambda i: prices[i])
+
+        side_zones = []
+        i = 0
+        while i < len(order):
+            cluster = [order[i]]
+            j = i + 1
+            # fixed-anchor: เทียบกับ cluster[0] เสมอ กัน chaining ไหลข้ามไปไกล
+            while j < len(order) and prices[order[j]] - prices[cluster[0]] <= cluster_width:
+                cluster.append(order[j])
+                j += 1
+            idxs = sorted(cluster)
+            visits = 1
+            for k in range(1, len(idxs)):
+                if idxs[k] - idxs[k - 1] > visit_gap_bars:
+                    visits += 1
+            span = idxs[-1] - idxs[0]
+            if visits >= min_visits and span >= min_span_bars:
+                cluster_prices = [prices[k] for k in cluster]
+                price_low  = round(min(cluster_prices), 2)
+                price_high = round(max(cluster_prices), 2)
+                mid        = round(sum(cluster_prices) / len(cluster_prices), 2)
+                if not (kind == "support" and mid >= current_price) and \
+                   not (kind == "resistance" and mid <= current_price):
+                    side_zones.append({
+                        "price_low":            price_low,
+                        "price_high":           price_high,
+                        "mid":                  mid,
+                        "kind":                 kind,
+                        "touch_count":          len(cluster),
+                        "visits":               visits,
+                        "span_bars":            int(span),
+                        "last_touch_bars_ago":  int(lb - 1 - idxs[-1]),
+                        "dist_pts":             round(abs(current_price - mid) * 10, 1),
+                    })
+            i = j
+
+        # เก็บเฉพาะ zone ที่ใกล้ราคาปัจจุบันสุด max_zones_per_side อัน
+        # (ไม่ใช่ visit เยอะสุด — โซนไกลๆ ที่ visit เยอะไม่ relevant เท่าโซนใกล้ที่เพิ่งผ่านเกณฑ์)
+        side_zones.sort(key=lambda z: z["dist_pts"])
+        zones.extend(side_zones[:max_zones_per_side])
+
+    zones.sort(key=lambda z: z["dist_pts"])
+    return zones
+
+
 def is_market_holiday() -> tuple[bool, str]:
     """
     เช็คว่าตลาด Forex/Gold ปิดสนิทวันนี้มั้ย
@@ -723,6 +795,22 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     bull_candle = bull_conf or bull_wick
     bear_candle = bear_conf or bear_wick
 
+    # ── เช็คย้อน 3 แท่งล่าสุด ไม่ใช่แค่แท่งปัจจุบัน ──────────────
+    # แก้ entry lag: rejection candle เกิดแล้ว แต่ระบบรอ pullback+continuation
+    # กว่าจะ trigger — เช็คว่า 3 แท่งที่ผ่านมามี rejection candle มั้ย ถ้ามี
+    # ให้ bull_candle/bear_candle = True ทันที ไม่ต้องรอแท่งล่าสุดเป๊ะๆ
+    _lookback_n = min(3, n)
+    for _k in range(1, _lookback_n + 1):
+        _row   = df.iloc[-_k]
+        _body  = abs(_row['close'] - _row['open'])
+        _upper = _row['high'] - max(_row['close'], _row['open'])
+        _lower = min(_row['close'], _row['open']) - _row['low']
+        _r     = max(_row['high'] - _row['low'], 0.001)
+        if _row['close'] > _row['open'] and (_body / _r >= 0.5 or _upper < _lower * 0.35):
+            bull_candle = True
+        if _row['close'] < _row['open'] and (_body / _r >= 0.5 or _lower < _body * 0.35):
+            bear_candle = True
+
     # ── Sweep Age (ทะลุ 20-bar high/low ใน 3 บาร์ที่ผ่านมา) ──
     lb = min(20, n - 1)
     sweep_l_age = sweep_h_age = 999
@@ -749,6 +837,47 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     bull_grab        = recent_sweep_l and last['close'] > last['open'] and bull_wr > 0.50
     bear_grab        = recent_sweep_h and last['close'] < last['open'] and bear_wr > 0.50
 
+    # ── Liquidity Zone Sweep (โซนสะสม — ราคาเทสซ้ำๆ หลายชั่วโมง) ──
+    # คนละกลไกกับ sweep 20-bar ด้านบน — ใช้ find_liquidity_zones ที่ไม่พึ่ง fractal
+    # swing เลย จับ "โซน" ที่ fractal/EQL/EQH มองไม่เห็น (เช่น โซนสะสมข้ามวัน)
+    zone_sweep_bull       = False
+    zone_sweep_bear       = False
+    zone_sweep_bull_age   = 999
+    zone_sweep_bear_age   = 999
+    zone_sweep_bull_level = None
+    zone_sweep_bear_level = None
+    zone_sweep_bull_edge  = None   # price_low ของโซน — ใช้อ้างอิงวาง SL
+    zone_sweep_bear_edge  = None   # price_high ของโซน — ใช้อ้างอิงวาง SL
+    try:
+        _zones      = find_liquidity_zones(df, current_close)
+        _sup_zones  = [z for z in _zones if z["kind"] == "support"]
+        _res_zones  = [z for z in _zones if z["kind"] == "resistance"]
+        _check_bars = min(5, n)
+        for _z in _sup_zones:
+            for _i in range(1, _check_bars + 1):
+                _bar = df.iloc[-_i]
+                if _bar['low'] < _z['price_low'] and _bar['close'] >= _z['price_low']:
+                    zone_sweep_bull       = True
+                    zone_sweep_bull_age   = _i - 1
+                    zone_sweep_bull_level = _z['mid']
+                    zone_sweep_bull_edge  = _z['price_low']
+                    break
+            if zone_sweep_bull:
+                break
+        for _z in _res_zones:
+            for _i in range(1, _check_bars + 1):
+                _bar = df.iloc[-_i]
+                if _bar['high'] > _z['price_high'] and _bar['close'] <= _z['price_high']:
+                    zone_sweep_bear       = True
+                    zone_sweep_bear_age   = _i - 1
+                    zone_sweep_bear_level = _z['mid']
+                    zone_sweep_bear_edge  = _z['price_high']
+                    break
+            if zone_sweep_bear:
+                break
+    except Exception:
+        pass
+
     # ── CHoCH Age ────────────────────────────────────────────
     lc = result.last_choch
     choch_age      = (n - 1 - lc.index) if lc else 999
@@ -770,19 +899,27 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     # เช็ค OB ทุกตัว (ไม่ใช่แค่ active_ob ตัวเดียว) เพื่อจับ bull/bear OB แยกกัน
     # ต้องตรวจ direction: Bull OB ต้องเป็น retest (ราคาเคยอยู่เหนือ OB แล้ว pull back ลงมา)
     #                     Bear OB ต้องเป็น retest (ราคาเคยอยู่ใต้ OB แล้ว pull up ขึ้นมา)
+    # เงื่อนไขเพิ่ม 2 ข้อ (จาก user feedback):
+    #   1. ต้องมี rejection candle ยืนยัน — เข้า OB เฉยๆ ไม่พอ ต้องเห็นแท่งปฏิเสธจริง
+    #   2. OB ต้องห่างจากจุดที่ราคาวิ่งมา ≥$10 — ไม่งั้นไม่มี room ให้ sweep ผ่านง่ายเกินไป
+    OB_MIN_DISTANCE = 10.0  # ดอลลาร์ — ต้องมี room วิ่งมาอย่างน้อยเท่านี้ก่อนแตะ OB
     all_obs = result.order_blocks or []
-    recent_high_5 = df['high'].iloc[-6:-1].max() if len(df) >= 6 else df['high'].max()
-    recent_low_5  = df['low'].iloc[-6:-1].min()  if len(df) >= 6 else df['low'].min()
+    recent_high_20 = df['high'].iloc[-21:-1].max() if len(df) >= 21 else df['high'].max()
+    recent_low_20  = df['low'].iloc[-21:-1].min()  if len(df) >= 21 else df['low'].min()
     in_bull_ob = any(
         ob.kind == 'bullish' and not ob.mitigated
         and ob.bottom <= current_close <= ob.top
-        and recent_high_5 > ob.top          # ราคาเคยเหนือ OB → pull back ลงมา retest
+        and recent_high_20 > ob.top                          # ราคาเคยเหนือ OB → pull back ลงมา retest
+        and (recent_high_20 - ob.top) >= OB_MIN_DISTANCE      # ต้องมี room วิ่งมาก่อนแตะ OB
+        and bull_candle                                       # ต้องมี rejection candle ยืนยัน
         for ob in all_obs
     )
     in_bear_ob = any(
         ob.kind == 'bearish' and not ob.mitigated
         and ob.bottom <= current_close <= ob.top
-        and recent_low_5 < ob.bottom        # ราคาเคยใต้ OB → pull up ขึ้นมา retest
+        and recent_low_20 < ob.bottom                         # ราคาเคยใต้ OB → pull up ขึ้นมา retest
+        and (ob.bottom - recent_low_20) >= OB_MIN_DISTANCE     # ต้องมี room วิ่งมาก่อนแตะ OB
+        and bear_candle                                        # ต้องมี rejection candle ยืนยัน
         for ob in all_obs
     )
 
@@ -863,9 +1000,19 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
         "in_bull_ob": in_bull_ob,
         "in_bear_ob": in_bear_ob,
 
-        # Recent candle high/low (5-bar) — sweep reference for SL placement
-        "recent_high_5": round(recent_high_5, 2),
-        "recent_low_5":  round(recent_low_5,  2),
+        # Recent candle high/low (20-bar) — sweep reference for SL placement + OB min-distance check
+        "recent_high_20": round(recent_high_20, 2),
+        "recent_low_20":  round(recent_low_20,  2),
+
+        # Liquidity Zone Sweep (โซนสะสม)
+        "zone_sweep_bull":       zone_sweep_bull,
+        "zone_sweep_bear":       zone_sweep_bear,
+        "zone_sweep_bull_age":   zone_sweep_bull_age,
+        "zone_sweep_bear_age":   zone_sweep_bear_age,
+        "zone_sweep_bull_level": zone_sweep_bull_level,
+        "zone_sweep_bear_level": zone_sweep_bear_level,
+        "zone_sweep_bull_edge":  zone_sweep_bull_edge,   # price_low โซน — SL reference
+        "zone_sweep_bear_edge":  zone_sweep_bear_edge,   # price_high โซน — SL reference
 
         # Signal
         "long_signal":  long_sig,
@@ -1150,6 +1297,12 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
         bull_score += 3
         bull_reasons.append(f"CHoCH Bull ({adv['choch_age_bars']} bars ago)")
 
+    # 1b. Liquidity Zone Sweep (โซนสะสม — สำคัญเทียบเท่า CHoCH ตาม user)
+    # ราคาวิ่งไปกินโซนสะสมก่อนมักตามด้วย sweep SSL/BSL ต่อ — น้ำหนักสูงสุดเท่า CHoCH
+    if adv.get("zone_sweep_bull"):
+        bull_score += 3
+        bull_reasons.append(f"Liquidity Zone Swept @{adv.get('zone_sweep_bull_level')} ({adv['zone_sweep_bull_age']} bars ago)")
+
     # 2. Sweep low (ดูด liquidity ก่อนกลับ)
     if adv.get("recent_sweep_low"):
         bull_score += 2
@@ -1194,6 +1347,11 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
         bear_score += 3
         bear_reasons.append(f"CHoCH Bear ({adv['choch_age_bars']} bars ago)")
 
+    # Liquidity Zone Sweep (โซนสะสม — สำคัญเทียบเท่า CHoCH ตาม user)
+    if adv.get("zone_sweep_bear"):
+        bear_score += 3
+        bear_reasons.append(f"Liquidity Zone Swept @{adv.get('zone_sweep_bear_level')} ({adv['zone_sweep_bear_age']} bars ago)")
+
     if adv.get("recent_sweep_high"):
         bear_score += 2
         bear_reasons.append(f"Sweep High ({adv['sweep_h_age_bars']} bars ago)")
@@ -1224,6 +1382,18 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
         bear_score += 1
         bear_reasons.append("No Momentum Block")
 
+    # ── บังคับต้องมี sweep จริงก่อนถึงจะนับ (user feedback) ──────────
+    # ห้ามเข้าแค่เพราะ CHoCH/candle/OB โดยไม่มี sweep หรือ zone-sweep เลย —
+    # ไม่งั้นเข้าตอนราคายังแค่ sideways ทำโซนสะสม ยังไม่มีอะไรเกิดขึ้นจริง
+    _bull_has_sweep = bool(adv.get("recent_sweep_low") or adv.get("zone_sweep_bull"))
+    _bear_has_sweep = bool(adv.get("recent_sweep_high") or adv.get("zone_sweep_bear"))
+    if not _bull_has_sweep:
+        bull_score = 0
+        bull_reasons = []
+    if not _bear_has_sweep:
+        bear_score = 0
+        bear_reasons = []
+
     # ── ตัดสิน ────────────────────────────────────────────────
     def grade(s):
         if s >= 7: return "★★★", "HIGH"
@@ -1253,16 +1423,27 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
             entry_low  = round(current_price - atr * 0.3, 2)
             entry_high = round(current_price + atr * 0.3, 2)
 
-        # SL: ใต้ swing low ล่าสุด (15 bars) + buffer เล็กน้อย
-        recent_lows = [s.price for s in result.swing_lows[-5:]
-                       if (n - 1 - s.index) <= 15] if result.swing_lows else []
-        if recent_lows:
-            nearest_sl = min(recent_lows)
-            sl_dist    = current_price - nearest_sl
-            # ถ้า swing low ไกลเกิน ATR×2.5 ใช้ ATR×1.0 แทน
-            sl = round(current_price - min(sl_dist + atr * 0.1, atr * 2.5), 2)
+        # SL: อ้างอิงระดับที่ถูก sweep จริงก่อน (แม่นสุด) → fallback เป็น swing low
+        # ลำดับความสำคัญ: liquidity zone ที่ถูก sweep > sweep (mechanism A, wick_extreme) > nearest swing low
+        # buffer = $5 คงที่ (ไม่ scale ตาม ATR) — user ยืนยัน: SL ควรเป็น swept level + $5 เสมอ
+        SL_BUFFER = 5.0
+        _zone_edge  = adv.get("zone_sweep_bull_edge")
+        _last_sweep = result.last_sweep
+        if adv.get("zone_sweep_bull") and _zone_edge:
+            sl = round(_zone_edge - SL_BUFFER, 2)
+        elif (_last_sweep and _last_sweep.kind == "sweep_low"
+              and (n - 1 - _last_sweep.index) <= 30):
+            sl = round(_last_sweep.wick_extreme - SL_BUFFER, 2)
         else:
-            sl = round(current_price - atr * 1.0, 2)
+            recent_lows = [s.price for s in result.swing_lows[-5:]
+                           if (n - 1 - s.index) <= 15] if result.swing_lows else []
+            if recent_lows:
+                nearest_sl = min(recent_lows)
+                sl_dist    = current_price - nearest_sl
+                # ถ้า swing low ไกลเกิน ATR×2.5 ใช้ ATR×1.0 แทน
+                sl = round(current_price - min(sl_dist + SL_BUFFER, atr * 2.5), 2)
+            else:
+                sl = round(current_price - atr * 1.0, 2)
 
         sl_distance = current_price - sl
 
@@ -1297,15 +1478,25 @@ def detect_swing_entry(df: pd.DataFrame, result: SMCResult) -> dict:
             entry_low  = round(current_price - atr * 0.3, 2)
             entry_high = round(current_price + atr * 0.3, 2)
 
-        # SL: เหนือ swing high ล่าสุด (15 bars) + buffer
-        recent_highs = [s.price for s in result.swing_highs[-5:]
-                        if (n - 1 - s.index) <= 15] if result.swing_highs else []
-        if recent_highs:
-            nearest_sl = max(recent_highs)
-            sl_dist    = nearest_sl - current_price
-            sl = round(current_price + min(sl_dist + atr * 0.1, atr * 2.5), 2)
+        # SL: อ้างอิงระดับที่ถูก sweep จริงก่อน (แม่นสุด) → fallback เป็น swing high
+        # buffer = $5 คงที่ (ไม่ scale ตาม ATR)
+        SL_BUFFER   = 5.0
+        _zone_edge  = adv.get("zone_sweep_bear_edge")
+        _last_sweep = result.last_sweep
+        if adv.get("zone_sweep_bear") and _zone_edge:
+            sl = round(_zone_edge + SL_BUFFER, 2)
+        elif (_last_sweep and _last_sweep.kind == "sweep_high"
+              and (n - 1 - _last_sweep.index) <= 30):
+            sl = round(_last_sweep.wick_extreme + SL_BUFFER, 2)
         else:
-            sl = round(current_price + atr * 1.0, 2)
+            recent_highs = [s.price for s in result.swing_highs[-5:]
+                            if (n - 1 - s.index) <= 15] if result.swing_highs else []
+            if recent_highs:
+                nearest_sl = max(recent_highs)
+                sl_dist    = nearest_sl - current_price
+                sl = round(current_price + min(sl_dist + SL_BUFFER, atr * 2.5), 2)
+            else:
+                sl = round(current_price + atr * 1.0, 2)
 
         sl_distance = sl - current_price
 
@@ -1702,6 +1893,10 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             "level": last_sweep.level,
             "recovered": last_sweep.recovered,
             "wick_extreme": last_sweep.wick_extreme,
+            # age ของ sweep object ตัวนี้เอง (bars ago) — ต้องใช้ตัวนี้ ไม่ใช่
+            # advanced_signals()'s sweep_l/h_age_bars ซึ่งเป็นคนละ mechanism
+            # (20-bar rolling, คนละตัวกับ last_sweep ที่สแกนประวัติทั้งหมด)
+            "age_bars": (len(df) - 1 - last_sweep.index) if df is not None else None,
         } if last_sweep else None,
 
         "active_ob": {
@@ -1818,6 +2013,17 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
         summary["liquidity"] = classify_liquidity(result, current_price)
     except Exception:
         summary["liquidity"] = {}
+
+    # ── Liquidity Zones (โซนสะสม — ราคาเทสซ้ำๆ, จับไม่ได้ด้วย fractal swing) ──
+    if df is not None:
+        try:
+            zones = find_liquidity_zones(df, current_price)
+            summary["liquidity_zones"] = {
+                "support":    [z for z in zones if z["kind"] == "support"][:3],
+                "resistance": [z for z in zones if z["kind"] == "resistance"][:3],
+            }
+        except Exception:
+            summary["liquidity_zones"] = {"support": [], "resistance": []}
 
     # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:

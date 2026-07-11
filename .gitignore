@@ -7,3 +7,5 @@ bot/env.txt
 config/secrets.py
 data/
 .claude/
+bot/mt5_export_*.csv
+ReportHistory-*.html
