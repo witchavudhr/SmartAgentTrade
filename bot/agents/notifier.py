@@ -884,6 +884,44 @@ async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     message = news_scout.format_news_message(news)
     await update.message.reply_text(message, parse_mode="Markdown")
 
+async def cmd_barcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /barcheck [YYYY-MM-DD] — เช็คว่าวันนี้ (หรือวันที่ระบุ) เก็บแท่ง M5/M15
+    ครบตั้งแต่ตลาดเปิดจนถึงตอนนี้มั้ย — ใช้ยืนยันว่า bar_cache ทำงานถูกต้อง
+    เฉพาะเช็คข้อมูลของวันนั้นเท่านั้น — analysis จริงยังคงดูย้อนหลัง 1 สัปดาห์เหมือนเดิม
+    """
+    from agents.bar_cache import today_summary
+    args = ctx.args if ctx.args else []
+    date_str = args[0] if args else datetime.now().strftime("%Y-%m-%d")
+
+    summ = today_summary(date_str)
+    if summ["m5_count"] == 0:
+        await update.message.reply_text(
+            f"❌ ยังไม่มีข้อมูลของวันที่ `{date_str}` เลยใน bar_cache\n"
+            f"_(บอทยังไม่เคย scan สำเร็จวันนี้ หรือยังไม่ถึงรอบแรก)_",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = [
+        f"📊 *Bar Cache Check — {date_str}*",
+        f"M5: `{summ['m5_count']}` แท่ง | M15 (resampled): `{summ['m15_count']}` แท่ง",
+        f"ช่วง: `{summ['first_time']}` → `{summ['last_time']}`",
+        f"คาดหวังเริ่ม: `{summ['expected_start']}`",
+    ]
+    if str(summ["first_time"]) > summ["expected_start"]:
+        lines.append("⚠️ แท่งแรกมาช้ากว่าเวลาตลาดเปิด — อาจขาดช่วงต้น session")
+
+    if summ["gaps"]:
+        lines.append(f"\n⚠️ พบ {len(summ['gaps'])} gap:")
+        for g_start, g_end in summ["gaps"]:
+            lines.append(f"  `{g_start}` → `{g_end}`")
+    else:
+        lines.append("\n✅ ไม่มี gap เลย — ข้อมูลครบต่อเนื่อง")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/ob — แสดง Bull OB และ Bear OB ปัจจุบัน (M5 + M15)"""
     await update.message.reply_text("📦 กำลังดึง OB zones...")
@@ -939,6 +977,24 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         w_bsl_lines = _fmt_weekly(w_bsl, "🔵")
         w_ssl_lines = _fmt_weekly(w_ssl, "🟠")
 
+        # โซนสะสม (liquidity zone) — จับด้วย touch-density clustering
+        # คนละตัวกับ swing-based BSL/SSL pools ด้านบน — จับโซนที่ fractal
+        # swing/EQL/EQH มองไม่เห็น (เช่น โซนที่เทสซ้ำๆ หลายชม./ข้ามวัน)
+        def _fmt_zones(zones, icon):
+            if not zones:
+                return f"  {icon} ไม่มี"
+            lines = []
+            for z in zones[:3]:
+                lines.append(
+                    f"  {icon} `{z['price_low']}–{z['price_high']}` "
+                    f"({z['visits']} visits, {z['dist_pts']:.0f}p, {int(z['last_touch_bars_ago'])}bars ago)"
+                )
+            return "\n".join(lines)
+
+        zones = smc.get("liquidity_zones") or {}
+        zone_res_lines = _fmt_zones(zones.get("resistance"), "🔵")
+        zone_sup_lines = _fmt_zones(zones.get("support"), "🟠")
+
         src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"
         msg = (
             f"📦 *Order Blocks*\n"
@@ -955,7 +1011,12 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🌊 *Liquidity Pools — 7d (ยังไม่ถูก sweep)*\n"
             f"*BSL* 🔵 (เหนือราคา):\n{w_bsl_lines}\n\n"
             f"*SSL* 🟠 (ใต้ราคา):\n{w_ssl_lines}\n"
-            f"_★=major(EQH/EQL) ·=minor | M15=stronger_"
+            f"_★=major(EQH/EQL) ·=minor | M15=stronger_\n\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"🎯 *Liquidity Zones (โซนสะสม)*\n"
+            f"เหนือราคา:\n{zone_res_lines}\n\n"
+            f"ใต้ราคา:\n{zone_sup_lines}\n"
+            f"_ราคาเทสซ้ำๆ หลายชม./ข้ามวัน — เป้าหมายที่ราคามักวิ่งไปกินก่อน sweep SSL/BSL_"
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
@@ -3445,6 +3506,7 @@ def run():
     app.add_handler(CommandHandler("mt5", cmd_mt5))
     app.add_handler(CommandHandler("posguard", cmd_posguard))
     app.add_handler(CommandHandler("ob", cmd_ob))
+    app.add_handler(CommandHandler("barcheck", cmd_barcheck))
 
     # Callback (ปุ่ม)
     app.add_handler(CallbackQueryHandler(handle_callback))

@@ -87,6 +87,48 @@ def export_csv(out_path: str) -> int:
     return len(df)
 
 
+def resample_m15(df_m5: pd.DataFrame) -> pd.DataFrame:
+    """แปลง M5 bars เป็น M15 (aggregate) — ไม่ต้องเก็บ M15 แยก table"""
+    if df_m5 is None or df_m5.empty:
+        return df_m5
+    d = df_m5.set_index("time") if "time" in df_m5.columns else df_m5
+    m15 = d.resample("15min").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+    }).dropna()
+    return m15
+
+
+def today_summary(date_str: str, session_start: str = "06:30", session_end: str = None) -> dict:
+    """
+    สรุปข้อมูลของวันนี้ที่สะสมไว้ — ใช้ตอบคำสั่ง Telegram
+    คืน dict: m5_count, m15_count, first_time, last_time, gaps (list), expected_start
+    """
+    import datetime as _dt
+    end_bound = session_end or _dt.datetime.now().strftime("%H:%M")
+    df = load_range(f"{date_str} 00:00:00", f"{date_str} 23:59:59")
+    if df.empty:
+        return {"m5_count": 0, "m15_count": 0, "gaps": [], "first_time": None, "last_time": None}
+
+    gaps = []
+    times = df["time"].sort_values().reset_index(drop=True)
+    for i in range(1, len(times)):
+        diff = times[i] - times[i - 1]
+        if diff > pd.Timedelta(minutes=10):
+            gaps.append((times[i - 1], times[i]))
+
+    m15 = resample_m15(df)
+
+    return {
+        "m5_count":  len(df),
+        "m15_count": len(m15),
+        "gaps":      gaps,
+        "first_time": times.iloc[0],
+        "last_time":  times.iloc[-1],
+        "expected_start": f"{date_str} {session_start}:00",
+        "checked_at": f"{date_str} {end_bound}",
+    }
+
+
 def merge_with_cache(df_mt5: pd.DataFrame) -> pd.DataFrame:
     """
     เอา df ที่เพิ่งดึงจาก MT5 (copy_rates_from_pos — อาจมี gap ย้อนหลังหลายวัน)
