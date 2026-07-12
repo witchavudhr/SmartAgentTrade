@@ -1905,6 +1905,14 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
     open_fvgs   = [f for f in result.fvgs if not f.filled]
     nearest_fvg = (min(open_fvgs, key=lambda f: abs((f.top + f.bottom) / 2 - current_price))
                    if open_fvgs else None)
+    # แยก bull/bear FVG ที่อยู่ฝั่งที่ราคาน่าจะ pull back ไปแตะ — ใช้เป็น
+    # candidate ใน Buy/Sell Zone Guide (คู่กับ OB/liquidity zone)
+    _bull_fvgs_below = [f for f in open_fvgs if f.kind == "bullish" and f.top <= current_price]
+    _bear_fvgs_above = [f for f in open_fvgs if f.kind == "bearish" and f.bottom >= current_price]
+    nearest_bull_fvg = (min(_bull_fvgs_below, key=lambda f: current_price - f.top)
+                        if _bull_fvgs_below else None)
+    nearest_bear_fvg = (min(_bear_fvgs_above, key=lambda f: f.bottom - current_price)
+                        if _bear_fvgs_above else None)
 
     summary = {
         "current_price": current_price,
@@ -1955,6 +1963,18 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             "top": nearest_fvg.top,
             "bottom": nearest_fvg.bottom,
         } if nearest_fvg else None,
+
+        "nearest_bull_fvg": {
+            "top": nearest_bull_fvg.top,
+            "bottom": nearest_bull_fvg.bottom,
+            "dist_pts": round((current_price - nearest_bull_fvg.top) * 10, 1),
+        } if nearest_bull_fvg else None,
+
+        "nearest_bear_fvg": {
+            "top": nearest_bear_fvg.top,
+            "bottom": nearest_bear_fvg.bottom,
+            "dist_pts": round((nearest_bear_fvg.bottom - current_price) * 10, 1),
+        } if nearest_bear_fvg else None,
 
         "equal_highs":       result.equal_highs[-3:] if result.equal_highs else [],
         "equal_lows":        result.equal_lows[-3:]  if result.equal_lows  else [],
