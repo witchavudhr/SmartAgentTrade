@@ -1051,18 +1051,25 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "dist_pts": z["dist_pts"],
                     "cond": f"โซนสะสม ({z['visits']} visits) — ราคามักวิ่งมากวาดก่อน sweep SSL/BSL ต่อ"}
 
+        # โซนที่ห่างราคาปัจจุบันน้อยกว่านี้ ตัดออกจาก guide เลย — ใกล้เกินจะมี room
+        # ให้ sweep ผ่านจริง (สอดคล้องกับ OB_MIN_DISTANCE=$10 ที่บอทใช้ตัดสินใจจริง
+        # ใน detect_swing_entry) ยกเว้น dist_pts==0 ที่แปลว่าราคาอยู่ในโซนแล้ว
+        _MIN_ZONE_DIST = 100  # points = $10
+        def _far_enough(c):
+            return c["dist_pts"] == 0 or c["dist_pts"] >= _MIN_ZONE_DIST
+
         buy_candidates = [c for c in [
             _ob_candidate(m15_bull, "Bull OB (M15)"),
             _ob_candidate(m5_bull,  "Bull OB (M5)"),
             _liq_candidate(liq.get("nearest_ssl"), f"SSL {(liq.get('nearest_ssl') or {}).get('type','?')}"),
             _zone_candidate((zones.get("support") or [None])[0], "Liquidity Zone"),
-        ] if c]
+        ] if c and _far_enough(c)]
         sell_candidates = [c for c in [
             _ob_candidate(m15_bear, "Bear OB (M15)"),
             _ob_candidate(m5_bear,  "Bear OB (M5)"),
             _liq_candidate(liq.get("nearest_bsl"), f"BSL {(liq.get('nearest_bsl') or {}).get('type','?')}"),
             _zone_candidate((zones.get("resistance") or [None])[0], "Liquidity Zone"),
-        ] if c]
+        ] if c and _far_enough(c)]
         buy_candidates.sort(key=lambda c: c["dist_pts"])
         sell_candidates.sort(key=lambda c: c["dist_pts"])
 
