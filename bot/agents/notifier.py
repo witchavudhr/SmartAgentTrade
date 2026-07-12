@@ -1215,7 +1215,8 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
         except Exception:
             pass
     if open_count >= MAX_PYRAMID:
-        await send_fn(
+        await _safe_send(
+            send_fn,
             f"🚫 *Pyramid หยุด — ครบ {MAX_PYRAMID} ไม้แล้ว*\n"
             f"ตอนนี้มี `{open_count}` positions เปิดอยู่ใน MT5\n"
             f"_ปิดไม้ก่อนแล้วค่อย pyramid ใหม่_",
@@ -1227,7 +1228,8 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
     if entry_price and ex_entry and not _price_is_better(entry_price, ex_entry, direction):
         diff = abs(entry_price - ex_entry)
         price_src = "ราคาตลาด" if mkt_price else "entry zone midpoint"
-        await send_fn(
+        await _safe_send(
+            send_fn,
             f"⏭ *Pyramid ข้าม — ราคาไม่ดีกว่าไม้แรก*\n"
             f"ไม้ 1: `{ex_entry}` | {price_src}: `{entry_price}` (ต่างกัน `{diff:.2f}`)\n"
             f"_{'BUY ต้องเข้าต่ำกว่าไม้แรก' if direction == 'BUY' else 'SELL ต้องเข้าสูงกว่าไม้แรก'}_",
@@ -1281,7 +1283,8 @@ async def _execute_pyramid_auto(result: dict, existing_trade: dict, send_fn):
         mt5_tag = "\n📋 _MT5 ไม่ได้เชื่อม — เปิด trade เองใน MT5_"
 
     dir_icon = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
-    await send_fn(
+    await _safe_send(
+        send_fn,
         f"🔺 *Pyramid Auto-Confirmed — Trade #{trade_id}*\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"⚡ confidence {confidence}% > 70% → execute อัตโนมัติ\n"
@@ -1353,7 +1356,8 @@ async def _send_advisory_alert(result: dict, existing_trade: dict, send_fn):
         InlineKeyboardButton("⏭ ข้าม",       callback_data="skip"),
     ]])
 
-    await send_fn(
+    await _safe_send(
+        send_fn,
         f"📡 *Setup ใหม่ — Pyramid Alert*\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"ไม้ 1: `{ex_dir}` #{ex_tid} @ `{ex_entry}` (lot `{ex_lot}`)\n"
@@ -3372,14 +3376,18 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     # Soft holiday: แจ้ง warning แต่ยัง scan ต่อ (Spot Gold ยังเทรดได้)
     holiday_warn = get_holiday_warning()
 
+    # helper: bridge ctx.bot.send_message ให้ใช้กับ _safe_send ได้
+    # (กัน crash ทั้ง auto_scan ถ้า Markdown parse พัง — เจอจริงจาก log)
+    _bot_send = lambda t, **kw: ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=t, **kw)
+
     # ── ข้ามถ้ามีข่าว High Impact ──────────────────────
     blocked, block_reason = news_scout.should_block_trade()
     if blocked:
         print(f"[auto_scan] 📰 News block — {block_reason}")
         if not quiet:
-            await ctx.bot.send_message(
-                chat_id=TELEGRAM_CHAT_ID,
-                text=f"📰 *Skip Scan — ข่าว High Impact*\n_{block_reason}_",
+            await _safe_send(
+                _bot_send,
+                f"📰 *Skip Scan — ข่าว High Impact*\n_{block_reason}_",
                 parse_mode="Markdown"
             )
         return
@@ -3389,11 +3397,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         scan_notice = f"{session_label} — กำลัง scan..."
         if holiday_warn:
             scan_notice += f"\n_{holiday_warn}_"
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=scan_notice,
-            parse_mode="Markdown"
-        )
+        await _safe_send(_bot_send, scan_notice, parse_mode="Markdown")
 
     _notify_scan_start()
     try:
@@ -3408,11 +3412,15 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as _e:
         import traceback
         _tb = traceback.format_exc()[-800:]
-        await ctx.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=f"🚨 *Scan Error*\n`{type(_e).__name__}: {str(_e)[:200]}`\n\n```\n{_tb}\n```",
-            parse_mode="Markdown"
-        )
+        # ห้ามใช้ Markdown กับ traceback ดิบ — เต็มไปด้วย _underscore_/asterisk
+        # ที่ทำให้ parse พังซ้ำ (คือสาเหตุจริงที่เจอจาก log) ส่งเป็น plain text แทน
+        try:
+            await ctx.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"🚨 Scan Error\n{type(_e).__name__}: {str(_e)[:200]}\n\n{_tb}",
+            )
+        except Exception as _send_err:
+            print(f"[auto_scan] ⚠️ ส่ง error message ไม่ได้ด้วย: {_send_err}")
         return
     log_scan(result)
     _push_to_dashboard(result)
