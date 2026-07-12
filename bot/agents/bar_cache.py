@@ -70,7 +70,8 @@ def save_bars(df: pd.DataFrame) -> int:
 
 def load_range(start: str = None, end: str = None) -> pd.DataFrame:
     """โหลดแท่งที่สะสมไว้ (ทั้งหมด หรือเฉพาะช่วง start/end แบบ 'YYYY-MM-DD HH:MM:SS')"""
-    conn = sqlite3.connect(_DB_PATH)
+    conn = _get_conn()  # ใช้ _get_conn() แทน sqlite3.connect() ตรงๆ — กัน error
+    # "no such table" ถ้า save_bars() ยังไม่เคยถูกเรียกเลย (table ยังไม่ถูกสร้าง)
     q = "SELECT * FROM m5_bars"
     params = []
     if start and end:

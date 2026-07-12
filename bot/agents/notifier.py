@@ -890,36 +890,41 @@ async def cmd_barcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ครบตั้งแต่ตลาดเปิดจนถึงตอนนี้มั้ย — ใช้ยืนยันว่า bar_cache ทำงานถูกต้อง
     เฉพาะเช็คข้อมูลของวันนั้นเท่านั้น — analysis จริงยังคงดูย้อนหลัง 1 สัปดาห์เหมือนเดิม
     """
-    from agents.bar_cache import today_summary
-    args = ctx.args if ctx.args else []
-    date_str = args[0] if args else datetime.now().strftime("%Y-%m-%d")
+    try:
+        from agents.bar_cache import today_summary
+        args = ctx.args if ctx.args else []
+        date_str = args[0] if args else datetime.now().strftime("%Y-%m-%d")
 
-    summ = today_summary(date_str)
-    if summ["m5_count"] == 0:
-        await update.message.reply_text(
-            f"❌ ยังไม่มีข้อมูลของวันที่ `{date_str}` เลยใน bar_cache\n"
-            f"_(บอทยังไม่เคย scan สำเร็จวันนี้ หรือยังไม่ถึงรอบแรก)_",
-            parse_mode="Markdown"
-        )
-        return
+        summ = today_summary(date_str)
+        if summ["m5_count"] == 0:
+            await update.message.reply_text(
+                f"❌ ยังไม่มีข้อมูลของวันที่ `{date_str}` เลยใน bar_cache\n"
+                f"_(บอทยังไม่เคย scan สำเร็จวันนี้ หรือยังไม่ถึงรอบแรก)_",
+                parse_mode="Markdown"
+            )
+            return
 
-    lines = [
-        f"📊 *Bar Cache Check — {date_str}*",
-        f"M5: `{summ['m5_count']}` แท่ง | M15 (resampled): `{summ['m15_count']}` แท่ง",
-        f"ช่วง: `{summ['first_time']}` → `{summ['last_time']}`",
-        f"คาดหวังเริ่ม: `{summ['expected_start']}`",
-    ]
-    if str(summ["first_time"]) > summ["expected_start"]:
-        lines.append("⚠️ แท่งแรกมาช้ากว่าเวลาตลาดเปิด — อาจขาดช่วงต้น session")
+        lines = [
+            f"📊 *Bar Cache Check — {date_str}*",
+            f"M5: `{summ['m5_count']}` แท่ง | M15 (resampled): `{summ['m15_count']}` แท่ง",
+            f"ช่วง: `{summ['first_time']}` → `{summ['last_time']}`",
+            f"คาดหวังเริ่ม: `{summ['expected_start']}`",
+        ]
+        if str(summ["first_time"]) > summ["expected_start"]:
+            lines.append("⚠️ แท่งแรกมาช้ากว่าเวลาตลาดเปิด — อาจขาดช่วงต้น session")
 
-    if summ["gaps"]:
-        lines.append(f"\n⚠️ พบ {len(summ['gaps'])} gap:")
-        for g_start, g_end in summ["gaps"]:
-            lines.append(f"  `{g_start}` → `{g_end}`")
-    else:
-        lines.append("\n✅ ไม่มี gap เลย — ข้อมูลครบต่อเนื่อง")
+        if summ["gaps"]:
+            lines.append(f"\n⚠️ พบ {len(summ['gaps'])} gap:")
+            for g_start, g_end in summ["gaps"]:
+                lines.append(f"  `{g_start}` → `{g_end}`")
+        else:
+            lines.append("\n✅ ไม่มี gap เลย — ข้อมูลครบต่อเนื่อง")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        import traceback
+        print(f"[cmd_barcheck] ❌ EXCEPTION: {e}\n{traceback.format_exc()}")
+        await update.message.reply_text(f"❌ Error: {e}")
 
 
 async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
