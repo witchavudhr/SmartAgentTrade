@@ -78,9 +78,10 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
                 df5 = merge_with_cache(df5)
                 # แล้วบันทึกแท่งสดของรอบนี้ (รวมของที่เพิ่ง merge มา) ลง cache ต่อ
                 save_bars(df5)
-                # ขยาย lookback ย้อนหลังไกลกว่า 7 วัน (สูงสุด 45 วัน) จาก cache ที่
-                # สะสมไว้ — ให้เห็น weekly/monthly BSL/SSL pool เก่าที่ยังไม่ sweep
-                df5 = get_extended_history(df5, max_days=45)
+                # ขยาย lookback ย้อนหลังไกลกว่า 7 วัน (สูงสุด 60 วัน — เท่ากับ
+                # retention ของ cache เอง) เพื่อให้เห็น weekly/monthly BSL/SSL
+                # pool เก่าที่ยังไม่ sweep ได้ครบเท่าที่ cache มีจริง
+                df5 = get_extended_history(df5, max_days=60)
                 # ใช้ M15 resample จาก M5 (extended + gap-fixed) แทน native M15 fetch
                 # (native df15 จาก MT5 ยังมี gap 06:50-08:00 เหมือนกัน ไม่เคย merge)
                 m15_resampled = resample_m15(df5)
