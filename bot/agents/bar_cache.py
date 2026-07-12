@@ -87,10 +87,17 @@ def load_range(start: str = None, end: str = None) -> pd.DataFrame:
 
 def export_day_csv(date_str: str, out_path: str) -> int:
     """export เฉพาะแท่งของวันที่ระบุเป็น CSV (time,open,high,low,close,tick_volume)
-    ใช้กับ /barcheck ให้ user เอาไปเทียบกับกราฟจริงทีละแท่งได้ — คืนจำนวนแท่ง"""
+    ใช้กับ /barcheck ให้ user เอาไปเทียบกับกราฟจริงทีละแท่งได้ — คืนจำนวนแท่ง
+
+    time = เวลาไทย (ตรงกับ MT5 terminal จริง — ยืนยันแล้วจาก MT5 Data Window)
+    chart_time = time + 4 ชม. — ตรงกับที่ TradingView broker server แสดง
+    (ยืนยันจากแท่งเดียวกันจริง: MT5=15:10 ↔ TradingView chart=19:10)
+    เพิ่มไว้ให้เทียบกับ TradingView ได้เลยไม่ต้องคำนวณเอง
+    """
     df = load_range(f"{date_str} 00:00:00", f"{date_str} 23:59:59")
     if df.empty:
         return 0
+    df.insert(1, "chart_time", df["time"] + pd.Timedelta(hours=4))
     df = df.rename(columns={"volume": "tick_volume"})
     df.to_csv(out_path, index=False)
     return len(df)
