@@ -988,9 +988,14 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ssl_lines = _fmt_liq_list(liq.get("ssl_pools", []), "🟠")
 
         # Weekly pools (M5+M15 merged, 7d)
-        def _fmt_weekly(pools, icon, max_n=8):
-            intact = [p for p in (pools or []) if not p.get("swept")][:max_n]
-            if not intact:
+        # โชว์ทั้ง intact + swept ที่ใกล้ราคาสุด 2 อัน (มี ✕ กำกับ) — เพื่อ trace
+        # ได้ว่า level ที่หายไปจาก list เพราะ "ไม่เคยตรวจเจอเป็น swing เลย"
+        # หรือ "เจอแล้วแต่โดน swept" (สองเคสนี้ต้องแก้คนละจุด)
+        def _fmt_weekly(pools, icon, max_n=8, show_swept=2):
+            all_pools = pools or []
+            intact = [p for p in all_pools if not p.get("swept")][:max_n]
+            swept  = sorted([p for p in all_pools if p.get("swept")], key=lambda p: p.get("dist_pts", 9999))[:show_swept]
+            if not intact and not swept:
                 return f"  {icon} ไม่มี"
             lines = []
             for p in intact:
@@ -999,6 +1004,11 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 age_tag = f", {p['age_bars']}bars ago" if p.get("age_bars") is not None else ""
                 time_tag = f" @ {p['time']}" if p.get("time") else ""
                 lines.append(f"  {icon} {sz_tag}`{p.get('level')}` ({tf_tag}{age_tag}){time_tag}")
+            for p in swept:
+                tf_tag  = "M15" if p.get("timeframe") == "M15" else "M5"
+                age_tag = f", {p['age_bars']}bars ago" if p.get("age_bars") is not None else ""
+                time_tag = f" @ {p['time']}" if p.get("time") else ""
+                lines.append(f"  ✕ ~~`{p.get('level')}`~~ ({tf_tag}{age_tag}){time_tag} _swept แล้ว_")
             return "\n".join(lines)
 
         w_bsl = liq.get("weekly_bsl_pools") or []
