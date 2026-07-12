@@ -3703,6 +3703,20 @@ def run():
         days=(5,),  # 5 = Saturday
     )
 
+    # bar_cache cleanup — ลบแท่งเก่าเกิน 60 วันทุกวัน 04:00 Thai (นอก session scan)
+    # กัน data/bar_cache.db บวมไม่มีที่สิ้นสุด
+    async def _bar_cache_cleanup_job(ctx):
+        try:
+            from agents.bar_cache import cleanup_old
+            cleanup_old(keep_days=60)
+        except Exception as e:
+            print(f"[bar_cache_cleanup_job] ⚠️ error: {e}")
+
+    app.job_queue.run_daily(
+        _bar_cache_cleanup_job,
+        time=dtime(4, 0, tzinfo=_THAI_TZ),
+    )
+
     # ── Startup: clear stale open_trade state ──────────────────────
     _startup_clear_stale_trade()
 
