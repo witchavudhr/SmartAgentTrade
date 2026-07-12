@@ -85,6 +85,17 @@ def load_range(start: str = None, end: str = None) -> pd.DataFrame:
     return df
 
 
+def export_day_csv(date_str: str, out_path: str) -> int:
+    """export เฉพาะแท่งของวันที่ระบุเป็น CSV (time,open,high,low,close,tick_volume)
+    ใช้กับ /barcheck ให้ user เอาไปเทียบกับกราฟจริงทีละแท่งได้ — คืนจำนวนแท่ง"""
+    df = load_range(f"{date_str} 00:00:00", f"{date_str} 23:59:59")
+    if df.empty:
+        return 0
+    df = df.rename(columns={"volume": "tick_volume"})
+    df.to_csv(out_path, index=False)
+    return len(df)
+
+
 def export_csv(out_path: str) -> int:
     """export cache ทั้งหมดเป็น CSV รูปแบบเดียวกับ mt5_export_*.csv — คืนจำนวนแท่งที่ export"""
     df = load_range()

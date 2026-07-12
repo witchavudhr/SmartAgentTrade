@@ -891,7 +891,7 @@ async def cmd_barcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     เฉพาะเช็คข้อมูลของวันนั้นเท่านั้น — analysis จริงยังคงดูย้อนหลัง 1 สัปดาห์เหมือนเดิม
     """
     try:
-        from agents.bar_cache import today_summary
+        from agents.bar_cache import today_summary, export_day_csv
         args = ctx.args if ctx.args else []
         date_str = args[0] if args else datetime.now().strftime("%Y-%m-%d")
 
@@ -921,6 +921,25 @@ async def cmd_barcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append("\n✅ ไม่มี gap เลย — ข้อมูลครบต่อเนื่อง")
 
         await update.message.reply_text("\n".join(lines))
+
+        # แนบไฟล์ CSV ทุกแท่งของวันนั้น (time,open,high,low,close,tick_volume)
+        # เอาไปเทียบกับกราฟจริงทีละแท่งได้ — ตามที่ user ขอ
+        import os
+        _csv_path = f"data/barcheck_{date_str}.csv"
+        _n = export_day_csv(date_str, _csv_path)
+        if _n > 0:
+            try:
+                with open(_csv_path, "rb") as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=f"bars_{date_str}.csv",
+                        caption=f"ทุกแท่งของ {date_str} ({_n} แท่ง) — time,open,high,low,close,volume"
+                    )
+            finally:
+                try:
+                    os.remove(_csv_path)
+                except Exception:
+                    pass
     except Exception as e:
         import traceback
         print(f"[cmd_barcheck] ❌ EXCEPTION: {e}\n{traceback.format_exc()}")
