@@ -545,6 +545,21 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         age = (len(df) - 1 - idx)
         t = df.index[idx]
         return (t.strftime("%Y-%m-%d %H:%M") if hasattr(t, "strftime") else str(t)), age
+
+    def _breached(idx, level, kind):
+        """
+        เช็คว่าราคาเคยวิ่งทะลุ level นี้ไปแล้วมั้ย (ไม่ว่าจะมี sweep+reversal
+        ตามนิยาม _find_liquidity_sweep หรือไม่) — ถ้าราคาแค่ทะลุผ่านตรงๆ ต่อเนื่อง
+        ไม่เด้งกลับใน 8 แท่ง (เช่น trending strong ผ่านไปเลย) _find_liquidity_sweep
+        จะไม่นับเป็น sweep เลย ทำให้ pool ค้างสถานะ "ยังไม่ swept" ทั้งที่ order
+        ที่วางรอไว้ตรงนั้นถูก execute ไปแล้วจริงๆ ตั้งแต่ราคาแตะระดับนั้นครั้งแรก
+        """
+        if df is None or idx is None or idx + 1 >= len(df):
+            return False
+        after = df.iloc[idx + 1:]
+        if kind == "low":
+            return bool((after["low"] < level).any())
+        return bool((after["high"] > level).any())
     eqh_set = set(round(v, 2) for v in (result.equal_highs or []))
     eql_set = set(round(v, 2) for v in (result.equal_lows  or []))
     swept_highs = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_high"}
@@ -556,7 +571,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         if lv <= current_price:
             continue
         is_major = any(abs(lv - e) < 1.0 for e in eqh_set)
-        swept    = any(abs(lv - s) < 1.5 for s in swept_highs)
+        swept    = any(abs(lv - s) < 1.5 for s in swept_highs) or _breached(sh.index, lv, "high")
         _t, _age = _bar_meta(sh.index)
         bsl_pools.append({
             "level":     lv,
@@ -575,7 +590,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         if lv >= current_price:
             continue
         is_major = any(abs(lv - e) < 1.0 for e in eql_set)
-        swept    = any(abs(lv - s) < 1.5 for s in swept_lows)
+        swept    = any(abs(lv - s) < 1.5 for s in swept_lows) or _breached(sl.index, lv, "low")
         _t, _age = _bar_meta(sl.index)
         ssl_pools.append({
             "level":     lv,
