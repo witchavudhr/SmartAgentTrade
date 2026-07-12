@@ -996,7 +996,9 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for p in intact:
                 tf_tag  = "M15" if p.get("timeframe") == "M15" else "M5"
                 sz_tag  = "★" if p.get("size") == "major" else "·"
-                lines.append(f"  {icon} {sz_tag}`{p.get('level')}` ({tf_tag})")
+                age_tag = f", {p['age_bars']}bars ago" if p.get("age_bars") is not None else ""
+                time_tag = f" @ {p['time']}" if p.get("time") else ""
+                lines.append(f"  {icon} {sz_tag}`{p.get('level')}` ({tf_tag}{age_tag}){time_tag}")
             return "\n".join(lines)
 
         w_bsl = liq.get("weekly_bsl_pools") or []

@@ -525,15 +525,26 @@ def get_session() -> dict:
     }
 
 
-def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str = "M5") -> dict:
+def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str = "M5",
+                        df: pd.DataFrame = None) -> dict:
     """
     จัด rank liquidity pools:
       BSL (Buy-Side Liquidity)  = เหนือราคา = stop ของคน Short
       SSL (Sell-Side Liquidity) = ใต้ราคา   = stop ของคน Long
 
     คืน dict พร้อม bsl_pools, ssl_pools, nearest_bsl, nearest_ssl
-    แต่ละ pool: {level, type, size, dist_pts, swept}
+    แต่ละ pool: {level, type, size, dist_pts, swept, time, age_bars}
+    time/age_bars มีค่าเมื่อส่ง df เข้ามา — ใช้ trace กลับไปดูแท่งจริงบนกราฟได้
+    ว่า swing point นี้เกิดขึ้นเมื่อไหร่ (แก้ปัญหา user เช็คย้อนหลังไม่เจอว่า
+    level นี้มาจากแท่งไหน เพราะ swing_length=50 ทำให้ pivot อาจเกิดนาน 12+ ชม.
+    ก่อนหน้าที่กราฟที่ซูมดูจะแสดง)
     """
+    def _bar_meta(idx):
+        if df is None or idx is None or idx < 0 or idx >= len(df):
+            return None, None
+        age = (len(df) - 1 - idx)
+        t = df.index[idx]
+        return (t.strftime("%Y-%m-%d %H:%M") if hasattr(t, "strftime") else str(t)), age
     eqh_set = set(round(v, 2) for v in (result.equal_highs or []))
     eql_set = set(round(v, 2) for v in (result.equal_lows  or []))
     swept_highs = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_high"}
@@ -546,6 +557,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             continue
         is_major = any(abs(lv - e) < 1.0 for e in eqh_set)
         swept    = any(abs(lv - s) < 1.5 for s in swept_highs)
+        _t, _age = _bar_meta(sh.index)
         bsl_pools.append({
             "level":     lv,
             "type":      "EQH" if is_major else "SwingHigh",
@@ -553,6 +565,8 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             "dist_pts":  round((lv - current_price) * 10, 1),
             "swept":     swept,
             "timeframe": timeframe,
+            "time":      _t,
+            "age_bars":  _age,
         })
 
     ssl_pools = []
@@ -562,6 +576,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             continue
         is_major = any(abs(lv - e) < 1.0 for e in eql_set)
         swept    = any(abs(lv - s) < 1.5 for s in swept_lows)
+        _t, _age = _bar_meta(sl.index)
         ssl_pools.append({
             "level":     lv,
             "type":      "EQL" if is_major else "SwingLow",
@@ -569,6 +584,8 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             "dist_pts":  round((current_price - lv) * 10, 1),
             "swept":     swept,
             "timeframe": timeframe,
+            "time":      _t,
+            "age_bars":  _age,
         })
 
     bsl_pools.sort(key=lambda x: x["dist_pts"])
@@ -2010,7 +2027,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
 
     # ── Liquidity Map ─────────────────────────────────────────
     try:
-        summary["liquidity"] = classify_liquidity(result, current_price)
+        summary["liquidity"] = classify_liquidity(result, current_price, df=df)
     except Exception:
         summary["liquidity"] = {}
 

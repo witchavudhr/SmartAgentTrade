@@ -129,7 +129,7 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     # รวม SSL/BSL จากทั้งสองไทม์เฟรมเข้าด้วยกัน dedup โดย proximity 1.5 USD
     if res15 is not None:
         from agents.smc_engine import classify_liquidity as _cl
-        m15_liq = _cl(res15, current_price, timeframe="M15")
+        m15_liq = _cl(res15, current_price, timeframe="M15", df=df15)
         m5_liq  = summary.get("liquidity", {})
         m5_bsl  = m5_liq.get("bsl_pools", [])
         m5_ssl  = m5_liq.get("ssl_pools", [])
@@ -150,6 +150,8 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
                             existing["timeframe"] = "M15"
                             existing["size"] = "major" if existing["size"] == "major" or pb["size"] == "major" else "minor"
                             existing["type"] = pb["type"] if pb["type"] in ("EQH","EQL") else existing["type"]
+                            existing["time"] = pb.get("time")
+                            existing["age_bars"] = pb.get("age_bars")
             merged.sort(key=lambda x: x["dist_pts"])
             return merged
 
