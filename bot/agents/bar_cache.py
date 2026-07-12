@@ -191,3 +191,57 @@ def merge_with_cache(df_mt5: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         print(f"[bar_cache] ⚠️ merge_with_cache failed: {e}")
         return df_mt5
+
+
+def get_extended_history(df_mt5: pd.DataFrame, max_days: int = 45) -> pd.DataFrame:
+    """
+    ขยาย lookback ให้ analysis เห็นย้อนหลังได้ไกลกว่าที่ MT5 ดึงมาในรอบนี้ (7 วัน)
+    โดยใช้ cache ที่สะสมไว้ — สำหรับหา weekly/monthly BSL/SSL pool เก่าที่ยังไม่
+    ถูก sweep (pool ที่ MT5 bulk fetch มองไม่เห็นเพราะจำกัดแค่ 2016 แท่ง)
+
+    df_mt5 (7 วันล่าสุด, สดที่สุด) เป็นตัวหลักเสมอ — cache เติมแค่ส่วนที่เก่ากว่า
+    ขอบเขตล่างของ df_mt5 เท่านั้น (ไม่ทับข้อมูลสดของรอบนี้)
+    """
+    if df_mt5 is None or df_mt5.empty:
+        return df_mt5
+    try:
+        import datetime as _dt
+        cutoff_start = (df_mt5.index.min() - pd.Timedelta(days=max_days)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff_end   = df_mt5.index.min().strftime("%Y-%m-%d %H:%M:%S")
+        older = load_range(cutoff_start, cutoff_end)
+        if older.empty:
+            return df_mt5
+        older = older.set_index("time").rename(columns={"volume": "volume"})[
+            ["open", "high", "low", "close", "volume"]
+        ]
+        older = older[older.index < df_mt5.index.min()]  # กันซ้อนกับ df_mt5
+        if older.empty:
+            return df_mt5
+        extended = pd.concat([older, df_mt5]).sort_index()
+        print(
+            f"[bar_cache] 📚 extended history: +{len(older)} bar(s) จาก cache "
+            f"({older.index.min()} .. {older.index.max()}) รวมเป็น {len(extended)} แท่ง"
+        )
+        return extended
+    except Exception as e:
+        print(f"[bar_cache] ⚠️ get_extended_history failed: {e}")
+        return df_mt5
+
+
+def cleanup_old(keep_days: int = 60) -> int:
+    """ลบแท่งเก่าเกิน keep_days วัน กัน DB บวมไม่จำกัด (default เก็บ ~2 เดือน)
+    คืนจำนวนแท่งที่ลบไป — เรียกเป็นระยะ (เช่น วันละครั้ง) ไม่ต้องเรียกทุก scan"""
+    try:
+        import datetime as _dt
+        cutoff = (_dt.datetime.now() - _dt.timedelta(days=keep_days)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = _get_conn()
+        cur = conn.execute("DELETE FROM m5_bars WHERE time < ?", (cutoff,))
+        conn.commit()
+        deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.close()
+        if deleted:
+            print(f"[bar_cache] 🧹 cleanup: ลบ {deleted} แท่งที่เก่ากว่า {keep_days} วัน")
+        return deleted
+    except Exception as e:
+        print(f"[bar_cache] ⚠️ cleanup_old failed: {e}")
+        return 0
