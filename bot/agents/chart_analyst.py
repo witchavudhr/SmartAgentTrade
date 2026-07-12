@@ -72,12 +72,17 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
         if df15 is not None and df5 is not None:
             price_source = "MT5"
             try:
-                from agents.bar_cache import save_bars, merge_with_cache
+                from agents.bar_cache import save_bars, merge_with_cache, resample_m15
                 # เติม gap ที่ copy_rates_from_pos รอบนี้อาจดึงมาไม่ครบ ด้วยข้อมูล
                 # ที่ cache สะสมไว้จาก scan สดรอบก่อนๆ (สะอาดกว่า ไม่มี gap)
                 df5 = merge_with_cache(df5)
                 # แล้วบันทึกแท่งสดของรอบนี้ (รวมของที่เพิ่ง merge มา) ลง cache ต่อ
                 save_bars(df5)
+                # ใช้ M15 resample จาก M5 cache ที่แก้ gap แล้วแทน native M15 fetch
+                # (native df15 จาก MT5 ยังมี gap 06:50-08:00 เหมือนกัน ไม่เคย merge)
+                m15_resampled = resample_m15(df5)
+                if m15_resampled is not None and not m15_resampled.empty:
+                    df15 = m15_resampled
             except Exception:
                 pass
     except Exception:

@@ -56,8 +56,15 @@ def save_bars(df: pd.DataFrame) -> int:
         conn.commit()
         added = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
         conn.close()
+        last_t = df.index.max()
+        last_row = df.loc[last_t]
+        print(
+            f"[bar_cache] 💾 saved {added} new bar(s) — latest: {last_t} "
+            f"O={last_row['open']} H={last_row['high']} L={last_row['low']} C={last_row['close']}"
+        )
         return added
-    except Exception:
+    except Exception as e:
+        print(f"[bar_cache] ⚠️ save_bars failed: {e}")
         return 0
 
 
@@ -156,6 +163,12 @@ def merge_with_cache(df_mt5: pd.DataFrame) -> pd.DataFrame:
         if len(missing_idx) == 0:
             return df_mt5
         merged = pd.concat([df_mt5, cached.loc[missing_idx]]).sort_index()
+        gap_list = sorted(missing_idx)
+        print(
+            f"[bar_cache] 🩹 merged {len(missing_idx)} bar(s) from cache to fill MT5 gap "
+            f"({gap_list[0]} .. {gap_list[-1]})"
+        )
         return merged
-    except Exception:
+    except Exception as e:
+        print(f"[bar_cache] ⚠️ merge_with_cache failed: {e}")
         return df_mt5
