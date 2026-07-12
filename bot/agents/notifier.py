@@ -995,12 +995,68 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         zone_res_lines = _fmt_zones(zones.get("resistance"), "🔵")
         zone_sup_lines = _fmt_zones(zones.get("support"), "🟠")
 
+        # ── สรุป Buy Zone / Sell Zone — เลือกที่ใกล้ราคาสุดจากทุกแหล่ง ──
+        # รวม Bull/Bear OB (M5+M15) + SSL/BSL pool ใกล้สุด + liquidity zone
+        # ใกล้สุด แล้วเลือกตัวที่ใกล้ราคาปัจจุบันที่สุดมาเป็นโซนหลักที่ต้องจับตา
+        _p = price or 0
+
+        def _ob_candidate(ob, label):
+            if not ob:
+                return None
+            bottom, top = ob.get("bottom", _p), ob.get("top", _p)
+            dist = 0.0 if ob.get("in_ob") else abs(_p - top) * 10 if top <= _p else abs(bottom - _p) * 10
+            return {"label": label, "low": bottom, "high": top, "dist_pts": dist}
+
+        buy_candidates = [c for c in [
+            _ob_candidate(m15_bull, "Bull OB (M15)"),
+            _ob_candidate(m5_bull,  "Bull OB (M5)"),
+        ] if c]
+        _ssl_near = liq.get("nearest_ssl")
+        if _ssl_near:
+            buy_candidates.append({"label": f"SSL {_ssl_near.get('type','?')}",
+                                    "low": _ssl_near["level"], "high": _ssl_near["level"],
+                                    "dist_pts": _ssl_near.get("dist_pts", 9999)})
+        _sup_zone = (zones.get("support") or [None])[0]
+        if _sup_zone:
+            buy_candidates.append({"label": "Liquidity Zone",
+                                    "low": _sup_zone["price_low"], "high": _sup_zone["price_high"],
+                                    "dist_pts": _sup_zone["dist_pts"]})
+
+        sell_candidates = [c for c in [
+            _ob_candidate(m15_bear, "Bear OB (M15)"),
+            _ob_candidate(m5_bear,  "Bear OB (M5)"),
+        ] if c]
+        _bsl_near = liq.get("nearest_bsl")
+        if _bsl_near:
+            sell_candidates.append({"label": f"BSL {_bsl_near.get('type','?')}",
+                                     "low": _bsl_near["level"], "high": _bsl_near["level"],
+                                     "dist_pts": _bsl_near.get("dist_pts", 9999)})
+        _res_zone = (zones.get("resistance") or [None])[0]
+        if _res_zone:
+            sell_candidates.append({"label": "Liquidity Zone",
+                                     "low": _res_zone["price_low"], "high": _res_zone["price_high"],
+                                     "dist_pts": _res_zone["dist_pts"]})
+
+        def _fmt_zone_summary(cands, icon):
+            if not cands:
+                return f"{icon} ไม่มีข้อมูล"
+            best = min(cands, key=lambda c: c["dist_pts"])
+            rng = f"{best['low']}" if best["low"] == best["high"] else f"{best['low']}–{best['high']}"
+            tag = "อยู่ในโซนแล้ว" if best["dist_pts"] == 0 else f"ห่าง {best['dist_pts']:.0f}p"
+            return f"{icon} `{rng}` _({best['label']}, {tag})_"
+
+        buy_zone_line  = _fmt_zone_summary(buy_candidates, "🟢")
+        sell_zone_line = _fmt_zone_summary(sell_candidates, "🔴")
+
         src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"
         msg = (
             f"📦 *Order Blocks*\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"📡 Source: {src_icon}\n"
             f"💰 ราคา: `{price}`\n\n"
+            f"🎯 *Buy Zone:* {buy_zone_line}\n"
+            f"🎯 *Sell Zone:* {sell_zone_line}\n"
+            f"_(เลือกจาก OB/SSL-BSL/liquidity zone ที่ใกล้ราคาสุด — รายละเอียดทั้งหมดด้านล่าง)_\n\n"
             f"*M5:*\n"
             f"  🟢 {_fmt(m5_bull, 'Bull OB')}\n"
             f"  🔴 {_fmt(m5_bear, 'Bear OB')}\n\n"
