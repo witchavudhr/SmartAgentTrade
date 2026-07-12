@@ -897,18 +897,18 @@ async def cmd_barcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         summ = today_summary(date_str)
         if summ["m5_count"] == 0:
+            # plain text ล้วน — ไม่ใช้ parse_mode เลย กัน Markdown parse error ทั้งชนิด
             await update.message.reply_text(
-                f"❌ ยังไม่มีข้อมูลของวันที่ `{date_str}` เลยใน bar_cache\n"
-                f"_(บอทยังไม่เคย scan สำเร็จวันนี้ หรือยังไม่ถึงรอบแรก)_",
-                parse_mode="Markdown"
+                f"❌ ยังไม่มีข้อมูลของวันที่ {date_str} เลยใน bar_cache\n"
+                f"(บอทยังไม่เคย scan สำเร็จวันนี้ หรือยังไม่ถึงรอบแรก)"
             )
             return
 
         lines = [
-            f"📊 *Bar Cache Check — {date_str}*",
-            f"M5: `{summ['m5_count']}` แท่ง | M15 (resampled): `{summ['m15_count']}` แท่ง",
-            f"ช่วง: `{summ['first_time']}` → `{summ['last_time']}`",
-            f"คาดหวังเริ่ม: `{summ['expected_start']}`",
+            f"📊 Bar Cache Check — {date_str}",
+            f"M5: {summ['m5_count']} แท่ง | M15 (resampled): {summ['m15_count']} แท่ง",
+            f"ช่วง: {summ['first_time']} -> {summ['last_time']}",
+            f"คาดหวังเริ่ม: {summ['expected_start']}",
         ]
         if str(summ["first_time"]) > summ["expected_start"]:
             lines.append("⚠️ แท่งแรกมาช้ากว่าเวลาตลาดเปิด — อาจขาดช่วงต้น session")
@@ -916,15 +916,18 @@ async def cmd_barcheck(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if summ["gaps"]:
             lines.append(f"\n⚠️ พบ {len(summ['gaps'])} gap:")
             for g_start, g_end in summ["gaps"]:
-                lines.append(f"  `{g_start}` → `{g_end}`")
+                lines.append(f"  {g_start} -> {g_end}")
         else:
             lines.append("\n✅ ไม่มี gap เลย — ข้อมูลครบต่อเนื่อง")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await update.message.reply_text("\n".join(lines))
     except Exception as e:
         import traceback
         print(f"[cmd_barcheck] ❌ EXCEPTION: {e}\n{traceback.format_exc()}")
-        await update.message.reply_text(f"❌ Error: {e}")
+        try:
+            await update.message.reply_text(f"❌ Error: {e}")
+        except Exception:
+            pass
 
 
 async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
