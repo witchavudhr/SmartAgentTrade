@@ -99,6 +99,12 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     if not chart_analyst.has_signal(smc_summary, force_session=force_session):
         result["reject_reason"] = "SMC Engine: ไม่มี setup ครบเงื่อนไข"
         result["stages"]["smc"] = "NO_SIGNAL"
+        # off-hours แต่ signal กำลังก่อตัว — ส่งต่อให้ notifier.py แจ้ง Telegram
+        # เบาๆ (ไม่เรียก AI) เพื่อให้เห็นข้อมูลล่าสุดตอนบอทเริ่มรันใหม่
+        _off_note = smc_summary.get("off_hours_signal_note")
+        if _off_note:
+            result["off_hours_note"] = _off_note
+            result["current_price"]  = smc_summary.get("current_price")
         return result
 
     result["stages"]["smc"] = "SIGNAL_FOUND"

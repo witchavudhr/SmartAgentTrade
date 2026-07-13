@@ -240,11 +240,31 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
         _sess = smc_summary.get("session", {}).get("session", "?")
         if would_signal:
             print(f"[has_signal] 🌙 {_now_th} OFF-HOURS (session={_sess}) — signal กำลังก่อตัวอยู่ (ดู log ✅ ด้านบน) แต่นอกเวลาเทรด ไม่เรียก AI")
+            # เก็บ note ไว้ให้ supervisor.py/notifier.py ส่ง Telegram แจ้งได้ —
+            # user อยากรู้ตอนบอทเริ่มรันใหม่ว่ามี signal ก่อตัวช่วง off-hours มั้ย
+            smc_summary["off_hours_signal_note"] = _build_off_hours_note(smc_summary, _sess)
         else:
             print(f"[has_signal] ❌ {_now_th} OFF-HOURS (session={_sess}) — ไม่มี signal")
         return False  # Off-hours — ไม่เรียก AI เด็ดขาด (bypass ด้วย force_session=True)
 
     return would_signal
+
+
+def _build_off_hours_note(smc_summary: dict, sess: str) -> str:
+    """สร้างข้อความสั้นๆ บอกว่ามี signal อะไรก่อตัวอยู่ตอน off-hours — ใช้ label
+    เดียวกับ smc_setup ใน supervisor.py (priority: eql/eqh > swing > sweep)"""
+    price = smc_summary.get("current_price", "?")
+    bias  = smc_summary.get("bias", "neutral")
+    eql   = smc_summary.get("eql_eqh_sweep") or {}
+    sw    = smc_summary.get("last_sweep") or {}
+    rev   = smc_summary.get("reversal") or {}
+    label = (
+        eql.get("signal")
+        or (rev.get("swing_signal") and f"SWING_{rev['swing_signal']}")
+        or (sw.get("kind") and f"SWEEP_{sw['kind'].upper()}")
+        or "SIGNAL"
+    )
+    return f"🌙 Off-hours ({sess}) — {label} กำลังก่อตัว | ราคา {price} | bias={bias} (ไม่เรียก AI นอกเวลาเทรด)"
 
 
 def _evaluate_signal_conditions(smc_summary: dict) -> bool:

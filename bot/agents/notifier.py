@@ -1564,6 +1564,13 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
     """
     from agents.smc_engine import get_session
 
+    # ── off-hours แต่ signal กำลังก่อตัว — แจ้งเบาๆ ไม่เรียก AI ──────────
+    # user อยากรู้ตอนบอทเริ่มรันใหม่ว่าช่วง off-hours มี signal ก่อตัวมั้ย
+    _off_note = result.get("off_hours_note")
+    if _off_note:
+        await _safe_send(send_fn, _off_note)
+        return
+
     _current_price  = float(result.get("current_price") or 0)
     _liq_snapshot   = result.get("liq_snapshot", {})
     _watching_gate  = bot_state.get("watching_gate")
