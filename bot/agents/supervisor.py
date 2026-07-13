@@ -106,8 +106,14 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     _eql = smc_summary.get("eql_eqh_sweep") or {}
     _sw  = smc_summary.get("last_sweep") or {}
     _pc  = smc_summary.get("post_sweep_continuation") or {}
+    _rev = smc_summary.get("reversal") or {}
+    # swing_signal (จาก detect_swing_entry — ใช้ sweep สดของตัวเอง ≤3-5 แท่ง)
+    # ต้องมาก่อน last_sweep (full-history scan อาจเก่าเป็นร้อยแท่ง) ไม่งั้น label
+    # ที่โชว์ใน Telegram (เช่น "Setup: SWEEP_LOW") จะอ้างอิงจาก sweep เก่าที่ไม่
+    # เกี่ยวกับ trigger จริงเลย ทำให้ดูสับสนว่า "sweep หมดอายุ" แต่ signal ยังมา
     result["smc_setup"] = (
         _eql.get("signal")
+        or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
         or (_sw.get("kind") and f"SWEEP_{_sw['kind'].upper()}")
         or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
         or "SIGNAL"
