@@ -313,7 +313,7 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
 2. spread จะกว้าง / ราคาผันผวนมั้ยในช่วงนี้?
 3. ควรรอหลังข่าวผ่านมั้ย?
 
-ตอบเป็น JSON:
+ตอบเป็น JSON — ห้ามมีข้อความ/markdown อธิบายก่อนหรือหลัง JSON เด็ดขาด ตัวอักษรแรกของคำตอบต้องเป็น "{{":
 {{
   "vote": "YES/NO",
   "vote_reasoning": "เหตุผลที่โหวต 1-2 ประโยค — ระบุว่าข่าวกระทบ timing ยังไง",
@@ -326,7 +326,7 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
 }}"""
 
         from agents.sdk_utils import api_query
-        raw = api_query(prompt, model=MODEL_FAST, label="NewsScout", max_tokens=500)
+        raw = api_query(prompt, model=MODEL_FAST, label="NewsScout", max_tokens=800)
         result = safe_json_parse(
             raw,
             fallback={

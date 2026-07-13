@@ -523,7 +523,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 3. Bias NO เพราะข่าว/HTF structure พัง → น้ำหนักสูง
 4. News NO เพราะข่าว High Impact → น้ำหนักสูงที่สุด ต้องฟัง
 
-ตอบ JSON เท่านั้น:
+ตอบ JSON เท่านั้น — ห้ามมีข้อความ/markdown อธิบายก่อนหรือหลัง JSON เด็ดขาด ตัวอักษรแรกของคำตอบต้องเป็น "{{":
 {{
   "approve": true/false,
   "confidence": 0-100,
@@ -541,7 +541,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 }}"""
 
     from agents.sdk_utils import api_query
-    raw = api_query(prompt, model=MODEL_SMART, label="Supervisor", max_tokens=800)
+    raw = api_query(prompt, model=MODEL_SMART, label="Supervisor", max_tokens=1500)
     result = safe_json_parse(
         raw,
         fallback={"approve": vote_score >= 2, "confidence": 0, "reasoning": "JSON parse error — auto by vote score"}
@@ -592,7 +592,7 @@ FVG ใกล้สุด: {nearest_fvg}
 3. ถ้า re-enter SL ใหม่ควรอยู่ที่ไหน?
 4. หรือ pullback นี้เป็นสัญญาณว่า thesis เสียแล้ว?
 
-ตอบ JSON เท่านั้น:
+ตอบ JSON เท่านั้น — ห้ามมีข้อความ/markdown อธิบายก่อนหรือหลัง JSON เด็ดขาด ตัวอักษรแรกของคำตอบต้องเป็น "{{":
 {{
   "reenter": true/false,
   "confidence": 0-100,
@@ -602,7 +602,7 @@ FVG ใกล้สุด: {nearest_fvg}
 }}"""
 
     from agents.sdk_utils import api_query
-    raw = api_query(prompt, model=MODEL_SMART, label="ReEntry", max_tokens=500)
+    raw = api_query(prompt, model=MODEL_SMART, label="ReEntry", max_tokens=1000)
     return safe_json_parse(
         raw,
         fallback={"reenter": False, "confidence": 0, "reasoning": "Parse error", "new_sl": None, "caution": None}

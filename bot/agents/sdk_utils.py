@@ -17,19 +17,23 @@ _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def api_query(prompt: str, model: str, label: str = "API",
-              max_tokens: int = 1024, timeout: float = 60) -> str:
+              max_tokens: int = 1024, timeout: float = 60, system: str = None) -> str:
     """
     เรียก Claude ตรงผ่าน Anthropic API (client.messages.create) — single-turn
     text-in/text-out ไม่ใช้ tools/streaming เหมาะกับ prompt สั้นๆ (~600-2500 in tokens)
     ที่ใช้ใน scan loop ของบอท
+
+    system: ใส่กฎ format (เช่น "ตอบ JSON เท่านั้น") ไว้ตรงนี้แทนที่จะฝังใน prompt —
+    system-level instruction บอทให้ทำตามเคร่งกว่า user turn เดียวที่มีทั้งกฎ+ข้อมูลปนกัน
+    (เจอปัญหาจริง: Sonnet เขียน markdown อธิบายยาวก่อน JSON ทำให้โดน max_tokens ตัดก่อนถึง JSON)
     """
     t0 = time.time()
+    kwargs = {"model": model, "max_tokens": max_tokens,
+              "messages": [{"role": "user", "content": prompt}]}
+    if system:
+        kwargs["system"] = system
     try:
-        resp = _client.with_options(timeout=timeout).messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        resp = _client.with_options(timeout=timeout).messages.create(**kwargs)
     except anthropic.RateLimitError as e:
         elapsed = round(time.time() - t0, 1)
         print(f"[{label}] ⚠️ rate limit ({elapsed}s): {e}")

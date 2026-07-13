@@ -310,7 +310,7 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
 YES — ถ้า A, B หรือ C (ระบุว่าเป็น case ไหน + H1/H4 conflict หรือไม่)
 NO  — ถ้า D หรือ E (ระบุชัดว่า H1/H4 ขัดยังไง)
 
-ตอบ JSON เท่านั้น:
+ตอบ JSON เท่านั้น — ห้ามมีข้อความ/markdown อธิบายก่อนหรือหลัง JSON เด็ดขาด ตัวอักษรแรกของคำตอบต้องเป็น "{{":
 {{
   "vote": "YES/NO",
   "vote_reasoning": "1-2 ประโยค — Case A/B/C/D + level สำคัญที่เกี่ยวข้อง",
@@ -329,7 +329,7 @@ NO  — ถ้า D หรือ E (ระบุชัดว่า H1/H4 ขั�
 }}"""
 
     from agents.sdk_utils import api_query
-    raw = api_query(prompt, model=MODEL_FAST, label="BiasAnalyst", max_tokens=800, timeout=60)
+    raw = api_query(prompt, model=MODEL_FAST, label="BiasAnalyst", max_tokens=1200, timeout=60)
     result = safe_json_parse(
         raw,
         fallback={

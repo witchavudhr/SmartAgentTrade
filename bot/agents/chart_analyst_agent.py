@@ -14,7 +14,13 @@ from agents.json_utils import safe_json_parse
 
 # ── Instructions + Pattern definitions (ใส่ใน prompt เพราะ SDK ไม่มี system param) ──
 _INSTRUCTIONS = """\
-You are an expert XAUUSD (Gold) SMC trading analyst. Return ONLY valid JSON — no markdown, no explanation.
+You are an expert XAUUSD (Gold) SMC trading analyst.
+
+⚠️ OUTPUT FORMAT — STRICTLY ENFORCED:
+Your entire response must be ONE JSON object and NOTHING else. The very first character of your
+response must be "{". Do NOT write any analysis, headers, bullet points, markdown (no "**bold**"),
+or explanation before or after the JSON. Do not narrate your reasoning in prose — put reasoning only
+inside the "vote_reasoning" JSON field. A response that starts with anything other than "{" is wrong.
 
 PATTERN PRIORITY (highest → lowest):
 1. CASE F ★★★★: BSL/SSL Sweep + Rejection → BSL_SWEEP_SELL / SSL_SWEEP_BUY (conf 75-90)
@@ -96,7 +102,7 @@ Step 4: VERIFY before output — compute actual_rr = abs(take_profit - entry) / 
 ⚠️ A pool that is closer than required_tp does NOT qualify even if it is the only one available → NO_TRADE
 ✓sw (swept) BSL/SSL pools are VALID TP targets — price often revisits them for a second liquidity grab
 
-OUTPUT (JSON only):
+OUTPUT — respond with ONLY this JSON object, first character "{", no text before or after it:
 {"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"POST_BOS_CHOCH_RETEST_SELL"|"POST_BOS_CHOCH_RETEST_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"take_profit":price|null,"rr_ratio":number|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 NOTE: "take_profit" = primary TP (replaces tp1). "rr_ratio" = abs(take_profit-entry)/abs(entry-stop_loss) — compute and include it. If rr_ratio < 1.5, set signal=NO_TRADE instead.
 """
@@ -138,8 +144,6 @@ def _build_prompt(smc: dict) -> str:
     _sweep_depth       = round(abs(_sweep_level_early - _wick_ext_early), 2) if _sweep_level_early else 0
 
     lines = [
-        _INSTRUCTIONS,
-        "",
         "=== MARKET DATA — XAUUSD M5 ===",
         f"Price: {price} | Bias: {bias} | Session: {sess.get('session','?')}",
         "",
@@ -293,7 +297,7 @@ def analyze(smc_summary: dict) -> dict:
     for attempt in range(_MAX_RETRIES + 1):
         try:
             raw = api_query(prompt, model=MODEL_SMART, label="ChartAnalyst",
-                             max_tokens=600, timeout=_API_TIMEOUT)
+                             max_tokens=1500, timeout=_API_TIMEOUT, system=_INSTRUCTIONS)
             break  # สำเร็จ — ออกจาก retry loop
         except Exception as e:
             elapsed = round(time.time() - t0, 1)
