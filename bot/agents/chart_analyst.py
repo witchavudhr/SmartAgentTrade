@@ -280,7 +280,19 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     _last_sweep_obj = smc_summary.get("last_sweep")
     _sweep_age_bars = (_last_sweep_obj or {}).get("age_bars")
     has_sweep     = _last_sweep_obj is not None and (_sweep_age_bars is None or _sweep_age_bars <= 48)
-    has_ob_nearby = bull_dist < OB_NEARBY_THRESHOLD or bear_dist < OB_NEARBY_THRESHOLD
+    # ob_nearby ต้องมี "displacement" อย่างน้อย OB_MIN_DISPLACEMENT (ตรงกับ
+    # OB MIN DISTANCE rule ที่ chart_analyst_agent ใช้จริง — ราคาต้องห่างจาก OB
+    # อย่างน้อย 15 จุดถึงจะมี room ให้เป็น setup ที่ valid) ไม่ใช่แค่ "ใกล้ๆ" เฉยๆ
+    # เดิมเช็คแค่ abs(distance) < 150 ทำให้ราคาที่ใกล้ OB เกินไป (เช่น 8-13pts —
+    # ใกล้เกินจะมี room แต่ absolute distance ยัง <150) ก็ผ่านเป็น "signal" ได้
+    # ทั้งที่รู้อยู่แล้วว่าจะโดน reject เพราะ displacement ไม่พอ
+    OB_MIN_DISPLACEMENT = 15  # จุด — เกณฑ์เดียวกับ OB MIN DISTANCE rule
+    _bull_disp = (price - bull_ob.get("top", price)) if bull_ob else -9999
+    _bear_disp = (bear_ob.get("bottom", price) - price) if bear_ob else -9999
+    has_ob_nearby = (
+        (bool(bull_ob) and OB_MIN_DISPLACEMENT <= _bull_disp < OB_NEARBY_THRESHOLD) or
+        (bool(bear_ob) and OB_MIN_DISPLACEMENT <= _bear_disp < OB_NEARBY_THRESHOLD)
+    )
     has_structure = (smc_summary.get("last_bos") is not None or
                      smc_summary.get("last_choch") is not None)
     bias = smc_summary.get("bias", "neutral")
@@ -299,7 +311,12 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
 
     score = sum([has_sweep, has_ob_nearby, has_structure, has_liq_nearby])
 
-    if score >= 2 and bias != "neutral":
+    # score >= 3 (ไม่ใช่ 2) — has_structure/has_liq_nearby เป็น context ทั่วไปที่
+    # true อยู่บ่อยๆ (BOS/CHoCH เกิดง่าย, threshold 120pts กว้าง) แค่ 2 ตัวนี้
+    # ไม่พอบอกว่ามี setup จริง ต้องมีอย่างน้อย sweep สดหรือ OB displacement พอ
+    # ร่วมด้วย ไม่งั้น structure+liquidity อย่างเดียวจะดัน score=2 ผ่านได้ตลอด
+    # แม้ sweep จะหมดอายุและ OB จะใกล้เกินไปแล้วก็ตาม (เรียก AI ฟรีๆ ซ้ำๆ)
+    if score >= 3 and bias != "neutral":
         print(f"[has_signal] ✅ {_now_th} TREND — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
         return True  # Trend setup viable — ให้ Claude วิเคราะห์ตำแหน่ง OB ต่อ
 
