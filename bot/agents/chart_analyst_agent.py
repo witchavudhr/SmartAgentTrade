@@ -139,6 +139,7 @@ def _build_prompt(smc: dict) -> str:
     choch_k  = smc.get("choch_sweep_setup")
     stored   = smc.get("stored_ob_rejections") or []
     srw      = smc.get("sweep_rejection_watch")
+    rev      = smc.get("reversal") or {}
 
     ssl_raw = liq.get("nearest_ssl")
     bsl_raw = liq.get("nearest_bsl")
@@ -279,6 +280,17 @@ def _build_prompt(smc: dict) -> str:
         f"ADVANCED: signal_type={adv.get('signal_type','?')} "
         f"bull_grab={adv.get('bull_grab',False)} bear_grab={adv.get('bear_grab',False)}",
         f"  momentum: bull={adv.get('momentum_bull',False)} bear={adv.get('momentum_bear',False)}",
+        "",
+        # SWING REVERSAL ENGINE (detect_swing_entry — rule-based, ตัวที่ has_signal()
+        # ใช้ trigger เรียก AI รอบนี้บ่อยครั้ง) — ⚠️ sweep ที่ engine นี้ใช้อาจเป็นคนละ
+        # ตัวกับ "LAST SWEEP" ด้านบน (ซึ่งเป็น full-history scan อาจเก่ากว่ามาก) —
+        # ถ้า bull_score/bear_score สูงแต่ LAST SWEEP ข้างบนดู EXPIRED อย่าตัดสินใจ
+        # จาก LAST SWEEP อย่างเดียว ให้พิจารณา reasons ของ SWING REVERSAL นี้ด้วย
+        # ว่ามี fresh trigger (เช่น zone-sweep ≤5 bars) ที่ LAST SWEEP มองไม่เห็น
+        f"SWING REVERSAL ENGINE: signal={rev.get('swing_signal') or 'none'} "
+        f"bull_score={rev.get('bull_score', 0)} bear_score={rev.get('bear_score', 0)}",
+        f"  reasons: {', '.join(rev.get('swing_reasons') or []) or 'none'}",
+        f"  entry_zone={rev.get('entry_zone')} sl={rev.get('stop_loss')} tp={rev.get('take_profit')}",
         "",
         "Analyze the data above and return JSON decision only.",
     ]
