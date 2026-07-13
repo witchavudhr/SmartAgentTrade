@@ -1904,10 +1904,20 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                 _msg += f"\n👁 *รอ:* _{_what[:180]}_"
             await _safe_send(send_fn, _msg, parse_mode="Markdown")
         else:
-            # chart NO_TRADE → log ใน console เฉยๆ ไม่ส่ง Telegram
+            # chart NO_TRADE — smc pre-filter (has_signal) เจอ signal แต่ Chart Analyst
+            # (AI) ปฏิเสธ — user อยากรู้เหตุผลด้วยไม่ใช่แค่ใน console
             _smc_setup = result.get("smc_setup", "")
             _rej = result.get("reject_reason", "–")
             print(f"[notifier] 🔇 smc={_smc_setup} chart=NO_TRADE | {_rej[:100]}")
+            if _smc_setup:
+                _price = result.get("current_price", "?")
+                _msg = (
+                    f"🔇 *ไม่มี Trade — smc เจอ signal แต่ AI ปฏิเสธ*\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"💰 ราคา: `{_price}` | Setup: `{_smc_setup}`\n"
+                    f"📝 _{_rej[:250]}_"
+                )
+                await _safe_send(send_fn, _msg, parse_mode="Markdown")
 
 
 # ── Callback (ปุ่ม Confirm/Skip) ──────────────────────
