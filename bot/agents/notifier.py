@@ -1492,6 +1492,68 @@ async def _ask_ob_entry_in_watching(price, ob, ob_dir, liq_type, liq_level, char
         return f"🤖 AI วิเคราะห์ไม่ได้: {_e}"
 
 
+def _sync_mt5_open_trade_state() -> tuple[list, dict | None]:
+    """
+    เช็ค MT5 position จริง + sync state ให้ตรง — แยกเป็น sync function เรียก
+    ผ่าน run_in_executor (เหมือน _mt5_autoclose_check) กัน mt5_executor calls
+    (ไม่มี timeout ในตัว) บล็อก event loop ตอน trade อนุมัติจริง
+    คืน (mt5_positions, existing_trade)
+    """
+    mt5_positions = []
+    if mt5_executor.is_available():
+        try:
+            mt5_positions = mt5_executor.get_open_positions()
+        except Exception:
+            pass
+
+    existing_trade = bot_state.get("open_trade")
+    if existing_trade and mt5_executor.is_available():
+        ticket = existing_trade.get("mt5_ticket")
+        open_tickets = {p["ticket"] for p in mt5_positions}
+        if ticket and ticket not in open_tickets:
+            try:
+                deal = mt5_executor.get_position_deals(int(ticket))
+                if not deal:
+                    deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+                if not deal:
+                    deal = mt5_executor.get_latest_closed_deal(hours=4)
+                if deal:
+                    close_px = deal["close_price"]
+                    entry_px = existing_trade.get("entry", 0)
+                    direction = existing_trade.get("direction", "BUY")
+                    pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
+                    pnl_pips = round(pnl_raw * 10, 1)
+                    outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
+                    trade_id = existing_trade.get("trade_id")
+                    if trade_id and str(trade_id).isdigit():
+                        from agents.trade_log import update_outcome
+                        update_outcome(int(trade_id), outcome, pnl_pips, actual_exit=close_px)
+                    icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
+                    print(f"[notifier] {icon} MT5 closed — {outcome} {pnl_pips:+.1f}p trade_id={trade_id}")
+            except Exception as e:
+                print(f"[notifier] ⚠️ auto-outcome failed: {e}")
+            state_manager.set_field(bot_state, "open_trade", None)
+            existing_trade = None
+            print(f"[notifier] 🧹 open_trade state cleared — MT5 position closed")
+        elif not ticket and not mt5_positions:
+            state_manager.set_field(bot_state, "open_trade", None)
+            existing_trade = None
+
+    if mt5_positions and not existing_trade:
+        pos = mt5_positions[0]
+        existing_trade = {
+            "direction":   pos["direction"],
+            "trade_id":    f"MT5-{pos['ticket']}",
+            "mt5_ticket":  pos["ticket"],
+            "entry":       pos["entry"],
+            "lot":         sum(p["lot"] for p in mt5_positions),
+        }
+        state_manager.set_field(bot_state, "open_trade", existing_trade)
+        print(f"[notifier] 🔄 Restored open_trade from MT5: {pos['direction']} ticket={pos['ticket']}")
+
+    return mt5_positions, existing_trade
+
+
 async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
     """
     ถ้ามี open trade ค้างอยู่ → Advisory mode (แจ้ง + confidence + ปุ่มให้กดเอง)
@@ -1554,62 +1616,12 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         return
 
     if result.get("approved"):
-        # ── เช็ค MT5 โดยตรง — source of truth ──────────────────
-        mt5_positions = []
-        if mt5_executor.is_available():
-            try:
-                mt5_positions = mt5_executor.get_open_positions()
-            except Exception:
-                pass
-
-        # sync state ให้ตรงกับ MT5 เสมอ
-        existing_trade = bot_state.get("open_trade")
-        if existing_trade and mt5_executor.is_available():
-            ticket = existing_trade.get("mt5_ticket")
-            open_tickets = {p["ticket"] for p in mt5_positions}
-            if ticket and ticket not in open_tickets:
-                # ปิดจาก MT5 โดยตรง — ดึง close price แล้ว auto-record outcome
-                try:
-                    # ลำดับ: position filter (น่าเชื่อถือ) → date-range → fallback latest
-                    deal = mt5_executor.get_position_deals(int(ticket))
-                    if not deal:
-                        deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
-                    if not deal:
-                        deal = mt5_executor.get_latest_closed_deal(hours=4)
-                    if deal:
-                        close_px = deal["close_price"]
-                        entry_px = existing_trade.get("entry", 0)
-                        direction = existing_trade.get("direction", "BUY")
-                        pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
-                        pnl_pips = round(pnl_raw * 10, 1)
-                        outcome  = "win" if pnl_pips > 0 else "loss" if pnl_pips < 0 else "be"
-                        trade_id = existing_trade.get("trade_id")
-                        if trade_id and str(trade_id).isdigit():
-                            from agents.trade_log import update_outcome
-                            update_outcome(int(trade_id), outcome, pnl_pips, actual_exit=close_px)
-                        icon = "✅" if outcome == "win" else "❌" if outcome == "loss" else "➖"
-                        print(f"[notifier] {icon} MT5 closed — {outcome} {pnl_pips:+.1f}p trade_id={trade_id}")
-                except Exception as e:
-                    print(f"[notifier] ⚠️ auto-outcome failed: {e}")
-                state_manager.set_field(bot_state, "open_trade", None)
-                existing_trade = None
-                print(f"[notifier] 🧹 open_trade state cleared — MT5 position closed")
-            elif not ticket and not mt5_positions:
-                state_manager.set_field(bot_state, "open_trade", None)
-                existing_trade = None
-
-        # ถ้า MT5 มีไม้แต่ state ไม่รู้ → restore
-        if mt5_positions and not existing_trade:
-            pos = mt5_positions[0]
-            existing_trade = {
-                "direction":   pos["direction"],
-                "trade_id":    f"MT5-{pos['ticket']}",
-                "mt5_ticket":  pos["ticket"],
-                "entry":       pos["entry"],
-                "lot":         sum(p["lot"] for p in mt5_positions),
-            }
-            state_manager.set_field(bot_state, "open_trade", existing_trade)
-            print(f"[notifier] 🔄 Restored open_trade from MT5: {pos['direction']} ticket={pos['ticket']}")
+        # MT5 position fetch + state sync ทั้งหมดผ่าน run_in_executor — เรียก
+        # mt5_executor ตรงๆ (ไม่มี timeout ในตัว) บล็อก event loop ได้เหมือนที่
+        # เจอใน trade_monitor/pos_guard/push_to_dashboard มาแล้ว
+        mt5_positions, existing_trade = await asyncio.get_event_loop().run_in_executor(
+            None, _sync_mt5_open_trade_state
+        )
 
         if existing_trade:
             ex_dir = existing_trade.get("direction", "?")
