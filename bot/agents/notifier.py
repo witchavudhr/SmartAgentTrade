@@ -218,7 +218,7 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         None, lambda: supervisor.run(force_session=True)
     )
     log_scan(result)
-    _push_to_dashboard(result)
+    await asyncio.get_event_loop().run_in_executor(None, _push_to_dashboard, result)
     state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     await _handle_scan_result(result, update.message.reply_text)
 
@@ -2208,7 +2208,7 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔬 *Test Scan* — รัน pipeline (ไม่เปิด trade จริง)...", parse_mode="Markdown")
     _notify_scan_start()
     result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
-    _push_to_dashboard(result)
+    await asyncio.get_event_loop().run_in_executor(None, _push_to_dashboard, result)
 
     stages  = result.get("stages", {})
     votes   = result.get("votes", {})
@@ -2526,7 +2526,7 @@ async def _rescan_after_close(ctx: ContextTypes.DEFAULT_TYPE):
         _notify_scan_start()
         result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
         log_scan(result)
-        _push_to_dashboard(result)
+        await asyncio.get_event_loop().run_in_executor(None, _push_to_dashboard, result)
 
         async def send(text, **kw):
             await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
@@ -3333,7 +3333,7 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
         log_scan(result)
-        _push_to_dashboard(result)
+        await asyncio.get_event_loop().run_in_executor(None, _push_to_dashboard, result)
 
         async def send(text, **kw):
             await ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, **kw)
@@ -3512,7 +3512,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
             print(f"[auto_scan] ⚠️ ส่ง error message ไม่ได้ด้วย: {_send_err}")
         return
     log_scan(result)
-    _push_to_dashboard(result)
+    await asyncio.get_event_loop().run_in_executor(None, _push_to_dashboard, result)
 
     # ── อัพเดต Pattern 1 & 3 state หลัง scan ─────────────────────
     _update_pattern_state(result, bot_state)
