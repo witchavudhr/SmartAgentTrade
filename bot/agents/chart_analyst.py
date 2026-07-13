@@ -273,7 +273,13 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     price         = smc_summary.get("current_price") or 0
     bull_dist     = abs(price - (bull_ob.get("top", price) or price)) if bull_ob else 9999
     bear_dist     = abs(price - (bear_ob.get("bottom", price) or price)) if bear_ob else 9999
-    has_sweep     = smc_summary.get("last_sweep") is not None
+    # sweep นับเป็น "signal" ก็ต่อเมื่อยังไม่เกิน 48 bars (เกณฑ์ EXPIRED เดียวกับที่
+    # chart_analyst_agent ใช้ตัดสิน PULLBACK ENTRY RULE) — ไม่งั้น sweep เก่า
+    # (เช่น 86-88 bars) จะ trigger เรียก Sonnet ทุก 5 นาทีทั้งที่รู้อยู่แล้วว่า
+    # AI จะตอบ NO_TRADE (EXPIRED) แน่ๆ เสียเงินฟรีๆ ซ้ำๆ
+    _last_sweep_obj = smc_summary.get("last_sweep")
+    _sweep_age_bars = (_last_sweep_obj or {}).get("age_bars")
+    has_sweep     = _last_sweep_obj is not None and (_sweep_age_bars is None or _sweep_age_bars <= 48)
     has_ob_nearby = bull_dist < OB_NEARBY_THRESHOLD or bear_dist < OB_NEARBY_THRESHOLD
     has_structure = (smc_summary.get("last_bos") is not None or
                      smc_summary.get("last_choch") is not None)
