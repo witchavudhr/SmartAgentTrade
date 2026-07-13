@@ -212,7 +212,11 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 กำลังรัน Supervisor scan...")
     _notify_scan_start()
-    result = supervisor.run(force_session=True)  # manual scan ข้าม session filter
+    # supervisor.run() เรียก MT5/Sonnet ตรงๆ (blocking) — ต้องผ่าน run_in_executor
+    # ไม่งั้นบล็อก event loop ทั้งตัวตลอดที่ scan ทำงาน (heartbeat/telegram ค้างหมด)
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: supervisor.run(force_session=True)
+    )
     log_scan(result)
     _push_to_dashboard(result)
     state_manager.set_field(bot_state, "last_scan", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -322,7 +326,7 @@ async def cmd_paper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── /paper close [id] [price] ──────────────────────────────
     if sub == "close":
         # ดึงราคาปัจจุบัน
-        price_data, _ = chart_analyst.get_price_data()
+        price_data, _ = await asyncio.get_event_loop().run_in_executor(None, chart_analyst.get_price_data)
         current = round(price_data['close'].iloc[-1], 2) if price_data is not None else None
 
         trade_id   = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
@@ -954,7 +958,7 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📦 กำลังดึง OB zones...")
     try:
         from agents.chart_analyst import get_price_data
-        df5, smc = get_price_data()
+        df5, smc = await asyncio.get_event_loop().run_in_executor(None, get_price_data)
         if smc is None:
             await update.message.reply_text("❌ ดึงข้อมูลราคาไม่ได้")
             return
@@ -1171,7 +1175,7 @@ async def handle_question(update: Update, question: str):
     await update.message.reply_text("🤔 กำลังวิเคราะห์...")
 
     # ดึงราคาปัจจุบัน
-    _, price_data = chart_analyst.get_price_data()
+    _, price_data = await asyncio.get_event_loop().run_in_executor(None, chart_analyst.get_price_data)
     price_info = f"ราคา Gold ปัจจุบัน: {price_data.get('current_price')}" if price_data else ""
 
     from agents.sdk_utils import sdk_query
@@ -1669,7 +1673,7 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
 
             pyramid_ob = None
             if is_pyramid:
-                _, _smc = chart_analyst.get_price_data()
+                _, _smc = await asyncio.get_event_loop().run_in_executor(None, chart_analyst.get_price_data)
                 if _smc:
                     ob_key = "active_bull_ob" if direction == "BUY" else "active_bear_ob"
                     pyramid_ob = _smc.get(ob_key)
@@ -2203,7 +2207,7 @@ async def cmd_testscan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     await update.message.reply_text("🔬 *Test Scan* — รัน pipeline (ไม่เปิด trade จริง)...", parse_mode="Markdown")
     _notify_scan_start()
-    result = supervisor.run()
+    result = await asyncio.get_event_loop().run_in_executor(None, supervisor.run)
     _push_to_dashboard(result)
 
     stages  = result.get("stages", {})
