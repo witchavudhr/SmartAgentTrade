@@ -19,6 +19,7 @@ Config (.env):
   POSGUARD_CHECK_INTERVAL=10   # วินาที ระหว่างเช็ค
 """
 
+import asyncio
 import logging
 import math
 from config.settings import (
@@ -132,14 +133,13 @@ def should_move_sl(pos: dict, guard_sl: float) -> bool:
 
 # ── Job / Loop ────────────────────────────────────────────────────────────────
 
-async def check_once() -> list[dict]:
+def _check_once_sync() -> list[dict]:
     """
-    เช็ค 1 รอบ — คืน list ของ {ticket, old_sl, new_sl, profit, ok/error}
-    เรียกจาก PTB job_queue หรือ standalone loop
+    ส่วน MT5 native call ทั้งหมดของ PosGuard — รันผ่าน run_in_executor เพราะ
+    mt5_executor ไม่มี timeout ในตัว ถ้าเรียกตรงบน event loop แล้ว terminal ค้าง
+    จะบล็อกบอททั้งตัว (เหมือนที่เจอใน trade_monitor — job นี้รันถี่กว่ามาก
+    ทุก POSGUARD_CHECK_INTERVAL วินาที เสี่ยงกว่าอีก)
     """
-    if not POSGUARD_ENABLED:
-        return []
-
     try:
         from agents import mt5_executor
     except ImportError:
@@ -181,6 +181,17 @@ async def check_once() -> list[dict]:
         results.append(entry)
 
     return results
+
+
+async def check_once() -> list[dict]:
+    """
+    เช็ค 1 รอบ — คืน list ของ {ticket, old_sl, new_sl, profit, ok/error}
+    เรียกจาก PTB job_queue หรือ standalone loop
+    """
+    if not POSGUARD_ENABLED:
+        return []
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _check_once_sync)
 
 
 # ── Config summary ────────────────────────────────────────────────────────────
