@@ -540,8 +540,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
   "reasoning": "2-3 ประโยค ภาษาไทย — ระบุ: ① เข้าเงื่อนไขไหน ② liquidity อยู่ตรงไหน ③ ทำไมถึง approve/reject"
 }}"""
 
-    from agents.sdk_utils import sdk_query
-    raw = sdk_query(prompt, label="Supervisor")
+    from agents.sdk_utils import api_query
+    raw = api_query(prompt, model=MODEL_SMART, label="Supervisor", max_tokens=800)
     result = safe_json_parse(
         raw,
         fallback={"approve": vote_score >= 2, "confidence": 0, "reasoning": "JSON parse error — auto by vote score"}
@@ -601,8 +601,8 @@ FVG ใกล้สุด: {nearest_fvg}
   "caution": "ข้อควรระวัง 1 ประโยค" หรือ null
 }}"""
 
-    from agents.sdk_utils import sdk_query
-    raw = sdk_query(prompt, label="ReEntry")
+    from agents.sdk_utils import api_query
+    raw = api_query(prompt, model=MODEL_SMART, label="ReEntry", max_tokens=500)
     return safe_json_parse(
         raw,
         fallback={"reenter": False, "confidence": 0, "reasoning": "Parse error", "new_sl": None, "caution": None}

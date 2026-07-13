@@ -1,24 +1,14 @@
 """
-chart_analyst_agent.py — Claude Agent SDK version
-ใช้ claude_agent_sdk แทน messages.create()
-รันด้วย Claude Code subscription — ไม่มีค่า API แยก
+chart_analyst_agent.py — เรียก Claude ตรงผ่าน Anthropic API (Sonnet)
 
 Flow:
-  has_signal() ผ่าน → asyncio.run(_query()) → parse JSON
-  ถ้า fail → supervisor.py fallback ไป chart_analyst.analyze()
-
-หมายเหตุ: asyncio.run() ใช้ได้ใน run_in_executor thread (ไม่มี event loop เดิม)
+  has_signal() ผ่าน → api_query() → parse JSON
 """
 
-import asyncio
-import os
 import time
 
-# ต้อง pop ก่อน import claude_agent_sdk เพราะ SDK อ่าน env ตอน import
-os.environ.pop("ANTHROPIC_API_KEY", None)
-
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
-
+from config.settings import MODEL_SMART
+from agents.sdk_utils import api_query
 from agents.chart_analyst import has_signal
 from agents.json_utils import safe_json_parse
 
@@ -111,7 +101,7 @@ OUTPUT (JSON only):
 NOTE: "take_profit" = primary TP (replaces tp1). "rr_ratio" = abs(take_profit-entry)/abs(entry-stop_loss) — compute and include it. If rr_ratio < 1.5, set signal=NO_TRADE instead.
 """
 
-_SDK_TIMEOUT = 150  # วินาที — hard cancel ถ้า SDK ไม่ตอบใน 150s
+_API_TIMEOUT = 60  # วินาที — ต่อ 1 request
 
 
 def _fmt(val):
@@ -285,65 +275,47 @@ def _build_prompt(smc: dict) -> str:
     return "\n".join(lines)
 
 
-async def _query_async(prompt: str) -> str:
-    """ส่ง prompt → รอ ResultMessage → คืน text"""
-    gen = query(prompt=prompt, options=ClaudeAgentOptions(allowed_tools=[]))
-    try:
-        async for msg in gen:
-            if isinstance(msg, ResultMessage):
-                return msg.result or ""
-        return ""
-    finally:
-        # ปิด generator อย่างถูกต้องแม้ return กลางทาง — ป้องกัน aclose() RuntimeError
-        await gen.aclose()
-
-
 _MAX_RETRIES = 2   # retry กี่ครั้งก่อน give up
 _RETRY_DELAY = 8   # วินาทีที่รอระหว่าง retry
 
 
 def analyze(smc_summary: dict) -> dict:
     """
-    SDK version of chart_analyst.analyze()
+    เรียก Sonnet ผ่าน Anthropic API ตรงๆ
     คืน dict format เดียวกันเป๊ะ — supervisor.py ใช้ต่อได้ทันที
     """
     t0 = time.time()
 
     prompt = _build_prompt(smc_summary)
 
-    async def _run_with_timeout():
-        return await asyncio.wait_for(_query_async(prompt), timeout=_SDK_TIMEOUT)
-
     raw = None
     last_err = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            raw = asyncio.run(_run_with_timeout())
+            raw = api_query(prompt, model=MODEL_SMART, label="ChartAnalyst",
+                             max_tokens=600, timeout=_API_TIMEOUT)
             break  # สำเร็จ — ออกจาก retry loop
-        except asyncio.TimeoutError:
-            elapsed = round(time.time() - t0, 1)
-            last_err = TimeoutError(f"Agent SDK timeout {elapsed}s (attempt {attempt+1})")
         except Exception as e:
-            err_str = str(e).lower()
             elapsed = round(time.time() - t0, 1)
+            err_str = str(e).lower()
             if any(k in err_str for k in ("rate limit", "429", "usage limit", "quota", "overloaded", "529")):
-                print(f"[AgentSDK] ⚠️ Rate limit ({elapsed}s): {e}")
-                raise RuntimeError(f"AgentSDK rate limit — skip: {e}")
+                print(f"[ChartAnalyst] ⚠️ Rate limit ({elapsed}s): {e}")
+                raise RuntimeError(f"ChartAnalyst rate limit — skip: {e}")
             last_err = e
 
         if attempt < _MAX_RETRIES:
-            print(f"[AgentSDK] ⚠️ attempt {attempt+1} failed — retry in {_RETRY_DELAY}s ({last_err})")
+            print(f"[ChartAnalyst] ⚠️ attempt {attempt+1} failed — retry in {_RETRY_DELAY}s ({last_err})")
             time.sleep(_RETRY_DELAY)
 
     if raw is None:
-        raise last_err or RuntimeError("AgentSDK failed after retries")
+        raise last_err or RuntimeError("ChartAnalyst API failed after retries")
 
     elapsed = round(time.time() - t0, 1)
-    print(f"[AgentSDK] response in {elapsed}s: {raw[:120]}")
+    print(f"[ChartAnalyst] response in {elapsed}s: {raw[:120]}")
 
     result = safe_json_parse(
         raw,
-        fallback={"signal": "NO_TRADE", "vote": "NO", "vote_reasoning": "SDK parse error", "confidence": 0},
+        fallback={"signal": "NO_TRADE", "vote": "NO", "vote_reasoning": "API parse error", "confidence": 0},
     )
     result["analyzed_at"]   = smc_summary.get("analyzed_at")
     result["current_price"] = smc_summary.get("current_price")

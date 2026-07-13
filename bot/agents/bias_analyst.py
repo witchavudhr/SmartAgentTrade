@@ -8,7 +8,7 @@ import pandas as pd
 import anthropic
 import json
 from datetime import datetime
-from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
+from config.settings import ANTHROPIC_API_KEY, MODEL_FAST
 from agents.smc_engine import SMCEngine, summarize
 from agents.json_utils import safe_json_parse
 
@@ -328,8 +328,8 @@ NO  — ถ้า D หรือ E (ระบุชัดว่า H1/H4 ขั�
   "reasoning": "ภาษาไทย — ระบุ macro trend, ระยะที่วิ่งมา, level ที่เกี่ยวข้อง และเหตุผลที่ vote"
 }}"""
 
-    from agents.sdk_utils import sdk_query
-    raw = sdk_query(prompt, label="BiasAnalyst", timeout=150)
+    from agents.sdk_utils import api_query
+    raw = api_query(prompt, model=MODEL_FAST, label="BiasAnalyst", max_tokens=800, timeout=60)
     result = safe_json_parse(
         raw,
         fallback={

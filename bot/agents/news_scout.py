@@ -9,7 +9,7 @@ import anthropic
 import json
 import os
 from datetime import datetime, timedelta
-from config.settings import ANTHROPIC_API_KEY, MODEL_SMART, NEWS_BLOCK_MINUTES, NEWS_ENABLED
+from config.settings import ANTHROPIC_API_KEY, MODEL_FAST, NEWS_BLOCK_MINUTES, NEWS_ENABLED
 from agents.json_utils import safe_json_parse
 
 FMP_API_KEY     = os.getenv("FMP_API_KEY", "")
@@ -325,8 +325,8 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
   "reasoning": "อธิบาย news context สั้นๆ ภาษาไทย"
 }}"""
 
-        from agents.sdk_utils import sdk_query
-        raw = sdk_query(prompt, label="NewsScout")
+        from agents.sdk_utils import api_query
+        raw = api_query(prompt, model=MODEL_FAST, label="NewsScout", max_tokens=500)
         result = safe_json_parse(
             raw,
             fallback={

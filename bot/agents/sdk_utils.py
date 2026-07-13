@@ -1,7 +1,7 @@
 """
-sdk_utils.py — shared helper สำหรับ claude_agent_sdk
-ใช้แทน client.messages.create() ทุกที่
-รันผ่าน Claude Code subscription — ไม่มีค่า API
+sdk_utils.py — shared helper สำหรับเรียก Claude
+api_query() = เรียกตรงผ่าน Anthropic API (pay-per-token) — ใช้งานจริงตอนนี้
+sdk_query()/_query_async() = path เดิมผ่าน claude_agent_sdk (subscription) — เก็บไว้เป็น fallback
 """
 
 import asyncio
@@ -9,14 +9,56 @@ import os
 import threading
 import time
 
-os.environ.pop("ANTHROPIC_API_KEY", None)
+import anthropic
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from config.settings import ANTHROPIC_API_KEY
+
+_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def api_query(prompt: str, model: str, label: str = "API",
+              max_tokens: int = 1024, timeout: float = 60) -> str:
+    """
+    เรียก Claude ตรงผ่าน Anthropic API (client.messages.create) — single-turn
+    text-in/text-out ไม่ใช้ tools/streaming เหมาะกับ prompt สั้นๆ (~600-2500 in tokens)
+    ที่ใช้ใน scan loop ของบอท
+    """
+    t0 = time.time()
+    try:
+        resp = _client.with_options(timeout=timeout).messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.RateLimitError as e:
+        elapsed = round(time.time() - t0, 1)
+        print(f"[{label}] ⚠️ rate limit ({elapsed}s): {e}")
+        raise
+    except anthropic.APIStatusError as e:
+        elapsed = round(time.time() - t0, 1)
+        print(f"[{label}] ⚠️ API error {e.status_code} ({elapsed}s): {e.message}")
+        raise
+    except anthropic.APIConnectionError as e:
+        elapsed = round(time.time() - t0, 1)
+        print(f"[{label}] ⚠️ connection error ({elapsed}s): {e}")
+        raise
+
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    elapsed = round(time.time() - t0, 1)
+    u = resp.usage
+    print(f"[{label}] API response {elapsed}s ({u.input_tokens}in/{u.output_tokens}out): {text[:80]}")
+    return text
+
+
+# ── Legacy path — claude_agent_sdk (subscription, ไม่มีค่า API) ──────────────
+# ไม่ได้ใช้แล้วตอนนี้ (ย้ายไป api_query() ทั้งหมด) เก็บไว้เผื่อสลับกลับ
 
 _SDK_TIMEOUT = 90  # วินาที default
 
 
 async def _query_async(prompt: str) -> str:
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
     gen = query(prompt=prompt, options=ClaudeAgentOptions(allowed_tools=[]))
     try:
         async for msg in gen:
@@ -50,7 +92,6 @@ def sdk_query(prompt: str, label: str = "SDK", timeout: int = _SDK_TIMEOUT) -> s
     elapsed = round(time.time() - t0, 1)
 
     if t.is_alive():
-        # thread ยัง hang อยู่ — abandon (daemon thread ไม่บล็อก process)
         raise TimeoutError(
             f"[{label}] SDK ไม่ตอบภายใน {elapsed}s ({timeout}s) — abandoned daemon thread"
         )
