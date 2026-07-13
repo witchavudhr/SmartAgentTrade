@@ -222,9 +222,8 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     เช็คเบื้องต้นว่ามี setup ที่น่าสนใจมั้ย (ไม่ใช้ Claude API)
     ถ้าไม่มี → ไม่เรียก Claude เลย ประหยัด cost
 
-    เช็ค 2 ชั้น:
-    1. SMC Engine: sweep + OB + structure
-    2. Advanced: signal_type จาก indicator logic (A/B/C)
+    Off-hours: ยังรันเงื่อนไขทั้งหมดเพื่อ log/แจ้งว่า signal กำลังก่อตัวมั้ย
+    (ให้เห็นข้อมูลต่อเนื่อง) แต่ไม่เรียก AI เด็ดขาด — คืน False เสมอนอกเวลาเทรด
     """
     import pytz
     from datetime import datetime as _dt
@@ -233,10 +232,34 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
     if not smc_summary:
         return False
 
-    # ── ชั้น 1: session filter ────────────────────────────────
-    if not force_session and not smc_summary.get("tradeable_session", True):
-        print(f"[has_signal] ❌ {_now_th} OFF-HOURS — session={smc_summary.get('session',{}).get('session','?')}")
-        return False  # Off-hours — ไม่เทรด (bypass ด้วย force_session=True)
+    off_hours = not force_session and not smc_summary.get("tradeable_session", True)
+
+    would_signal = _evaluate_signal_conditions(smc_summary)
+
+    if off_hours:
+        _sess = smc_summary.get("session", {}).get("session", "?")
+        if would_signal:
+            print(f"[has_signal] 🌙 {_now_th} OFF-HOURS (session={_sess}) — signal กำลังก่อตัวอยู่ (ดู log ✅ ด้านบน) แต่นอกเวลาเทรด ไม่เรียก AI")
+        else:
+            print(f"[has_signal] ❌ {_now_th} OFF-HOURS (session={_sess}) — ไม่มี signal")
+        return False  # Off-hours — ไม่เรียก AI เด็ดขาด (bypass ด้วย force_session=True)
+
+    return would_signal
+
+
+def _evaluate_signal_conditions(smc_summary: dict) -> bool:
+    """
+    เช็คเงื่อนไข signal ทั้งหมด (sweep + OB + structure + advanced patterns)
+    แยกจาก has_signal() เพื่อให้เรียกได้ทั้งตอน trading hours ปกติ และตอน
+    off-hours (แค่ preview/log ไม่เรียก AI จริง)
+
+    เช็ค 2 ชั้น:
+    1. SMC Engine: sweep + OB + structure
+    2. Advanced: signal_type จาก indicator logic (A/B/C)
+    """
+    import pytz
+    from datetime import datetime as _dt
+    _now_th = _dt.now(pytz.timezone("Asia/Bangkok")).strftime("%H:%M:%S")
 
     # ── ชั้น 2: ราคาอยู่ใน OB → ผ่านทันที (OB-first logic) ──────
     # ใช้ M15 OB เป็น primary (significant zones) + M5 เป็น fallback
