@@ -73,13 +73,15 @@ SWEEP DEPTH BONUS (depth = how far wick went beyond SSL/BSL level):
 The deeper the sweep, the more stops were collected → stronger reversal → higher conviction
 
 SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
-- BSL_SWEEP_SELL: SL = last_sweep.wick_extreme (the actual wick high IS the buffer — no extra offset needed)
-- SSL_SWEEP_BUY:  SL = last_sweep.wick_extreme (the actual wick low IS the buffer — SSL was ~5pts above it)
-  ⚠️ NEVER place SL at the SSL/BSL pool level itself — wick_extreme is already below/above the pool
+- BSL_SWEEP_SELL: SL = last_sweep.level + 10.0 (base off the actual BSL pool level, NOT the wick —
+  wick depth varies per sweep and can leave too little room; pyramid legs 2/3 need the extra buffer
+  to avoid getting stopped out before they can even trigger)
+- SSL_SWEEP_BUY:  SL = last_sweep.level - 10.0 (base off the actual SSL pool level, NOT the wick, same reason)
+  ⚠️ Use last_sweep.level (the SSL/BSL pool price), not last_sweep.wick_extreme, as the SL anchor
 - OB_REJECTION_SELL / STORED_OB_PULLBACK_SELL: SL = bear_ob.top + 3.0
 - OB_REJECTION_BUY  / STORED_OB_PULLBACK_BUY:  SL = bull_ob.bottom - 3.0
-- POST_SWEEP_PULLBACK_SELL: SL = last_sweep.wick_extreme
-- POST_SWEEP_PULLBACK_BUY:  SL = last_sweep.wick_extreme
+- POST_SWEEP_PULLBACK_SELL: SL = last_sweep.level + 10.0
+- POST_SWEEP_PULLBACK_BUY:  SL = last_sweep.level - 10.0
 - CHOCH_SWEEP_SELL: SL = last_choch.level + 3.0
 - CHOCH_SWEEP_BUY:  SL = last_choch.level - 3.0
 - STRONG_REJECTION: SL = 3 pts beyond the rejection wick extreme
@@ -156,8 +158,8 @@ def _build_prompt(smc: dict) -> str:
         f"  BOS:   {bos.get('direction','none')} @ {bos.get('level','?')}",
         "",
         f"LAST SWEEP: {sweep.get('kind','none')} @ {sweep.get('level','?')} recovered={sweep.get('recovered','?')}"
-        + (f" | wick_extreme={sweep.get('wick_extreme','?')} depth={_sweep_depth}pts → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='high' else "")
-        + (f" | wick_extreme={sweep.get('wick_extreme','?')} depth={_sweep_depth}pts → SL_ref={sweep.get('wick_extreme','?')}" if sweep.get('kind')=='low' else ""),
+        + (f" | wick_extreme={sweep.get('wick_extreme','?')} depth={_sweep_depth}pts → SL_ref=level+10 ({round((sweep.get('level') or 0)+10, 2)})" if sweep.get('kind')=='high' else "")
+        + (f" | wick_extreme={sweep.get('wick_extreme','?')} depth={_sweep_depth}pts → SL_ref=level-10 ({round((sweep.get('level') or 0)-10, 2)})" if sweep.get('kind')=='low' else ""),
         "",
         "ORDER BLOCKS:",
         f"  Bear OB: {bear_ob.get('bottom','?')} – {bear_ob.get('top','?')} (in_ob={bear_ob.get('in_ob',False)})",

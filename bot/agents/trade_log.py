@@ -345,6 +345,35 @@ def log_trade(analysis: dict, action: str, mt5_ticket: int = None) -> int:
     return trade_id
 
 
+def check_zone_cooldown(signal: str, entry_price: float,
+                         cooldown_hours: float = 4.0, price_tolerance: float = 10.0) -> dict | None:
+    """
+    กันเทรดซ้ำโซนราคาใกล้เคียงกันในเวลาไม่ห่างกัน — เช่น sweep-based signal เกิด
+    ซ้ำที่ระดับใกล้ๆ level ที่เพิ่ง confirmed ไปหมาดๆ (สาเหตุ: บอทวิเคราะห์ใหม่ทุก
+    scan ไม่มี memory ว่าเพิ่งเทรดโซนนี้ไป ถ้า swing point ใหม่เกิดใกล้ๆ ของเดิม
+    จะถูกมองเป็นสัญญาณสดทันที)
+
+    คืน trade เก่าที่ชนกัน (dict) ถ้ามีทิศทางเดียวกัน + entry ห่างกัน ≤price_tolerance
+    ภายใน cooldown_hours ชม.ที่ผ่านมา — None ถ้าไม่ชนกับใคร
+    """
+    if entry_price is None:
+        return None
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT id, timestamp, signal, entry_low, setup_type FROM trades
+        WHERE action IN ('confirmed', 'mt5_import') AND signal = ?
+          AND timestamp >= datetime('now', 'localtime', ?)
+        ORDER BY timestamp DESC
+    """, (signal, f'-{cooldown_hours} hours')).fetchall()
+    conn.close()
+    for r in rows:
+        if r["entry_low"] is not None and abs(r["entry_low"] - entry_price) <= price_tolerance:
+            return dict(r)
+    return None
+
+
 def get_weekly_trades() -> list[dict]:
     """ดึง trades ทั้งหมด 7 วันที่ผ่านมา สำหรับ weekly feedback loop"""
     init_db()

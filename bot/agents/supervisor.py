@@ -138,6 +138,22 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
 
     result["analysis"] = analysis  # เก็บไว้เสมอ เพื่อให้ format_alert แสดง signal/conf/setup จริง
 
+    # ── Zone cooldown gate — กันเทรดซ้ำโซนราคาใกล้เคียงกันในเวลาไม่ห่างกัน ──
+    # (เช่น sweep-based signal ที่ swing point ใหม่เกิดใกล้ๆ level ที่เพิ่ง confirmed
+    # ไปหมาดๆ — บอทไม่มี memory ข้าม scan จึงมองเป็นสัญญาณสดได้ทั้งที่เป็นโซนเดิม)
+    if signal in ("BUY", "SELL") and chart_vote == "YES":
+        _entry_chk = analysis.get("entry")
+        if _entry_chk is not None:
+            from agents.trade_log import check_zone_cooldown
+            _cd = check_zone_cooldown(signal, _entry_chk)
+            if _cd:
+                result["reject_reason"] = (
+                    f"Zone Cooldown — เพิ่งเทรด {signal} ใกล้ระดับนี้ไปแล้วเมื่อ {_cd['timestamp']} "
+                    f"(entry เดิม {_cd['entry_low']}, ใหม่ {_entry_chk}) ภายใน 4 ชม. — ข้ามรอบนี้กันเทรดซ้ำโซน"
+                )
+                result["stages"]["zone_cooldown"] = _cd
+                return result
+
     if signal == "NO_TRADE" or chart_vote == "NO":
         result["reject_reason"] = f"Chart Analyst voted NO — {analysis.get('vote_reasoning', 'NO_TRADE')}"
         # ตรวจว่า Claude ปฏิเสธเพราะ Liquidity Gate (รอ SSL/BSL sweep) หรือเปล่า
