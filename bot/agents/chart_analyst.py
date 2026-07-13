@@ -251,20 +251,54 @@ def has_signal(smc_summary: dict, force_session: bool = False) -> bool:
 
 
 def _build_off_hours_note(smc_summary: dict, sess: str) -> str:
-    """สร้างข้อความสั้นๆ บอกว่ามี signal อะไรก่อตัวอยู่ตอน off-hours — ใช้ label
+    """สร้างข้อความบอกว่ามี signal อะไรก่อตัวอยู่ตอน off-hours พร้อมรายละเอียด
+    (level ที่ sweep, SSL/BSL ถัดไปที่รอ, จุด rejection ถ้ามี) — ใช้ label
     เดียวกับ smc_setup ใน supervisor.py (priority: eql/eqh > swing > sweep)"""
     price = smc_summary.get("current_price", "?")
     bias  = smc_summary.get("bias", "neutral")
     eql   = smc_summary.get("eql_eqh_sweep") or {}
     sw    = smc_summary.get("last_sweep") or {}
     rev   = smc_summary.get("reversal") or {}
-    label = (
-        eql.get("signal")
-        or (rev.get("swing_signal") and f"SWING_{rev['swing_signal']}")
-        or (sw.get("kind") and f"SWEEP_{sw['kind'].upper()}")
-        or "SIGNAL"
-    )
-    return f"🌙 Off-hours ({sess}) — {label} กำลังก่อตัว | ราคา {price} | bias={bias} (ไม่เรียก AI นอกเวลาเทรด)"
+    liq   = smc_summary.get("liquidity") or {}
+    bear_rej = smc_summary.get("recent_bear_ob_rejection")
+    bull_rej = smc_summary.get("recent_bull_ob_rejection")
+
+    detail_lines = []
+
+    if eql.get("signal"):
+        label = eql.get("signal")
+        detail_lines.append(f"level: {eql.get('level', '?')}")
+    elif rev.get("swing_signal"):
+        label = f"SWING_{rev['swing_signal']}"
+        detail_lines.append(
+            f"entry={rev.get('entry_zone')} SL={rev.get('stop_loss')} TP={rev.get('take_profit')}"
+        )
+        _reasons = ", ".join(rev.get("swing_reasons") or [])
+        if _reasons:
+            detail_lines.append(f"เหตุผล: {_reasons}")
+    elif sw.get("kind"):
+        label = f"SWEEP_{sw['kind'].upper()}"
+        detail_lines.append(
+            f"level: {sw.get('level')} (wick ถึง {sw.get('wick_extreme')}, {sw.get('age_bars')} bars ago)"
+        )
+        # sweep low = SSL ที่โดน sweep แล้ว → บอก SSL ถัดไปที่ยังไม่ swept ให้รอ
+        # sweep high = BSL ที่โดน sweep แล้ว → บอก BSL ถัดไปที่ยังไม่ swept
+        _next_pool = liq.get("nearest_ssl") if sw["kind"] == "low" else liq.get("nearest_bsl")
+        _next_lvl  = (_next_pool.get("level") if isinstance(_next_pool, dict) else _next_pool) if _next_pool else None
+        if _next_lvl:
+            _pool_label = "SSL" if sw["kind"] == "low" else "BSL"
+            detail_lines.append(f"รอ {_pool_label} ถัดไปที่ {_next_lvl}")
+    else:
+        label = "SIGNAL"
+
+    _rej = bear_rej or bull_rej
+    if _rej:
+        detail_lines.append(
+            f"rejection ที่ OB zone {_rej.get('ob_zone')} ({_rej.get('bars_ago')} bars ago)"
+        )
+
+    detail_str = " | " + " | ".join(detail_lines) if detail_lines else ""
+    return f"🌙 Off-hours ({sess}) — {label} กำลังก่อตัว | ราคา {price} | bias={bias}{detail_str} (ไม่เรียก AI นอกเวลาเทรด)"
 
 
 def _evaluate_signal_conditions(smc_summary: dict) -> bool:
