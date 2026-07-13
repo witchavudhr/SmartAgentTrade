@@ -2876,6 +2876,40 @@ async def cmd_txreport(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _mt5_autoclose_check(ot: dict) -> dict:
+    """
+    ส่วน MT5 native call ทั้งหมดของ trade_monitor แยกมาเป็น sync function
+    เรียกผ่าน run_in_executor — mt5_executor calls ไม่มี timeout ในตัวเลย
+    ถ้าเรียกตรงๆ ใน async def แล้ว MT5 terminal ค้าง (reconnect กับ broker ฯลฯ)
+    จะบล็อก event loop ทั้งตัว (heartbeat/scan อื่นๆ หยุดหมด จนกว่าจะ Ctrl+C)
+    คืน dict บอกผลแทน ไม่ทำ Telegram/state call ใดๆ (ต้องอยู่ฝั่ง async)
+    """
+    ticket = ot.get("mt5_ticket")
+    positions = mt5_executor.get_open_positions()
+    if positions is None:
+        # MT5 connect ล้มเหลว — caller ต้อง return ทั้งฟังก์ชัน อย่า false-detect ว่าปิดแล้ว
+        return {"positions_none": True}
+    open_tickets = {p["ticket"] for p in positions}
+    is_closed = bool(ticket and int(ticket) not in open_tickets)
+    if not is_closed:
+        # ยังเปิดอยู่ — caller ต้อง fall through ไปเช็ค trailing stop/pyramid ต่อ ไม่ return
+        return {"positions_none": False, "is_closed": False}
+
+    deal = None
+    if ticket:
+        deal = mt5_executor.get_position_deals(int(ticket))
+        if not deal:
+            deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
+            if deal:
+                print(f"[trade_monitor] ticket={ticket} get_position_deals ล้มเหลว → ใช้ date-range")
+    if not deal:
+        deal = mt5_executor.get_latest_closed_deal(hours=4)
+        if deal and ticket:
+            print(f"[trade_monitor] ticket={ticket} ทุก lookup ล้มเหลว → ใช้ latest deal fallback")
+
+    return {"positions_none": False, "is_closed": True, "deal": deal}
+
+
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     """
     ทำงานทุก 5 นาที — เช็ค trailing stop และ re-entry opportunity
@@ -2884,17 +2918,17 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     if not ot:
         return
 
+    loop = asyncio.get_event_loop()
+
     # ── Auto-detect MT5 close (ปิดจาก MT5 โดยตรง) ────────────────
     if mt5_executor.is_available():
         try:
             ticket = ot.get("mt5_ticket")
-            positions = mt5_executor.get_open_positions()
-            if positions is None:
+            _mt5_res = await loop.run_in_executor(None, _mt5_autoclose_check, ot)
+            if _mt5_res.get("positions_none"):
                 # MT5 connect ล้มเหลว — skip ครั้งนี้ อย่า false-detect ว่าปิดแล้ว
                 return
-            open_tickets = {p["ticket"] for p in positions}
-            # ถ้า trade ยังไม่มี MT5 ticket (รอ OB zone) → ข้ามไป ไม่ใช่ปิดแล้ว
-            is_closed = bool(ticket and int(ticket) not in open_tickets)
+            is_closed = _mt5_res.get("is_closed", False)
 
             if is_closed:
                 trade_id  = ot.get("trade_id")
@@ -2904,18 +2938,7 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                 outcome   = None
                 close_px  = None
 
-                deal = None
-                if ticket:
-                    # ลำดับ: position filter (API filter ตรงที่สุด) → date-range → latest fallback
-                    deal = mt5_executor.get_position_deals(int(ticket))
-                    if not deal:
-                        deal = mt5_executor.get_last_deal_for_ticket(int(ticket))
-                        if deal:
-                            print(f"[trade_monitor] ticket={ticket} get_position_deals ล้มเหลว → ใช้ date-range")
-                if not deal:
-                    deal = mt5_executor.get_latest_closed_deal(hours=4)
-                    if deal and ticket:
-                        print(f"[trade_monitor] ticket={ticket} ทุก lookup ล้มเหลว → ใช้ latest deal fallback")
+                deal = _mt5_res.get("deal")
                 if deal:
                     close_px = deal["close_price"]
                     pnl_raw  = (close_px - entry_px) if direction == "BUY" else (entry_px - close_px)
@@ -2964,9 +2987,9 @@ async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     peak      = ot.get("peak_price", entry)
     trade_id  = ot.get("trade_id")
 
-    # ดึงราคาปัจจุบัน
+    # ดึงราคาปัจจุบัน — ผ่าน run_in_executor เหมือนกัน (get_price_data ก็เรียก MT5 ตรงๆ)
     try:
-        _, smc_summary = chart_analyst.get_price_data()
+        _, smc_summary = await loop.run_in_executor(None, chart_analyst.get_price_data)
         if not smc_summary:
             return
         current = smc_summary.get("current_price", 0)
