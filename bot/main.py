@@ -3,6 +3,14 @@ import os
 import time
 import traceback
 
+# บังคับ stdout/stderr เป็น line-buffered — ไม่งั้น console บน Windows จะ
+# block-buffer เวลารันแบบนี้ (python main.py) ทำให้ print() ไม่โผล่ real-time
+# ดูเหมือนบอทค้าง (เงียบสนิท) ทั้งที่จริงทำงานอยู่ log แค่ค้างอยู่ใน buffer
+# รอ flush — จะ flush ออกมาทีเดียวตอน buffer เต็มหรือโปรแกรมจบ/โดน interrupt
+# (นี่คือสาเหตุที่กด Ctrl+C แล้ว log ทั้งหมดโผล่มาพร้อมกัน)
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 # pop ก่อน import อื่นทั้งหมด — settings.py โหลด .env ทีหลังก็ตาม
 # claude_agent_sdk อ่าน env ตอน import ดังนั้นต้องเคลียร์ตรงนี้ก่อน
 os.environ.pop("ANTHROPIC_API_KEY", None)
