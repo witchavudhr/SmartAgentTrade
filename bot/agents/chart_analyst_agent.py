@@ -43,6 +43,13 @@ PATTERN PRIORITY (highest → lowest):
 
 CRITICAL RULES:
 - PULLBACK VALIDITY: SELL pullback close must stay BELOW rejection high; BUY must stay ABOVE rejection low → if violated = INVALIDATED → NO_TRADE
+- CHASING CHECK (for OB_REJECTION and STORED_OB_PULLBACK setups): these setups require price to be
+  RETURNING toward the OB for a genuine retest, not continuing to run away from it. If momentum_bear=True
+  while considering OB_REJECTION_SELL / STORED_OB_PULLBACK_SELL, or momentum_bull=True while considering
+  the BUY versions, price is in a strong impulsive move AWAY from the OB right now (chasing an ever-moving
+  target, entry keeps sliding further from the OB with each scan while SL stays fixed at the OB edge —
+  degrading risk with no fresh confirmation) → NO_TRADE, do not chase. Only valid once momentum has cooled
+  and price shows signs of actually turning back toward the OB (a pause, consolidation, or reversal candle).
 - ob_quality=LOW (<50p gap) → reduce confidence 15-20
 - When unsure → NO_TRADE (never force)
 - BIAS CONTEXT: post_sweep_continuation and sweep ages are informational — use to assess context but do NOT hard-block signals. A fresh BUY sweep followed by a bounce into Bear OB is a valid SELL setup (distribution). Trust price action over bias lock.
