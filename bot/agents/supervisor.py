@@ -534,6 +534,39 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
    → Weekly SSL ที่ยัง intact + ราคาใกล้ = แนวที่รอ sweep อยู่
 """
 
+    # ── MAJOR POOL CHECK — คำนวณเอง (authoritative) ว่า sweep นี้เป็นการ sweep
+    # BSL/SSL "ตัวจริง" หรือแค่ swing high/low รองที่บังเอิญมี depth พอผ่านเกณฑ์
+    # (เจอเคสจริง: BSL_SWEEP_SELL sweep แค่ 4018.7 [minor] แต่ major BSL ที่ 4034
+    # ยังไม่โดนแตะเลย — premise ของ BSL_SWEEP_SELL คือ "liquidity หลักโดนกวาดแล้ว
+    # smart money จะกลับตัว" ถ้า pool ใหญ่กว่ายังไม่โดน sweep แปลว่า liquidity หลัก
+    # ยังไม่ถูกกวาด สัญญาณกลับตัวยังไม่สมเหตุสมผล ไม่ปล่อยให้ LLM เดาว่า sweep นี้
+    # "ใหญ่พอ" หรือเปล่าจากความรู้สึก — เช็ค weekly pool list ตรงๆ)
+    _major_pool_note = ""
+    if setup_type_s in ("BSL_SWEEP_SELL", "SSL_SWEEP_BUY") and smc_summary:
+        _liq_chk = smc_summary.get("liquidity") or {}
+        if setup_type_s == "BSL_SWEEP_SELL":
+            _swept_lvl = (smc_summary.get("last_sweep_high") or {}).get("level")
+            _pool_list = _liq_chk.get("weekly_bsl_pools") or []
+        else:
+            _swept_lvl = (smc_summary.get("last_sweep_low") or {}).get("level")
+            _pool_list = _liq_chk.get("weekly_ssl_pools") or []
+        if _swept_lvl is not None:
+            _bigger_unswept = [
+                p for p in _pool_list
+                if p.get("size") == "major" and not p.get("swept")
+                and abs(p.get("level", _swept_lvl) - _swept_lvl) > 1.0
+            ]
+            if _bigger_unswept:
+                _bp = _bigger_unswept[0]
+                _major_pool_note = (
+                    f"\n🚫 MAJOR POOL CHECK (คำนวณแล้ว ยึดตามนี้): sweep ที่ {_swept_lvl} เป็นแค่ pool "
+                    f"รอง — ยังมี major pool ที่ {_bp.get('level')} ยังไม่โดน sweep เลย → liquidity "
+                    f"หลักยังไม่ถูกกวาด premise ของ {setup_type_s} ยังไม่สมเหตุสมผล ต้อง REJECT รอให้ "
+                    f"major pool ที่ {_bp.get('level')} โดน sweep จริงก่อนค่อย approve\n"
+                )
+            else:
+                _major_pool_note = f"\n✅ MAJOR POOL CHECK: sweep ที่ {_swept_lvl} ไม่มี major pool ที่ใหญ่กว่ายังไม่ sweep ค้างอยู่ — ใช้ approve ได้ตามปกติ\n"
+
     # ── OB PATH CHECK — คำนวณเอง (authoritative) ว่า OB ขวางเส้นทาง entry→TP จริงมั้ย ──
     # (เจอเคสจริง: SELL entry ต่ำกว่า Bear OB อยู่แล้ว [Bear OB อยู่ฝั่งตรงข้ามกับ TP,
     # ไม่ได้อยู่ระหว่างทาง] แต่ Supervisor LLM ยังหยิบ Bear OB มาอ้างเป็นเหตุผลรอ
@@ -602,6 +635,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 
 ⚖️ Risk Manager: Lot={risk.get('lot')} | Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
 {m15_ctx}
+{_major_pool_note}
 {_ob_path_note}
 
 ═══ วิธีตัดสิน ═══
@@ -612,7 +646,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
      (rejection ต้องเกิดภายใน 1-2 แท่งหลัง sweep — ดู PULLBACK STATUS ที่ Chart Analyst ระบุ ถ้า
      Chart บอกว่า pullback_status=SECOND/EXPIRED เพราะรอเกิน 2-4 แท่งไปแล้ว ราคาวิ่งไปไกลจากจุด
      sweep แล้ว ไม่ใช่ entry ที่ดีอีกต่อไป — ให้ REJECT ตามที่ Chart Analyst ประเมิน ไม่ใช่ APPROVE
-     ทันทีเพราะเห็นแค่ชื่อ setup_type)
+     ทันทีเพราะเห็นแค่ชื่อ setup_type — และต้องเป็น ✅ ใน "MAJOR POOL CHECK" ด้วย ถ้าขึ้น 🚫 ต้อง
+     REJECT เท่านั้น ไม่ว่า timing/rejection จะดูดีแค่ไหนก็ตาม)
    • setup_type = BULL_OB_SWEEP_REJECT → sweep+reject ที่ OB เกิดแล้ว = confirmation ชัดที่สุด
    • setup_type = BULL_OB_ENTRY / BEAR_OB_ENTRY + Chart YES + ราคาอยู่ใน OB (หรือเพิ่งโดน rejection
      ดันออกจาก OB ภายใน ≤2 แท่ง) + RR ≥ 1.5
@@ -629,6 +664,16 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
    • RR < 1.5
    • OB ขวางเส้นทาง entry→TP จริง (ดู "OB PATH CHECK" ด้านบน — ต้องเป็น ✅ เท่านั้น)
    • Chart Analyst ระบุว่า sweep/pullback หมดอายุแล้ว (รอเกิน 2-4 แท่งหลัง sweep ราคาไปไกลแล้ว)
+   • MAJOR POOL CHECK ขึ้น 🚫 (sweep แค่ pool รอง, major pool ยังไม่โดนแตะ — ดูด้านล่าง)
+
+── กฎเหล็ก: BSL/SSL sweep ต้อง sweep pool ตัวจริง ห้าม sweep แค่ pool รอง ──
+"MAJOR POOL CHECK" ด้านบนคำนวณแล้วว่า sweep ที่ Chart Analyst อ้างถึงเป็น pool ใหญ่/major
+จริงหรือแค่ swing high/low รองที่บังเอิญมี depth พอผ่านเกณฑ์ — ถ้าขึ้น 🚫 (ยังมี major pool
+ที่ใหญ่กว่ายังไม่โดน sweep) ต้อง REJECT เสมอ ไม่ว่า rejection candle หรือ timing จะดูดีแค่ไหน
+เพราะ premise ทั้งหมดของ BSL_SWEEP_SELL/SSL_SWEEP_BUY คือ "liquidity หลักโดนกวาดแล้ว smart
+money จะกลับตัว" — ถ้า liquidity หลัก (major pool) ยังไม่โดนแตะเลย แปลว่ายังไม่มีเหตุผลให้
+กลับตัวจริงๆ การ sweep pool รองไม่ได้แปลว่าตลาดจะกลับตัว ราคายังมีโอกาสวิ่งต่อไปหา major
+pool ก่อนได้เสมอ
 
 ── กฎเหล็ก: ห้ามอ้าง OB ที่ไม่ได้ขวางทางจริง ──
 "OB PATH CHECK" ด้านบนคำนวณ geometry จริงแล้วว่า OB แต่ละอันอยู่ระหว่าง entry กับ TP
