@@ -1946,11 +1946,13 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
         "last_bos": {
             "direction": last_bos.direction,
             "level": last_bos.level,
+            "age_bars": (len(df) - 1 - last_bos.index) if df is not None else None,
         } if last_bos else None,
 
         "last_choch": {
             "direction": last_choch.direction,
             "level": last_choch.level,
+            "age_bars": (len(df) - 1 - last_choch.index) if df is not None else None,
         } if last_choch else None,
 
         "last_sweep": {
