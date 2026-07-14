@@ -354,29 +354,32 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # chart_analyst_agent ใช้ตัดสิน PULLBACK ENTRY RULE) — ไม่งั้น sweep เก่า
     # (เช่น 86-88 bars) จะ trigger เรียก Sonnet ทุก 5 นาทีทั้งที่รู้อยู่แล้วว่า
     # AI จะตอบ NO_TRADE (EXPIRED) แน่ๆ เสียเงินฟรีๆ ซ้ำๆ
-    _last_sweep_obj = smc_summary.get("last_sweep")
-    _sweep_age_bars = (_last_sweep_obj or {}).get("age_bars")
     # ใช้เกณฑ์ FIRST/SECOND/EXPIRED เดียวกับที่ chart_analyst_agent.py ใช้ตัดสินจริง
     # (age<=12 + dist<=first_window = FIRST, dist<=10 = SECOND, นอกนั้น EXPIRED) —
     # เดิมเช็คแค่ age<=48 bars ทำให้ pre-filter มองว่า "มี sweep" (has_sweep=True)
     # ต่อไปเรื่อยๆ แม้ราคาจะวิ่งพ้น window เข้าซื้อไปแล้วตั้งแต่ 5-10 แท่งก่อน (คือ
     # "พลาด entry แล้ว" รอไม่ได้อีกจนกว่าจะมี sweep ใหม่) → เรียก AI ซ้ำทุก scan
     # ทั้งที่รู้อยู่แล้วว่าจะโดน EXPIRED (ตาม distance ไม่ใช่ age) แน่ๆ
-    _sweep_level  = (_last_sweep_obj or {}).get("level") or 0
-    _wick_ext     = (_last_sweep_obj or {}).get("wick_extreme")
-    _sweep_depth  = round(abs(_sweep_level - _wick_ext), 2) if (_sweep_level and _wick_ext is not None) else 0
-    _sweep_dist   = abs(price - _sweep_level) if _sweep_level else 9999
-    _first_window = max(15.0, _sweep_depth * 2.5)
-    if _last_sweep_obj is None:
-        has_sweep = False
-    elif _sweep_age_bars is not None and _sweep_age_bars > 48:
-        has_sweep = False
-    elif _sweep_age_bars is not None and _sweep_age_bars <= 12 and _sweep_dist <= _first_window:
-        has_sweep = True
-    elif _sweep_dist <= 10.0:
-        has_sweep = True
-    else:
-        has_sweep = False
+    #
+    # ใช้ last_sweep_high/last_sweep_low แยกทิศ (ไม่ใช่ last_sweep เดี่ยว) เพราะถ้า
+    # SSL sweep เกิดทีหลัง BSL sweep, last_sweep จะทับเป็น SSL ทำให้มองไม่เห็นว่ายังมี
+    # BSL sweep ที่ valid อยู่ก่อนหน้า (setup ฝั่ง SELL หายไปจาก pre-filter ทั้งที่ยังใช้ได้)
+    def _sweep_valid(sw: dict | None) -> bool:
+        if not sw:
+            return False
+        _age  = sw.get("age_bars")
+        if _age is not None and _age > 48:
+            return False
+        _lvl  = sw.get("level") or 0
+        _wick = sw.get("wick_extreme")
+        _depth = round(abs(_lvl - _wick), 2) if (_lvl and _wick is not None) else 0
+        _dist  = abs(price - _lvl) if _lvl else 9999
+        _window = max(15.0, _depth * 2.5)
+        if _age is not None and _age <= 12 and _dist <= _window:
+            return True
+        return _dist <= 10.0
+
+    has_sweep = _sweep_valid(smc_summary.get("last_sweep_low")) or _sweep_valid(smc_summary.get("last_sweep_high"))
     # ob_nearby ต้องมี "displacement" อย่างน้อย OB_MIN_DISPLACEMENT (ตรงกับ
     # OB MIN DISTANCE rule ที่ chart_analyst_agent ใช้จริง — ราคาต้องห่างจาก OB
     # อย่างน้อย 15 จุดถึงจะมี room ให้เป็น setup ที่ valid) ไม่ใช่แค่ "ใกล้ๆ" เฉยๆ

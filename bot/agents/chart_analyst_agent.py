@@ -34,7 +34,10 @@ PATTERN PRIORITY (highest → lowest):
    (that is CASE G/I below, which have their own displacement rules).
 1. CASE F ★★★★: BSL/SSL Sweep + Rejection → BSL_SWEEP_SELL / SSL_SWEEP_BUY (conf 75-90)
    NOTE: EQL (Equal Lows) = SSL pool; EQH (Equal Highs) = BSL pool — treat identically as CASE F
-   last_sweep.source="EQL" → SSL_SWEEP_BUY | last_sweep.source="EQH" → BSL_SWEEP_SELL
+   ⚠️ There are TWO separate sweep tracks in the data, shown as two "PULLBACK STATUS" lines —
+   use PULLBACK STATUS (BUY side) for SSL_SWEEP_BUY and PULLBACK STATUS (SELL side) for
+   BSL_SWEEP_SELL. Do NOT judge one direction using the other direction's pullback status —
+   a fresh low-sweep does not invalidate an earlier still-relevant high-sweep and vice versa.
 2. CASE L ★★★: Post-BOS CHoCH Retest → POST_BOS_CHOCH_RETEST_SELL/BUY (conf 65-80)
    BOS bearish → minor bullish CHoCH (bounce) → price returns near CHoCH swing high → SELL
    BOS bullish → minor bearish CHoCH (dip) → price returns near CHoCH swing low → BUY
@@ -249,27 +252,46 @@ def _build_prompt(smc: dict) -> str:
     # คนละตัวกับ "sweep" ที่มาจาก last_sweep — full-history scan) ทำให้ age มัก
     # อ่านได้ 999 (sentinel "ไม่เจอ") แม้ sweep จะสดจริง → EXPIRED ผิดๆ บ่อยมาก
     # ตอนนี้ใช้ sweep["age_bars"] ที่คำนวณจาก object เดียวกันโดยตรงแทน
-    _sweep_kind  = sweep.get("kind")
-    _sweep_level = sweep.get("level") or 0
-    _sweep_age   = sweep.get("age_bars")
-    _sweep_age   = _sweep_age if _sweep_age is not None else 999
-    _dist        = round(abs(price - _sweep_level), 1) if _sweep_level else 999
     _in_any_ob   = bull_ob.get("in_ob", False) or bear_ob.get("in_ob", False)
 
-    # FIRST window กว้างขึ้นตาม sweep depth (deep sweep → bounce ไกลกว่าก่อน pullback)
-    _first_window = max(15.0, _sweep_depth * 2.5)
+    # ── PULLBACK STATUS แยกทิศ — ห้ามใช้ "last_sweep" (sweep ล่าสุดไม่ว่าทิศไหน)
+    # เพียงตัวเดียวมาประเมินทั้ง BUY และ SELL เพราะถ้า SSL sweep เกิดทีหลัง BSL sweep
+    # last_sweep จะทับเป็น SSL ไปเลย ทำให้ประเมิน SELL setup (BSL_SWEEP_SELL) ผิดตัว
+    # (เห็น last_sweep.kind='low' แล้วสรุปว่า "ไม่มี BSL sweep" ทั้งที่จริงมีอยู่ก่อนหน้า)
+    # — ใช้ last_sweep_high สำหรับฝั่ง SELL และ last_sweep_low สำหรับฝั่ง BUY เสมอ
+    def _pullback(sw: dict) -> tuple[str, float, float, int]:
+        _lvl   = sw.get("level") or 0
+        _wick  = sw.get("wick_extreme") or _lvl
+        _depth = round(abs(_lvl - _wick), 2) if _lvl else 0
+        _age   = sw.get("age_bars")
+        _age   = _age if _age is not None else 999
+        _dist  = round(abs(price - _lvl), 1) if _lvl else 999
+        _window = max(15.0, _depth * 2.5)
+        if not sw:
+            _status = "NONE"
+        elif _age > 48:
+            _status = "EXPIRED"
+        elif _age <= 12 and _dist <= _window:
+            _status = "FIRST"
+        elif _dist <= 10.0:
+            _status = "SECOND"
+        else:
+            _status = "EXPIRED"
+        return _status, _dist, _depth, _age
 
-    # entry หลัง sweep อยู่ใกล้ sweep level ไม่ใช่ที่ OB (OB คือ TP)
-    if not sweep:
-        _pb = "NONE"
-    elif _sweep_age > 48:
-        _pb = "EXPIRED"
-    elif _sweep_age <= 12 and _dist <= _first_window:
-        _pb = "FIRST"   # ยังใกล้ sweep zone — แท่งแดงแรกหลัง bounce = entry
-    elif _dist <= 10.0:
-        _pb = "SECOND"  # price ออกไปแล้วแต่กลับมา ±$10 = second chance entry
+    _sweep_low  = smc.get("last_sweep_low") or {}
+    _sweep_high = smc.get("last_sweep_high") or {}
+    _pb_buy,  _dist_buy,  _depth_buy,  _age_buy  = _pullback(_sweep_low)
+    _pb_sell, _dist_sell, _depth_sell, _age_sell = _pullback(_sweep_high)
+
+    # ── backward-compat: _pb/_dist/_sweep_depth/_sweep_age = ทิศเดียวกับ "sweep"
+    # (last_sweep เดี่ยว) ยังใช้อ้างอิงจุดอื่นๆ ในไฟล์นี้ต่อไปตามเดิม
+    if sweep.get("kind") == "high":
+        _pb, _dist, _sweep_depth, _sweep_age = _pb_sell, _dist_sell, _depth_sell, _age_sell
+    elif sweep.get("kind") == "low":
+        _pb, _dist, _sweep_depth, _sweep_age = _pb_buy, _dist_buy, _depth_buy, _age_buy
     else:
-        _pb = "EXPIRED"
+        _pb, _dist, _sweep_age = "NONE", 999, 999
 
     # OB rejection-based pullback status (CASE G)
     _ob_pb = "NONE"
@@ -290,7 +312,10 @@ def _build_prompt(smc: dict) -> str:
 
     lines += [
         "",
-        f"PULLBACK STATUS: sweep={_pb} (age={_sweep_age}bars dist={_dist}pts depth={_sweep_depth}pts) | ob_rejection={_ob_pb}",
+        f"PULLBACK STATUS (BUY side — SSL/last_sweep_low): {_pb_buy} (age={_age_buy}bars dist={_dist_buy}pts depth={_depth_buy}pts)",
+        f"PULLBACK STATUS (SELL side — BSL/last_sweep_high): {_pb_sell} (age={_age_sell}bars dist={_dist_sell}pts depth={_depth_sell}pts)",
+        f"  ⚠️ ใช้ BUY side ตัดสิน SSL_SWEEP_BUY เท่านั้น, ใช้ SELL side ตัดสิน BSL_SWEEP_SELL เท่านั้น — คนละ sweep กัน ห้ามสลับ",
+        f"ob_rejection={_ob_pb}",
         "",
         f"ADVANCED: signal_type={adv.get('signal_type','?')} "
         f"bull_grab={adv.get('bull_grab',False)} bear_grab={adv.get('bear_grab',False)}",

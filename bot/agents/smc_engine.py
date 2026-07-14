@@ -1861,6 +1861,22 @@ def detect_eql_eqh_sweep(df: pd.DataFrame, result: SMCResult, lookback: int = 20
 
 # ─── Format Summary ───────────────────────────────────────────────
 
+def _sweep_obj_by_kind(sweeps: list, kind: str, df: pd.DataFrame = None) -> dict | None:
+    """หา sweep ล่าสุดของ 'ทิศเดียว' (sweep_high หรือ sweep_low) โดยเฉพาะ —
+    ไม่ถูกทับด้วย sweep ของอีกทิศที่เกิดทีหลัง (ต่างจาก result.last_sweep เดี่ยว)"""
+    _matches = [s for s in sweeps if s.kind == kind]
+    if not _matches:
+        return None
+    sw = _matches[-1]
+    return {
+        "kind": "high" if kind == "sweep_high" else "low",
+        "level": sw.level,
+        "recovered": sw.recovered,
+        "wick_extreme": sw.wick_extreme,
+        "age_bars": (len(df) - 1 - sw.index) if df is not None else None,
+    }
+
+
 def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) -> dict:
     """
     แปลง SMCResult เป็น dict สรุปสำหรับส่งให้ Claude
@@ -1938,6 +1954,14 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
             # (20-bar rolling, คนละตัวกับ last_sweep ที่สแกนประวัติทั้งหมด)
             "age_bars": (len(df) - 1 - last_sweep.index) if df is not None else None,
         } if last_sweep else None,
+
+        # last_sweep เป็น sweep ล่าสุด "ไม่ว่าทิศไหน" — ถ้า SSL sweep เกิดทีหลัง BSL
+        # sweep, last_sweep จะทับเป็น SSL ทำให้ประเมิน SELL setup (ต้องใช้ BSL sweep)
+        # ผิดตัวไปเลย (เห็น last_sweep.kind='low' แล้วสรุปว่า "ไม่มี BSL sweep"
+        # ทั้งที่จริงมี BSL sweep อยู่ก่อนหน้า แค่ไม่ใช่ตัวล่าสุดสุด) — เก็บแยกทั้งสอง
+        # ทิศไว้เสมอ ให้ chart_analyst_agent เลือกใช้ตัวที่ตรงกับทิศที่กำลังประเมิน
+        "last_sweep_high": _sweep_obj_by_kind(result.sweeps, "sweep_high", df),
+        "last_sweep_low":  _sweep_obj_by_kind(result.sweeps, "sweep_low", df),
 
         "active_ob": {
             "kind": active_ob.kind,
