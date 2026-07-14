@@ -326,11 +326,28 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
 
     # ── ชั้น 2.5: EQL/EQH Liquidity Sweep — CASE F priority ──────
     # EQL = SSL, EQH = BSL — sweep เกิดแล้ว + recovered = สัญญาณแรง
+    # ต้องเช็คด้วยว่าราคา "ทะลุไปแล้วยัง" ไม่ใช่แค่ sweep เกิดแล้ว recovered เฉยๆ —
+    # eql_sweep_signal["recovery"]/eqh_sweep_signal["rejection"] คือระยะที่ราคาวิ่งพ้น
+    # EQL/EQH ไปแล้ว ถ้าไกลเกิน window (ตาม sweep depth เดียวกับที่ last_sweep ใช้)
+    # แปลว่าพลาด entry window ไปแล้ว ไม่ใช่สัญญาณสดอีกต่อไป
+    def _eql_eqh_fresh(sig: dict | None, level_key: str, extreme_key: str, dist_key: str) -> bool:
+        if not sig:
+            return False
+        level, extreme, dist = sig.get(level_key), sig.get(extreme_key), sig.get(dist_key)
+        if level is None or extreme is None or dist is None:
+            return True  # ข้อมูลไม่ครบ ไม่กรองเกินจำเป็น
+        _window = max(15.0, abs(level - extreme) * 2.5)
+        return dist <= _window or dist <= 10.0
+
     eql_sweep = smc_summary.get("eql_sweep_signal")
     eqh_sweep = smc_summary.get("eqh_sweep_signal")
-    if eql_sweep or eqh_sweep:
+    _eql_fresh = _eql_eqh_fresh(eql_sweep, "eql_level", "sweep_low", "recovery")
+    _eqh_fresh = _eql_eqh_fresh(eqh_sweep, "eqh_level", "sweep_high", "rejection")
+    if (eql_sweep and _eql_fresh) or (eqh_sweep and _eqh_fresh):
         print(f"[has_signal] ✅ {_now_th} EQL/EQH SWEEP (CASE F equiv) — eql={eql_sweep} eqh={eqh_sweep}")
         return True
+    elif eql_sweep or eqh_sweep:
+        print(f"[has_signal] ⛔ {_now_th} EQL/EQH SWEEP EXPIRED — ราคาทะลุพ้น window ไปแล้ว eql={eql_sweep} eqh={eqh_sweep}")
 
     # ── Counter-Trend Block ────────────────────────────────────────
     # ใช้ post_sweep_continuation (age ≤30 bars) + last_sweep เฉพาะตอน sweep ยัง fresh (≤50 bars)
@@ -380,6 +397,19 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         return _dist <= 10.0
 
     has_sweep = _sweep_valid(smc_summary.get("last_sweep_low")) or _sweep_valid(smc_summary.get("last_sweep_high"))
+
+    # ── ชั้น 3a: Sweep + Rejection จริง (SSL/BSL) — ไม่ต้องรอ OB nearby ด้วย ──
+    # sweep ที่ recovered แล้ว (rejection ยืนยัน) คือ CASE F เอง — ตอน sweep เกิด
+    # ราคามักทะลุ OB ไปแล้วอยู่ดี การบังคับให้ต้องมี OB nearby ประกอบด้วยจะกรอง
+    # sweep+rejection ที่ valid จริงทิ้งไปเปล่าๆ (score ไม่ถึง 3/4 เพราะ OB ไกลไปแล้ว)
+    _sw_low  = smc_summary.get("last_sweep_low") or {}
+    _sw_high = smc_summary.get("last_sweep_high") or {}
+    _sweep_low_confirmed  = _sweep_valid(_sw_low)  and _sw_low.get("recovered")
+    _sweep_high_confirmed = _sweep_valid(_sw_high) and _sw_high.get("recovered")
+    if _sweep_low_confirmed or _sweep_high_confirmed:
+        print(f"[has_signal] ✅ {_now_th} SWEEP+REJECTION (CASE F, no OB needed) — low={_sweep_low_confirmed} high={_sweep_high_confirmed}")
+        return True
+
     # ob_nearby ต้องมี "displacement" อย่างน้อย OB_MIN_DISPLACEMENT (ตรงกับ
     # OB MIN DISTANCE rule ที่ chart_analyst_agent ใช้จริง — ราคาต้องห่างจาก OB
     # อย่างน้อย 15 จุดถึงจะมี room ให้เป็น setup ที่ valid) ไม่ใช่แค่ "ใกล้ๆ" เฉยๆ
@@ -421,10 +451,25 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         return True  # Trend setup viable — ให้ Claude วิเคราะห์ตำแหน่ง OB ต่อ
 
     # ── ชั้น 3: Swing Entry signal (fallback เมื่อ trend ไม่ครบ) ──
+    # swing = รอ pullback กลับมาเข้า — ต้องเช็คด้วยว่าราคายัง "ไม่หลุด" swept extreme
+    # เดิม (ไม่ทะลุ SL ที่ detect_swing_entry คำนวณไว้) ไม่งั้น structure เสียไปแล้ว
+    # ตั้งแต่ scan ก่อนๆ setup ตายแล้วแต่ pre-filter ยังมองว่า signal อยู่เพราะแค่เช็ค
+    # score อย่างเดียว ไม่เช็คว่าราคาไปทะลุ SL ของมันเองไปแล้วรึยัง
     rev = smc_summary.get("reversal", {})
-    if rev.get("swing_signal") and rev.get("swing_score", 0) >= 3:
-        print(f"[has_signal] ✅ {_now_th} SWING — signal={rev.get('swing_signal')} score={rev.get('swing_score')}")
-        return True
+    _swing_sig = rev.get("swing_signal")
+    _swing_sl  = rev.get("stop_loss")
+    _swing_intact = True
+    if _swing_sig and _swing_sl is not None and price:
+        if _swing_sig == "BUY" and price < _swing_sl:
+            _swing_intact = False
+        elif _swing_sig == "SELL" and price > _swing_sl:
+            _swing_intact = False
+    if _swing_sig and rev.get("swing_score", 0) >= 3:
+        if _swing_intact:
+            print(f"[has_signal] ✅ {_now_th} SWING — signal={_swing_sig} score={rev.get('swing_score')}")
+            return True
+        else:
+            print(f"[has_signal] ⛔ {_now_th} SWING INVALIDATED — price {price} หลุด SL {_swing_sl} ไปแล้ว (structure เสีย)")
 
     # ── ชั้น 4: Type C indicator signal ──────────────────────────
     signal_type = smc_summary.get("signal_type")
