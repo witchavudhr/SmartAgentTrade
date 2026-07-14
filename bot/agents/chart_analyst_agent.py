@@ -56,8 +56,15 @@ PATTERN PRIORITY (highest → lowest):
 3. CASE I ★★★:  Stored OB Pullback (ob_rejection_zones) → STORED_OB_PULLBACK_SELL/BUY (conf 60-75)
 4. CASE G ★★★:  OB Rejection (recent, no sweep needed) → OB_REJECTION_SELL/BUY (conf 65-80)
 5. CASE J ★★:   Strong Rejection at EQL/EQH → STRONG_REJECTION_SELL/BUY (conf 50-65)
-6. CASE H ★★:   Post-Sweep Pullback ≥15% ≤30 bars → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
-   level_held=True means price never broke sweep extreme — valid re-entry regardless of pullback depth
+6. CASE H ★★:   Post-Sweep Pullback → POST_SWEEP_PULLBACK_SELL/BUY (conf 60-75)
+   Two ways this fires (see POST-SWEEP PULLBACK line in the data):
+   (a) FAST — sweep_age_bars ≤8 and pullback ≥15% of the initial move: enter promptly, this is the
+       normal case. Do not wait for a deeper pullback once this fires — price is already moving away
+       from the sweep zone fast, waiting longer means a worse entry.
+   (b) RETEST AFTER BIG MOVE — retest_after_big_move=True: price ran ≥500pts away from the sweep level
+       then came back within ~20pts of it — this is a legitimate late retest of the original level even
+       though many bars have passed, treat it with the same conviction as (a), not as "stale".
+   level_held=True means price never broke back through the sweep extreme — required for both paths
    deeper pullback (>65%) = 2nd touch zone → conf+10 bonus
 7. CASE K ★★:   CHoCH + Sweep → Reversal → CHOCH_SWEEP_SELL/BUY (conf 65-80)
 
@@ -235,7 +242,9 @@ def _build_prompt(smc: dict) -> str:
     if post_sw:
         lines += [
             "",
-            f"POST-SWEEP PULLBACK (CASE H): dir={post_sw.get('direction')} pb={post_sw.get('pullback_pct')}% level_held={post_sw.get('level_held', False)}",
+            f"POST-SWEEP PULLBACK (CASE H): dir={post_sw.get('direction')} pb={post_sw.get('pullback_pct')}% "
+            f"sweep_age_bars={post_sw.get('sweep_age_bars')} level_held={post_sw.get('level_held', False)} "
+            f"retest_after_big_move={post_sw.get('retest_after_big_move', False)}",
         ]
 
     if bear_rej:

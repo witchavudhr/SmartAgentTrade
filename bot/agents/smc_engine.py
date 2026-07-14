@@ -2259,23 +2259,49 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
 
         # ── Post-Sweep Continuation Pullback ──────────────────────────────
         # หลัง sweep + rejection → ราคาวิ่งตามทิศ → ตอนนี้มี pullback เล็กน้อย → entry ตามทิศ
+        #
+        # user feedback: 2 path —
+        #  (1) FAST: sweep แล้วดู 2-3 แท่ง ถ้า pullback เข้าได้เลย (เดิม window 30
+        #      bars หลวมเกินไป ทำให้เข้าช้า)
+        #  (2) BIG-MOVE RETEST: ถ้าราคาวิ่งต่อไปไกล (≥500pts) แล้ว pullback กลับมา
+        #      "ใกล้ๆ จุด sweep" (ไม่ใช่แค่ 15% ของ move) ให้ถือว่ายัง valid แม้จะ
+        #      ผ่านมาหลายแท่งแล้วก็ตาม — เป็นการ retest level เดิมหลัง trend ไปไกล
+        #
+        # ใช้ sweep แยกทิศจาก result.sweeps ตรงๆ (ไม่ใช่ last_sweep ตัวเดียวรวมทุก
+        # ทิศ) เหตุผลเดียวกับที่แก้ chart_analyst_agent.py ไปแล้ว — ถ้า sweep อีกทิศ
+        # เกิดทีหลัง last_sweep จะทับ มองไม่เห็นว่า sweep ทิศที่ตรวจอยู่นี้ยัง valid
         try:
-            _adv_tmp = summary.get("advanced") or {}
-            _sw_age_h = int(_adv_tmp.get("sweep_h_age_bars") or 999)
-            _sw_age_l = int(_adv_tmp.get("sweep_l_age_bars") or 999)
+            _FAST_BARS   = 8      # ~2-3 แท่ง pullback + แท่ง sweep เอง ให้ buffer นิดหน่อย
+            _BIG_MOVE_PT = 500    # จุด (×10 convention เดียวกับ pullback_pts) — ~$50
+            _RETEST_TOL  = 20     # จุด — ราคาต้องกลับมาใกล้ sweep level แค่ไหนถึงนับว่า "ใกล้ๆ"
+
+            _high_sweeps = [s for s in (result.sweeps or []) if s.kind == 'sweep_high']
+            _low_sweeps  = [s for s in (result.sweeps or []) if s.kind == 'sweep_low']
+            _last_high_sw = _high_sweeps[-1] if _high_sweeps else None
+            _last_low_sw  = _low_sweeps[-1] if _low_sweeps else None
+            _sw_age_h = (len(df) - 1 - _last_high_sw.index) if _last_high_sw is not None else 999
+            _sw_age_l = (len(df) - 1 - _last_low_sw.index) if _last_low_sw is not None else 999
+
             _post_cont = None
 
-            if last_sweep and last_sweep.kind == 'high' and _sw_age_h <= 30:
+            if _last_high_sw is not None:
                 # BSL swept → expect SELL continuation
-                _sw_lvl   = last_sweep.level
+                _sw_lvl    = _last_high_sw.level
                 _bars_back = min(_sw_age_h, len(df) - 1)
                 _low_since = df['low'].iloc[-_bars_back:].min() if _bars_back > 0 else current_price
                 _initial_drop = (_sw_lvl - _low_since) * 10
                 _pullback_now = (current_price - _low_since) * 10
-                if _initial_drop >= 30 and _pullback_now >= 10:
-                    _pb_pct = _pullback_now / _initial_drop
-                    # กฎเดียว: ราคายังไม่ทะลุ sweep high กลับขึ้นไป = level ยังยืน
-                    if _pb_pct >= 0.15 and current_price < _sw_lvl:
+                _dist_to_sweep = abs(_sw_lvl - current_price) * 10
+                _level_held = current_price < _sw_lvl  # ยังไม่ทะลุ sweep high กลับขึ้นไป
+
+                _fast_ok = _sw_age_h <= _FAST_BARS and _initial_drop >= 30 and _pullback_now >= 10
+                _retest_ok = _initial_drop >= _BIG_MOVE_PT and _dist_to_sweep <= _RETEST_TOL
+
+                if _level_held and (_fast_ok or _retest_ok):
+                    _pb_pct = (_pullback_now / _initial_drop) if _initial_drop else 0
+                    if _fast_ok and _pb_pct < 0.15:
+                        pass  # fast path ยังต้องมี pullback อย่างน้อย 15% ของ initial move
+                    else:
                         _post_cont = {
                             "direction":       "SELL",
                             "sweep_level":     round(_sw_lvl, 2),
@@ -2285,19 +2311,27 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
                             "pullback_pct":    round(_pb_pct * 100, 0),
                             "low_since_sweep": round(_low_since, 2),
                             "level_held":      True,
+                            "retest_after_big_move": bool(_retest_ok and not _fast_ok),
                         }
 
-            elif last_sweep and last_sweep.kind == 'low' and _sw_age_l <= 30:
+            if _post_cont is None and _last_low_sw is not None:
                 # SSL swept → expect BUY continuation
-                _sw_lvl   = last_sweep.level
-                _bars_back = min(_sw_age_l, len(df) - 1)
+                _sw_lvl     = _last_low_sw.level
+                _bars_back  = min(_sw_age_l, len(df) - 1)
                 _high_since = df['high'].iloc[-_bars_back:].max() if _bars_back > 0 else current_price
                 _initial_rise = (_high_since - _sw_lvl) * 10
                 _pullback_now = (_high_since - current_price) * 10
-                if _initial_rise >= 30 and _pullback_now >= 10:
-                    _pb_pct = _pullback_now / _initial_rise
-                    # กฎเดียว: ราคายังไม่ทะลุ sweep low กลับลงไป = level ยังยืน
-                    if _pb_pct >= 0.15 and current_price > _sw_lvl:
+                _dist_to_sweep = abs(current_price - _sw_lvl) * 10
+                _level_held = current_price > _sw_lvl  # ยังไม่ทะลุ sweep low กลับลงไป
+
+                _fast_ok = _sw_age_l <= _FAST_BARS and _initial_rise >= 30 and _pullback_now >= 10
+                _retest_ok = _initial_rise >= _BIG_MOVE_PT and _dist_to_sweep <= _RETEST_TOL
+
+                if _level_held and (_fast_ok or _retest_ok):
+                    _pb_pct = (_pullback_now / _initial_rise) if _initial_rise else 0
+                    if _fast_ok and _pb_pct < 0.15:
+                        pass
+                    else:
                         _post_cont = {
                             "direction":        "BUY",
                             "sweep_level":      round(_sw_lvl, 2),
@@ -2307,6 +2341,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
                             "pullback_pct":     round(_pb_pct * 100, 0),
                             "high_since_sweep": round(_high_since, 2),
                             "level_held":       True,
+                            "retest_after_big_move": bool(_retest_ok and not _fast_ok),
                         }
 
             summary["post_sweep_continuation"] = _post_cont
