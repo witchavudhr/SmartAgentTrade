@@ -320,9 +320,25 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     m15_data = smc_summary.get("m15") or {}
     bull_ob = m15_data.get("active_bull_ob") or smc_summary.get("active_bull_ob") or {}
     bear_ob = m15_data.get("active_bear_ob") or smc_summary.get("active_bear_ob") or {}
+    _px_now = smc_summary.get("current_price")
+
+    # มีไม้เปิดอยู่แล้วทิศเดียวกับ OB นี้ → ไม่ต้องเรียก AI ซ้ำเพื่อ pyramid เพิ่ม
+    # จนกว่าราคาจะกลับมาดีกว่าไม้เดิม (BUY: ต่ำกว่า entry เดิม, SELL: สูงกว่า entry
+    # เดิม) — ไม่งั้นจะเรียก Sonnet ถามซ้ำๆ ทั้งที่ราคายังไม่ขยับไปไหนจากไม้ที่ถืออยู่
+    _ot = smc_summary.get("open_trade") or {}
+    _ot_dir, _ot_entry = _ot.get("direction"), _ot.get("entry")
+    _pyramid_blocked = False
+    if _ot_dir and _ot_entry is not None and _px_now is not None:
+        if _ot_dir == "BUY" and bull_ob.get("in_ob") and _px_now >= _ot_entry:
+            _pyramid_blocked = True
+        elif _ot_dir == "SELL" and bear_ob.get("in_ob") and _px_now <= _ot_entry:
+            _pyramid_blocked = True
+
     if bull_ob.get("in_ob") or bear_ob.get("in_ob"):
-        print(f"[has_signal] ✅ IN_OB (M15) — bull_in={bull_ob.get('in_ob')} bear_in={bear_ob.get('in_ob')}")
-        return True
+        if not _pyramid_blocked:
+            print(f"[has_signal] ✅ IN_OB (M15) — bull_in={bull_ob.get('in_ob')} bear_in={bear_ob.get('in_ob')}")
+            return True
+        print(f"[has_signal] ⛔ IN_OB but pyramid blocked — มีไม้ {_ot_dir} @ {_ot_entry} เปิดอยู่แล้ว ราคา {_px_now} ยังไม่ดีกว่าไม้เดิม")
 
     # ── ชั้น 2.5: EQL/EQH Liquidity Sweep — CASE F priority ──────
     # EQL = SSL, EQH = BSL — sweep เกิดแล้ว + recovered = สัญญาณแรง

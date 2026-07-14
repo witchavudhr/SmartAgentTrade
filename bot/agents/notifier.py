@@ -3513,6 +3513,7 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
         _ctx = {
             "ob_rejection_zones":    bot_state.get("ob_rejection_zones", []),
             "sweep_rejection_watch": bot_state.get("sweep_rejection_watch"),
+            "open_trade":            bot_state.get("open_trade"),
         }
         result = await asyncio.get_event_loop().run_in_executor(
             None, lambda: supervisor.run(context=_ctx)

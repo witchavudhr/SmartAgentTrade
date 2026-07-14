@@ -121,6 +121,9 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _srw = context.get("sweep_rejection_watch")
         if _srw and _srw.get("expire_at", "") > datetime.now().strftime("%Y-%m-%d %H:%M:%S"):
             smc_summary["sweep_rejection_watch"] = _srw
+        _ot = context.get("open_trade")
+        if _ot:
+            smc_summary["open_trade"] = _ot
 
     # Pre-filter: ถ้าไม่มี signal ไม่เรียก Claude เลย
     if not chart_analyst.has_signal(smc_summary, force_session=force_session):
