@@ -356,7 +356,27 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # AI จะตอบ NO_TRADE (EXPIRED) แน่ๆ เสียเงินฟรีๆ ซ้ำๆ
     _last_sweep_obj = smc_summary.get("last_sweep")
     _sweep_age_bars = (_last_sweep_obj or {}).get("age_bars")
-    has_sweep     = _last_sweep_obj is not None and (_sweep_age_bars is None or _sweep_age_bars <= 48)
+    # ใช้เกณฑ์ FIRST/SECOND/EXPIRED เดียวกับที่ chart_analyst_agent.py ใช้ตัดสินจริง
+    # (age<=12 + dist<=first_window = FIRST, dist<=10 = SECOND, นอกนั้น EXPIRED) —
+    # เดิมเช็คแค่ age<=48 bars ทำให้ pre-filter มองว่า "มี sweep" (has_sweep=True)
+    # ต่อไปเรื่อยๆ แม้ราคาจะวิ่งพ้น window เข้าซื้อไปแล้วตั้งแต่ 5-10 แท่งก่อน (คือ
+    # "พลาด entry แล้ว" รอไม่ได้อีกจนกว่าจะมี sweep ใหม่) → เรียก AI ซ้ำทุก scan
+    # ทั้งที่รู้อยู่แล้วว่าจะโดน EXPIRED (ตาม distance ไม่ใช่ age) แน่ๆ
+    _sweep_level  = (_last_sweep_obj or {}).get("level") or 0
+    _wick_ext     = (_last_sweep_obj or {}).get("wick_extreme")
+    _sweep_depth  = round(abs(_sweep_level - _wick_ext), 2) if (_sweep_level and _wick_ext is not None) else 0
+    _sweep_dist   = abs(price - _sweep_level) if _sweep_level else 9999
+    _first_window = max(15.0, _sweep_depth * 2.5)
+    if _last_sweep_obj is None:
+        has_sweep = False
+    elif _sweep_age_bars is not None and _sweep_age_bars > 48:
+        has_sweep = False
+    elif _sweep_age_bars is not None and _sweep_age_bars <= 12 and _sweep_dist <= _first_window:
+        has_sweep = True
+    elif _sweep_dist <= 10.0:
+        has_sweep = True
+    else:
+        has_sweep = False
     # ob_nearby ต้องมี "displacement" อย่างน้อย OB_MIN_DISPLACEMENT (ตรงกับ
     # OB MIN DISTANCE rule ที่ chart_analyst_agent ใช้จริง — ราคาต้องห่างจาก OB
     # อย่างน้อย 15 จุดถึงจะมี room ให้เป็น setup ที่ valid) ไม่ใช่แค่ "ใกล้ๆ" เฉยๆ
