@@ -522,6 +522,44 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
    → Weekly SSL ที่ยัง intact + ราคาใกล้ = แนวที่รอ sweep อยู่
 """
 
+    # ── OB PATH CHECK — คำนวณเอง (authoritative) ว่า OB ขวางเส้นทาง entry→TP จริงมั้ย ──
+    # (เจอเคสจริง: SELL entry ต่ำกว่า Bear OB อยู่แล้ว [Bear OB อยู่ฝั่งตรงข้ามกับ TP,
+    # ไม่ได้อยู่ระหว่างทาง] แต่ Supervisor LLM ยังหยิบ Bear OB มาอ้างเป็นเหตุผลรอ
+    # "pullback ขึ้นไปดู rejection ที่ OB ก่อน" ทั้งที่การรอแบบนั้นคือรอให้ราคา breakout
+    # ขึ้นสวนทาง SELL ไปเลย ไม่ใช่ confirmation ของ SELL — ต้องคำนวณ geometry จริง
+    # ไม่ปล่อยให้ LLM เดาว่า OB "ขวางทาง" หรือเปล่าจากความรู้สึก)
+    _ob_path_note = "OB PATH CHECK: entry/TP ไม่ครบ — ข้ามการเช็ค"
+    _entry_raw = analysis.get("entry") or analysis.get("entry_zone")
+    _entry_mid = (
+        (_entry_raw[0] + _entry_raw[1]) / 2 if isinstance(_entry_raw, list) and len(_entry_raw) == 2
+        else float(_entry_raw) if _entry_raw is not None else None
+    )
+    _tp_raw = analysis.get("take_profit") or analysis.get("tp1")
+    _tp_val = float(_tp_raw) if _tp_raw is not None else None
+    if _entry_mid is not None and _tp_val is not None and smc_summary:
+        _lo, _hi = min(_entry_mid, _tp_val), max(_entry_mid, _tp_val)
+        _m15c = smc_summary.get("m15") or {}
+        _bull_ob_chk = _m15c.get("active_bull_ob") or smc_summary.get("active_bull_ob") or {}
+        _bear_ob_chk = _m15c.get("active_bear_ob") or smc_summary.get("active_bear_ob") or {}
+        _in_path_notes = []
+        _out_path_notes = []
+        for _label, _ob in (("Bull OB", _bull_ob_chk), ("Bear OB", _bear_ob_chk)):
+            _bot, _top = _ob.get("bottom"), _ob.get("top")
+            if _bot is None or _top is None:
+                continue
+            _overlaps = not (_top < _lo or _bot > _hi)
+            if _overlaps:
+                _in_path_notes.append(f"{_label} {_bot}-{_top} อยู่ระหว่าง entry({_entry_mid}) กับ TP({_tp_val}) จริง — ใช้เป็นแนวต้าน/รับที่ขวางทางได้")
+            else:
+                _out_path_notes.append(f"{_label} {_bot}-{_top} อยู่นอกช่วง entry-TP ({_lo}-{_hi}) — ไม่ได้ขวางทาง ห้ามอ้างเป็นเหตุผล reject/รอ")
+        _ob_path_note = "OB PATH CHECK (คำนวณแล้ว ยึดตามนี้ ห้ามเดาเอง):\n" + (
+            "\n".join(f"   ✅ {n}" for n in _in_path_notes) if _in_path_notes else ""
+        ) + ("\n" if _in_path_notes and _out_path_notes else "") + (
+            "\n".join(f"   🚫 {n}" for n in _out_path_notes) if _out_path_notes else ""
+        )
+        if not _in_path_notes and not _out_path_notes:
+            _ob_path_note = "OB PATH CHECK: ไม่มี OB ที่มีข้อมูลพอให้เช็ค"
+
     prompt = f"""คุณคือ Supervisor Agent — ตัดสินใจสุดท้าย APPROVE หรือ REJECT trade นี้
 Vote รวม {vote_score}/3 — อ่านเหตุผลของทุก agent แล้วชั่งน้ำหนักเอง (ไม่ต้องนับเสียงข้างมาก)
 
@@ -552,6 +590,8 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 
 ⚖️ Risk Manager: Lot={risk.get('lot')} | Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
 {m15_ctx}
+{_ob_path_note}
+
 ═══ วิธีตัดสิน ═══
 
 ── กฎเหล็ก (ห้ามฝ่าฝืน) ──
@@ -569,6 +609,16 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
    • Chart Analyst NO หรือ confidence < 30%
    • OB ถูก mitigated แล้ว (Chart ระบุ)
    • RR < 1.5
+   • OB ขวางเส้นทาง entry→TP จริง (ดู "OB PATH CHECK" ด้านบน — ต้องเป็น ✅ เท่านั้น)
+
+── กฎเหล็ก: ห้ามอ้าง OB ที่ไม่ได้ขวางทางจริง ──
+"OB PATH CHECK" ด้านบนคำนวณ geometry จริงแล้วว่า OB แต่ละอันอยู่ระหว่าง entry กับ TP
+หรือไม่ (🚫 = ไม่ได้ขวางทาง, ✅ = ขวางทางจริง) ห้ามใช้ OB ที่ขึ้น 🚫 มาเป็นเหตุผล
+REJECT หรือ "รอ pullback ไปดู rejection ที่ OB นั้นก่อน" เด็ดขาด — ถ้า OB อยู่คนละฝั่ง
+กับ TP (เช่น SELL setup แต่ OB อยู่เหนือทั้ง entry และ TP) แปลว่าราคาผ่านมาแล้ว/ไม่ได้
+อยู่ในเส้นทางเลย การรอให้ราคากลับไปที่ OB นั้นคือรอให้ราคา breakout สวนทาง signal
+ไปเลย ไม่ใช่ confirmation ของ setup นี้แต่อย่างใด — ใช้ผลจาก OB PATH CHECK เป็นหลัก
+ห้ามประเมิน "OB ขวางทางมั้ย" ด้วยความรู้สึกเอง
 
 ── กฎเหล็ก: Bias ห้าม block sweep-based setup ──
 setup_type ที่เป็น liquidity-sweep/reversal โดยธรรมชาติ (SSL_SWEEP_BUY, BSL_SWEEP_SELL,
