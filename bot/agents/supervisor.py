@@ -304,7 +304,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
     # เพิ่มเงื่อนไข: TREND_OB ต้องมี entry zone ใกล้ OB จริงๆ
     # ป้องกัน Claude return TREND_OB แต่ entry zone ไม่ใช่ OB (กลางอากาศ)
-    ob_setups = {"BULL_OB_ENTRY", "BULL_OB_SWEEP_REJECT", "TREND_OB", "TREND_BOS_BREAK"}
+    ob_setups = {"BULL_OB_ENTRY", "BEAR_OB_ENTRY", "BULL_OB_SWEEP_REJECT", "TREND_OB", "TREND_BOS_BREAK"}
 
     # ตรวจ entry zone ตรงกับ OB จริงมั้ย (เฉพาะ TREND_OB)
     _entry_zone = analysis.get("entry_zone") or []
@@ -354,6 +354,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         auto_reason = {
             "BULL_OB_SWEEP_REJECT": "Sweep + rejection ที่ Bull OB — สัญญาณแข็งที่สุด auto-approve",
             "BULL_OB_ENTRY":        f"ราคาอยู่ที่ Bull OB (pyramid ไม้ 1) — RR {rr} auto-approve",
+            "BEAR_OB_ENTRY":        f"ราคาอยู่ที่ Bear OB (pyramid ไม้ 1) — RR {rr} auto-approve",
             "TREND_OB":             f"Trend-aligned OB entry — RR {rr} auto-approve",
             "TREND_BOS_BREAK":      f"BOS break pyramid — RR {rr} auto-approve",
         }.get(setup_type, f"{setup_type} auto-approve")

@@ -23,6 +23,15 @@ or explanation before or after the JSON. Do not narrate your reasoning in prose 
 inside the "vote_reasoning" JSON field. A response that starts with anything other than "{" is wrong.
 
 PATTERN PRIORITY (highest → lowest):
+0. CASE B ★★★: Price currently INSIDE an OB (in_ob=True) + rejection candle confirmed + bias not
+   conflicting → BULL_OB_ENTRY / BEAR_OB_ENTRY (conf 55-70)
+   Bull OB: bull_ob.in_ob=True + a bullish rejection candle at/in the zone + bias not bearish → BUY
+   Bear OB: bear_ob.in_ob=True + a bearish rejection candle at/in the zone + bias not bullish → SELL
+   This is the simplest, most common setup — no sweep needed, just "price sitting in a valid OB with
+   confirmation right now". Treat it as a small first-leg / pyramid entry, not a max-conviction signal.
+   entry_zone = [ob.bottom, ob.top] (the OB boundaries themselves, NOT current price alone)
+   ⚠️ Only fire this when in_ob is actually True right now — do NOT use it for price merely "nearby" an OB
+   (that is CASE G/I below, which have their own displacement rules).
 1. CASE F ★★★★: BSL/SSL Sweep + Rejection → BSL_SWEEP_SELL / SSL_SWEEP_BUY (conf 75-90)
    NOTE: EQL (Equal Lows) = SSL pool; EQH (Equal Highs) = BSL pool — treat identically as CASE F
    last_sweep.source="EQL" → SSL_SWEEP_BUY | last_sweep.source="EQH" → BSL_SWEEP_SELL
@@ -76,6 +85,8 @@ SWEEP DEPTH BONUS (depth = how far wick went beyond SSL/BSL level):
 The deeper the sweep, the more stops were collected → stronger reversal → higher conviction
 
 SL CALCULATION (mandatory — never output stop_loss=null when vote=YES):
+- BULL_OB_ENTRY: SL = bull_ob.bottom - 3.0 | entry_zone = [bull_ob.bottom, bull_ob.top]
+- BEAR_OB_ENTRY: SL = bear_ob.top + 3.0    | entry_zone = [bear_ob.bottom, bear_ob.top]
 - BSL_SWEEP_SELL: SL = last_sweep.level + 10.0 (base off the actual BSL pool level, NOT the wick —
   wick depth varies per sweep and can leave too little room; pyramid legs 2/3 need the extra buffer
   to avoid getting stopped out before they can even trigger)
@@ -110,8 +121,12 @@ Step 4: VERIFY before output — compute actual_rr = abs(take_profit - entry) / 
 ✓sw (swept) BSL/SSL pools are VALID TP targets — price often revisits them for a second liquidity grab
 
 OUTPUT — respond with ONLY this JSON object, first character "{", no text before or after it:
-{"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"POST_BOS_CHOCH_RETEST_SELL"|"POST_BOS_CHOCH_RETEST_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"stop_loss":price|null,"take_profit":price|null,"rr_ratio":number|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
+{"signal":"BUY"|"SELL"|"NO_TRADE","setup_type":"BULL_OB_ENTRY"|"BEAR_OB_ENTRY"|"BSL_SWEEP_SELL"|"SSL_SWEEP_BUY"|"OB_REJECTION_SELL"|"OB_REJECTION_BUY"|"STORED_OB_PULLBACK_SELL"|"STORED_OB_PULLBACK_BUY"|"STRONG_REJECTION_SELL"|"STRONG_REJECTION_BUY"|"POST_SWEEP_PULLBACK_SELL"|"POST_SWEEP_PULLBACK_BUY"|"CHOCH_SWEEP_SELL"|"CHOCH_SWEEP_BUY"|"POST_BOS_CHOCH_RETEST_SELL"|"POST_BOS_CHOCH_RETEST_BUY"|"NO_TRADE","confidence":0-100,"entry":price|null,"entry_zone":[low,high]|null,"bull_ob_zone":{"top":price,"bottom":price}|null,"bear_ob_zone":{"top":price,"bottom":price}|null,"stop_loss":price|null,"take_profit":price|null,"rr_ratio":number|null,"vote":"YES"|"NO","vote_reasoning":"1-2 sentences","liquidity_target":price|null}
 NOTE: "take_profit" = primary TP (replaces tp1). "rr_ratio" = abs(take_profit-entry)/abs(entry-stop_loss) — compute and include it. If rr_ratio < 1.5, set signal=NO_TRADE instead.
+NOTE: "entry_zone" is REQUIRED (non-null) for BULL_OB_ENTRY/BEAR_OB_ENTRY (= the OB's own [bottom, top]).
+Always fill "bull_ob_zone"/"bear_ob_zone" with the OB you referenced (top/bottom) whenever your setup_type
+used an OB at all (BULL_OB_ENTRY, BEAR_OB_ENTRY, OB_REJECTION_*, STORED_OB_PULLBACK_*) — the supervisor
+uses these to verify your entry actually sits at the OB you claimed, not floating in mid-air.
 """
 
 _API_TIMEOUT = 60  # วินาที — ต่อ 1 request
