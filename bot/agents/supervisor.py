@@ -551,21 +551,32 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
             _swept_lvl = (smc_summary.get("last_sweep_low") or {}).get("level")
             _pool_list = _liq_chk.get("weekly_ssl_pools") or []
         if _swept_lvl is not None:
-            _bigger_unswept = [
-                p for p in _pool_list
-                if p.get("size") == "major" and not p.get("swept")
-                and abs(p.get("level", _swept_lvl) - _swept_lvl) > 1.0
-            ]
+            # ห้ามอิง size=="major" (ต้องตรง EQH/EQL cluster เท่านั้นถึงจะติดแท็กนี้) —
+            # pool ธรรมดาที่ไม่ใช่ EQH ก็เป็น "ของจริงที่ยังไม่โดน sweep" ได้เหมือนกัน
+            # (เคสจริง: 4034 ไม่ติดแท็ก major แต่ก็ยังเป็น BSL ที่ยังไม่ถูกแตะอยู่ดี)
+            # เช็คแค่ "อยู่ไกลกว่าจุดที่ sweep ไปในทิศเดียวกัน" — นั่นแปลว่ายังมี
+            # liquidity ที่แท้จริงกว่าเหลืออยู่ ไม่ว่าจะติดแท็ก major หรือไม่ก็ตาม
+            if setup_type_s == "BSL_SWEEP_SELL":
+                _bigger_unswept = [
+                    p for p in _pool_list
+                    if not p.get("swept") and p.get("level", -9e9) > _swept_lvl + 1.0
+                ]
+            else:
+                _bigger_unswept = [
+                    p for p in _pool_list
+                    if not p.get("swept") and p.get("level", 9e9) < _swept_lvl - 1.0
+                ]
+            _bigger_unswept.sort(key=lambda p: abs(p.get("level", 0) - _swept_lvl))
             if _bigger_unswept:
                 _bp = _bigger_unswept[0]
                 _major_pool_note = (
-                    f"\n🚫 MAJOR POOL CHECK (คำนวณแล้ว ยึดตามนี้): sweep ที่ {_swept_lvl} เป็นแค่ pool "
-                    f"รอง — ยังมี major pool ที่ {_bp.get('level')} ยังไม่โดน sweep เลย → liquidity "
-                    f"หลักยังไม่ถูกกวาด premise ของ {setup_type_s} ยังไม่สมเหตุสมผล ต้อง REJECT รอให้ "
-                    f"major pool ที่ {_bp.get('level')} โดน sweep จริงก่อนค่อย approve\n"
+                    f"\n🚫 MAJOR POOL CHECK (คำนวณแล้ว ยึดตามนี้): sweep ที่ {_swept_lvl} ยังมี pool "
+                    f"ที่ {_bp.get('level')} อยู่ไกลกว่า (ไปทิศเดียวกัน) และยังไม่โดน sweep เลย → "
+                    f"liquidity ที่แท้จริงกว่ายังไม่ถูกกวาด premise ของ {setup_type_s} ยังไม่สมเหตุสมผล "
+                    f"ต้อง REJECT รอให้ pool ที่ {_bp.get('level')} โดน sweep จริงก่อนค่อย approve\n"
                 )
             else:
-                _major_pool_note = f"\n✅ MAJOR POOL CHECK: sweep ที่ {_swept_lvl} ไม่มี major pool ที่ใหญ่กว่ายังไม่ sweep ค้างอยู่ — ใช้ approve ได้ตามปกติ\n"
+                _major_pool_note = f"\n✅ MAJOR POOL CHECK: sweep ที่ {_swept_lvl} ไม่มี pool ที่ไกลกว่ายังไม่ sweep ค้างอยู่ — ใช้ approve ได้ตามปกติ\n"
 
     # ── OB PATH CHECK — คำนวณเอง (authoritative) ว่า OB ขวางเส้นทาง entry→TP จริงมั้ย ──
     # (เจอเคสจริง: SELL entry ต่ำกว่า Bear OB อยู่แล้ว [Bear OB อยู่ฝั่งตรงข้ามกับ TP,
