@@ -665,6 +665,24 @@ def update_mt5_ticket(trade_id: int, ticket: int):
     conn.close()
 
 
+def mark_trade_not_executed(trade_id: int):
+    """
+    ลดระดับ trade เป็น 'skipped_entry_far' — เรียกตอนราคาห่างจาก OB zone เกินไป
+    (entry_far=True ใน notifier.py) ทำให้ไม่ได้ execute จริงบน MT5
+
+    เดิม log_trade(..., "confirmed") ถูกเรียกไปแล้วก่อนรู้ผล entry_far ทำให้
+    trade ที่ไม่เคยเปิดจริงยังนับเป็น "confirmed" ใน DB — check_zone_cooldown()
+    และ get_pending_trades() ที่ query action IN ('confirmed','mt5_import') เลย
+    มองว่าโซนนี้เพิ่งเทรดไปแล้ว บล็อก signal จริงในอนาคตที่โซนเดียวกันไปฟรีๆ 4 ชม.
+    ทั้งที่ไม่เคยมีการเปิด order จริงเลย
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE trades SET action='skipped_entry_far' WHERE id=?", (trade_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_pending_trades() -> list[dict]:
     """ดึง confirmed trades ที่ยัง pending outcome (สำหรับ /pending command)"""
     init_db()

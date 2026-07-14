@@ -1788,15 +1788,15 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                         ob_label = f"`{ob_bottom}–{ob_top}`"
                         if direction == "SELL":
                             entry_far_msg = (
-                                f"⏳ *รอ Rally — ราคายังไม่ถึง Bear OB*\n"
+                                f"⏳ *ไม่ได้เปิด order — ราคายังไม่ถึง Bear OB*\n"
                                 f"ราคา `{current_mkt}` ห่าง OB {ob_label} อยู่ `{dist_p}p`\n"
-                                f"_รอราคาขึ้นมาใน OB zone ก่อน_"
+                                f"_setup นี้ไม่ execute (และไม่นับกันโซนซ้ำ) — ต้องรอ signal ใหม่จริงๆ_"
                             )
                         else:
                             entry_far_msg = (
-                                f"⏳ *รอ Pullback — ราคายังไม่ถึง Bull OB*\n"
+                                f"⏳ *ไม่ได้เปิด order — ราคายังไม่ถึง Bull OB*\n"
                                 f"ราคา `{current_mkt}` ห่าง OB {ob_label} อยู่ `{dist_p}p`\n"
-                                f"_รอราคาลงมาใน OB zone ก่อน_"
+                                f"_setup นี้ไม่ execute (และไม่นับกันโซนซ้ำ) — ต้องรอ signal ใหม่จริงๆ_"
                             )
                     # else: ราคาอยู่ใน OB zone แล้ว → execute ได้
             else:
@@ -1853,6 +1853,14 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                 f"🔔 *SETUP APPROVED — {dir_label}*",
                 f"⏳ *SETUP PENDING — {dir_label} (รอ OB zone)*"
             )
+            # ลดระดับ trade log เป็น skipped_entry_far — ไม่งั้น check_zone_cooldown()
+            # จะมองว่าโซนนี้ "เทรดไปแล้ว" (action='confirmed') ทั้งที่ไม่เคย execute
+            # จริงบน MT5 เลย บล็อก signal จริงในอนาคตที่โซนเดียวกันไปฟรีๆ 4 ชม.
+            try:
+                from agents.trade_log import mark_trade_not_executed
+                mark_trade_not_executed(trade_id)
+            except Exception:
+                pass
         elif not mt5_executor.is_available():
             mt5_tag = "\n\n📋 _MT5_ENABLED=false — กรุณาเปิด trade เองใน MT5_"
 

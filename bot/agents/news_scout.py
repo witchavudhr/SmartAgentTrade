@@ -303,12 +303,20 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
 หน้าที่: วิเคราะห์ข่าวแล้ว VOTE YES/NO ว่าตอนนี้ปลอดภัยพอที่จะเข้า trade หรือไม่
 {signal_ctx}
 
-ข่าวที่จะเกิดใน 4 ชั่วโมงข้างหน้า:
+ข่าวที่จะเกิดใน 4 ชั่วโมงข้างหน้า (แสดงไว้เป็น context ให้เห็นภาพรวม ไม่ใช่ตัวตัดสิน vote):
 {news_text}
 
 {"⚠️ มีข่าว High Impact ภายใน " + str(NEWS_BLOCK_MINUTES) + " นาที — block_reason: " + block_reason if blocked else "ไม่มีข่าวที่ block อยู่ในขณะนี้"}
 
-วิเคราะห์:
+── กฎเหล็ก (ห้ามฝ่าฝืน) ──
+vote="NO" ได้เฉพาะกรณีเดียวเท่านั้น: มีข่าว High Impact ภายใน {NEWS_BLOCK_MINUTES} นาทีข้างหน้า
+(ดู block flag ด้านบน — ถ้า "ไม่มีข่าวที่ block อยู่ในขณะนี้" แปลว่ายังไม่เข้าเกณฑ์ ต้อง vote="YES")
+ข่าว High Impact ที่ยังอยู่ไกลกว่า {NEWS_BLOCK_MINUTES} นาที (แม้จะอยู่ใน 4 ชม. ข้างหน้าและมีผลกระทบสูง
+เช่น CPI, NFP) **ห้ามใช้เป็นเหตุผล vote="NO" เด็ดขาด** — ให้ vote="YES" เสมอ แล้วระบุข่าวที่จะมาถึงไว้ใน
+reasoning/key_event/next_event เป็นข้อมูลประกอบให้ผู้ใช้ทราบเฉยๆ ไม่ใช่เหตุผลบล็อกการเข้าเทรดตอนนี้
+เหตุผล: กฎของระบบกำหนดไว้ชัดเจนว่า "ไม่เทรดช่วง 30 นาทีก่อนข่าว High Impact" เท่านั้น ไม่ใช่หลายชั่วโมงก่อน
+
+วิเคราะห์ (เพื่อใส่ใน reasoning เท่านั้น ไม่ใช่เกณฑ์ vote):
 1. ข่าวไหนกระทบ Gold มากสุด และเมื่อไหร่?
 2. spread จะกว้าง / ราคาผันผวนมั้ยในช่วงนี้?
 3. ควรรอหลังข่าวผ่านมั้ย?
@@ -340,6 +348,17 @@ def analyze(force: bool = False, signal_direction: str | None = None) -> dict:
                 "reasoning": "JSON parse error — ใช้ fallback"
             }
         )
+        # Hard override — ไม่ไว้ใจแค่ prompt: กฎคือ block เฉพาะข่าวภายใน NEWS_BLOCK_MINUTES
+        # นาทีเท่านั้น (ตรงกับ CLAUDE.md) ถ้า Python เช็คแล้วว่ายังไม่เข้าเกณฑ์ (blocked=False)
+        # แต่ LLM ยัง vote NO เพราะเห็นข่าวไกลๆ ใน 4 ชม. (เช่น CPI ที่ยังอีก 200+ นาที) ให้บังคับ
+        # เป็น YES เสมอ — LLM บางทีระวังเกินกฎที่ตั้งไว้จริง
+        if not blocked and result.get("vote") == "NO":
+            result["vote"] = "YES"
+            result["safe_to_trade"] = True
+            result["vote_reasoning"] = (
+                f"[auto-override] {result.get('vote_reasoning', '')} — ข่าวยังไกลเกิน "
+                f"{NEWS_BLOCK_MINUTES} นาที ตามกฎยังเทรดได้ (ไม่ block ก่อนเวลา)"
+            )
     else:
         # ไม่มีข่าว → vote YES ทันที ไม่ต้องเรียก Claude
         result = {
