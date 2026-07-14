@@ -196,6 +196,13 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         "reasoning":     analysis.get("reasoning"),
         "bull_ob_zone":  analysis.get("bull_ob_zone"),
         "bear_ob_zone":  analysis.get("bear_ob_zone"),
+        # Pattern 3 (notifier.py _update_pattern_state) เก็บ zone ที่โดน rejection ไว้
+        # จากตรงนี้ (chart_s.get("recent_bear/bull_ob_rejection")) — ไม่เคยถูก copy
+        # เข้ามาใน stages["chart"] มาก่อนเลย ทำให้ CASE I (STORED_OB_PULLBACK_SELL/BUY —
+        # รอราคากลับมา retest โซน rejection เดิมแล้ว sell/buy ซ้ำ) ไม่เคยทำงานได้จริง
+        # ตั้งแต่แรก เพราะ Pattern 3 อ่านค่า None ตลอด ไม่เคยมี zone ถูกบันทึกเลย
+        "recent_bear_ob_rejection": analysis.get("recent_bear_ob_rejection"),
+        "recent_bull_ob_rejection": analysis.get("recent_bull_ob_rejection"),
     }
 
     result["analysis"] = analysis  # เก็บไว้เสมอ เพื่อให้ format_alert แสดง signal/conf/setup จริง
