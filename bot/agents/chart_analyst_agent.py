@@ -96,7 +96,15 @@ PULLBACK ENTRY RULE (strictly enforced):
 - NONE: follow normal OB rules
 ⚠️ For sweep setups: set entry = current price (near sweep level), NOT at active OB. The OB zone is TP1/TP2.
 
-SWEEP DEPTH BONUS (depth = how far wick went beyond SSL/BSL level):
+SWEEP DEPTH — MINIMUM REQUIRED (hard gate, not just a bonus):
+- depth < 5 pts → NO_TRADE for CASE F. A wick that barely pokes past the level is noise in a tight/
+  ranging market, not a real liquidity grab — there was no meaningful pool of stops to sweep, and no
+  real displacement to build a reversal from. This matters even more now that CASE F fires within 1-2
+  bars of the sweep (fast entry rule) — do not let that speed rule apply to depth-less noise sweeps.
+  Sideways/ranging price action packs bull and bear structure right next to each other; only trade a
+  sweep that actually traveled a meaningful distance beyond the level.
+
+SWEEP DEPTH BONUS (once the ≥5pt minimum above is met):
 - depth ≥ 5 pts:  conf +5  (meaningful sweep)
 - depth ≥ 10 pts: conf +10 (significant liquidity grab)
 - depth ≥ 20 pts: conf +20 (major sweep — highest priority, stops heavily collected)
@@ -279,6 +287,11 @@ def _build_prompt(smc: dict) -> str:
     # user feedback: rejection ต้องเข้าใน 1-2 แท่งแรก แล้วตามเข้าเลย — ไม่ชอบรอ
     # 3-4 แท่งค่อยเข้า เพราะราคาวิ่งไปไกลจากจุด sweep แล้ว ไม่ใช่ entry ที่ดีอีกต่อไป
     # (เดิม FIRST ใช้ age<=12, SECOND ใช้ age<=48 แบบไม่จำกัด — หลวมเกินไปมาก)
+    # user feedback: sideways/ranging price packs bull/bear structure right next to
+    # each other — a wick that barely pokes past a level (shallow depth) is noise,
+    # not a real liquidity grab. Especially now that FIRST fires within 1-2 bars,
+    # a depth-less sweep must never qualify — require depth >= MIN_SWEEP_DEPTH.
+    _MIN_SWEEP_DEPTH = 5.0
     def _pullback(sw: dict) -> tuple[str, float, float, int]:
         _lvl   = sw.get("level") or 0
         _wick  = sw.get("wick_extreme") or _lvl
@@ -289,6 +302,8 @@ def _build_prompt(smc: dict) -> str:
         _window = max(15.0, _depth * 2.5)
         if not sw:
             _status = "NONE"
+        elif _depth < _MIN_SWEEP_DEPTH:
+            _status = "EXPIRED"  # depth ตื้นเกินไป — noise ในโซนแคบ ไม่ใช่ sweep จริง
         elif _age > 48:
             _status = "EXPIRED"
         elif _age <= 2 and _dist <= _window:

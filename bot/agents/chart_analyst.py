@@ -414,6 +414,10 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # user feedback: ต้องเข้าใน 1-2 แท่งแรกหลัง sweep ไม่รอ 3-4 แท่ง (ราคาวิ่งไปไกล
     # แล้วไม่ใช่ entry ที่ดี) — ต้องตรงกับ window เดียวกับที่ chart_analyst_agent.py
     # ใช้ตัดสินจริง ไม่งั้น pre-filter จะยัง "เห็น signal" ทั้งที่ AI จะตอบ EXPIRED แน่ๆ
+    # user feedback: sideways/ranging price packs bull/bear structure right next to
+    # each other — a wick that barely pokes past a level (shallow depth) is noise,
+    # not a real liquidity grab. Require depth >= 5pts ก่อนนับเป็น sweep ที่ valid
+    _MIN_SWEEP_DEPTH = 5.0
     def _sweep_valid(sw: dict | None) -> bool:
         if not sw:
             return False
@@ -423,6 +427,8 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         _lvl  = sw.get("level") or 0
         _wick = sw.get("wick_extreme")
         _depth = round(abs(_lvl - _wick), 2) if (_lvl and _wick is not None) else 0
+        if _depth < _MIN_SWEEP_DEPTH:
+            return False
         _dist  = abs(price - _lvl) if _lvl else 9999
         _window = max(15.0, _depth * 2.5)
         if _age is not None and _age <= 2 and _dist <= _window:
