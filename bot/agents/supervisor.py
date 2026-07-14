@@ -140,17 +140,26 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     result["stages"]["smc"] = "SIGNAL_FOUND"
     # เก็บ smc setup ไว้เพื่อ notifier แสดงใน lightweight alert แม้ chart AI บอก NO_TRADE
     _eql = smc_summary.get("eql_eqh_sweep") or {}
-    _sw  = smc_summary.get("last_sweep") or {}
     _pc  = smc_summary.get("post_sweep_continuation") or {}
     _rev = smc_summary.get("reversal") or {}
-    # swing_signal (จาก detect_swing_entry — ใช้ sweep สดของตัวเอง ≤3-5 แท่ง)
-    # ต้องมาก่อน last_sweep (full-history scan อาจเก่าเป็นร้อยแท่ง) ไม่งั้น label
-    # ที่โชว์ใน Telegram (เช่น "Setup: SWEEP_LOW") จะอ้างอิงจาก sweep เก่าที่ไม่
-    # เกี่ยวกับ trigger จริงเลย ทำให้ดูสับสนว่า "sweep หมดอายุ" แต่ signal ยังมา
+    # last_sweep (เดี่ยว, ไม่แยกทิศ) เก่าเป็นร้อยแท่งได้ง่ายๆ ถ้า sweep อีกทิศ
+    # เกิดทีหลัง — ใช้ last_sweep_high/low แยกทิศแทน และเช็ค freshness (≤48 bars)
+    # ก่อนเอามาตั้งชื่อ label ไม่งั้น label ใน Telegram (เช่น "Setup: SWEEP_LOW")
+    # จะโชว์ sweep ที่หมดอายุไปนานแล้วและไม่เกี่ยวกับ trigger จริงเลย (เช่น 79-379
+    # bars) ทำให้ดูสับสนว่า "sweep ยังใหม่อยู่" ทั้งที่จริงไม่มี sweep ที่ valid เลย
+    _sw_high = smc_summary.get("last_sweep_high") or {}
+    _sw_low  = smc_summary.get("last_sweep_low") or {}
+    _fresh_sweep_kind = None
+    if (_sw_high.get("age_bars") if _sw_high.get("age_bars") is not None else 999) <= 48:
+        _fresh_sweep_kind = "HIGH"
+    elif (_sw_low.get("age_bars") if _sw_low.get("age_bars") is not None else 999) <= 48:
+        _fresh_sweep_kind = "LOW"
+    # swing_signal (จาก detect_swing_entry — ใช้ sweep สดของตัวเอง ≤3-5 แท่ง) มาก่อน
+    # sweep label เสมอ เพราะ sweep_signal สดกว่าและตรงกับ trigger จริงมากกว่า
     result["smc_setup"] = (
         _eql.get("signal")
         or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
-        or (_sw.get("kind") and f"SWEEP_{_sw['kind'].upper()}")
+        or (_fresh_sweep_kind and f"SWEEP_{_fresh_sweep_kind}")
         or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
         or "SIGNAL"
     )
