@@ -526,7 +526,8 @@ def get_session() -> dict:
 
 
 def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str = "M5",
-                        df: pd.DataFrame = None) -> dict:
+                        df: pd.DataFrame = None, swing_highs: list = None,
+                        swing_lows: list = None) -> dict:
     """
     จัด rank liquidity pools:
       BSL (Buy-Side Liquidity)  = เหนือราคา = stop ของคน Short
@@ -535,10 +536,16 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
     คืน dict พร้อม bsl_pools, ssl_pools, nearest_bsl, nearest_ssl
     แต่ละ pool: {level, type, size, dist_pts, swept, time, age_bars}
     time/age_bars มีค่าเมื่อส่ง df เข้ามา — ใช้ trace กลับไปดูแท่งจริงบนกราฟได้
-    ว่า swing point นี้เกิดขึ้นเมื่อไหร่ (แก้ปัญหา user เช็คย้อนหลังไม่เจอว่า
-    level นี้มาจากแท่งไหน เพราะ swing_length=50 ทำให้ pivot อาจเกิดนาน 12+ ชม.
-    ก่อนหน้าที่กราฟที่ซูมดูจะแสดง)
+    ว่า swing point นี้เกิดขึ้นเมื่อไหร่
+
+    swing_highs/swing_lows (optional): ใช้ override result.swing_highs/lows —
+    สำหรับ pool detection เราอยากใช้ swing length สั้นกว่า struct (50 bars)
+    ตรงกับ Pine indicator (i_pool_swing=15) ไม่งั้นต้องรอยืนยันนาน 12+ ชม. ก่อน
+    pool ใหม่จะโผล่ ทั้งที่กราฟ (indicator) เห็นเร็วกว่ามาก — ถ้าไม่ส่งมาจะ fallback
+    ไปใช้ result.swing_highs/lows (struct length) เหมือนเดิม
     """
+    swing_highs = swing_highs if swing_highs is not None else result.swing_highs
+    swing_lows  = swing_lows  if swing_lows  is not None else result.swing_lows
     def _bar_meta(idx):
         if df is None or idx is None or idx < 0 or idx >= len(df):
             return None, None
@@ -566,7 +573,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
     swept_lows  = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_low"}
 
     bsl_pools = []
-    for sh in (result.swing_highs or []):
+    for sh in (swing_highs or []):
         lv = round(sh.price, 2)
         if lv <= current_price:
             continue
@@ -585,7 +592,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         })
 
     ssl_pools = []
-    for sl in (result.swing_lows or []):
+    for sl in (swing_lows or []):
         lv = round(sl.price, 2)
         if lv >= current_price:
             continue
@@ -1877,7 +1884,8 @@ def _sweep_obj_by_kind(sweeps: list, kind: str, df: pd.DataFrame = None) -> dict
     }
 
 
-def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) -> dict:
+def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
+              pool_swing_highs: list = None, pool_swing_lows: list = None) -> dict:
     """
     แปลง SMCResult เป็น dict สรุปสำหรับส่งให้ Claude
     ถ้าส่ง df มาด้วย จะรวม advanced_signals + session อัตโนมัติ
@@ -2086,7 +2094,9 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None) 
 
     # ── Liquidity Map ─────────────────────────────────────────
     try:
-        summary["liquidity"] = classify_liquidity(result, current_price, df=df)
+        summary["liquidity"] = classify_liquidity(result, current_price, df=df,
+                                                    swing_highs=pool_swing_highs,
+                                                    swing_lows=pool_swing_lows)
     except Exception:
         summary["liquidity"] = {}
 

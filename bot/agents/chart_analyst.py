@@ -13,6 +13,12 @@ _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc     = SMCEngine(swing_length=50, ob_length=5)   # swing struct=50, OB internal=5 (LuxAlgo default)
 smc_m15 = SMCEngine(swing_length=50, ob_length=5)
+# BSL/SSL pool ใช้ swing length สั้นกว่า struct (50) แยกต่างหาก — ตรงกับ Pine
+# indicator (indicator/SmartAgentTrade_Signal.pine i_pool_swing=15) ที่ตั้งใจใช้
+# pivot สั้นกว่าให้เห็น pool ใหม่ๆ ไวขึ้น ไม่ต้องรอยืนยันนาน 50 bars (~4ชม. บน M5)
+# เหมือน struct swing — เดิม Python ใช้ length เดียวกับ struct ทำให้ pool ที่เห็น
+# ในกราฟ (indicator) ไม่ตรงกับที่บอทเห็นเลย (บอทมองไม่เห็น swing ที่ยังไม่ครบ 50 bars)
+smc_pool = SMCEngine(swing_length=15, ob_length=5)
 
 def _get_mt5_price() -> float | None:
     """ดึงราคา mid (bid+ask)/2 จาก MT5 — ไม่ต้องเช็ค is_available() เพราะ _connect() จัดการเอง"""
@@ -108,17 +114,24 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     # ── M15 summary (swing_length=50 ตรงกับ LuxAlgo swingsLengthInput=50) ────────
     m15_summary = None
     res15 = None
+    res15_pool = None
     if df15 is not None and not df15.empty:
-        res15 = smc_m15.analyze(df15)
-        m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2))
+        res15      = smc_m15.analyze(df15)
+        res15_pool = smc_pool.analyze(df15)  # swing_length=15 แยกสำหรับ BSL/SSL pool
+        m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2),
+                                 pool_swing_highs=res15_pool.swing_highs,
+                                 pool_swing_lows=res15_pool.swing_lows)
         m15_summary["timeframe"] = "M15"
 
     # ── M5 summary ─────────────────────────────────────────────────
     mt5_price = _get_mt5_price() if price_source == "MT5" else None
     current_price = mt5_price or round(df5['close'].iloc[-1], 2)
 
-    res5    = smc.analyze(df5)
-    summary = summarize(res5, current_price, df5)
+    res5      = smc.analyze(df5)
+    res5_pool = smc_pool.analyze(df5)  # swing_length=15 แยกสำหรับ BSL/SSL pool
+    summary = summarize(res5, current_price, df5,
+                         pool_swing_highs=res5_pool.swing_highs,
+                         pool_swing_lows=res5_pool.swing_lows)
     summary["pair"]         = pair
     summary["timeframe"]    = "M5"
     summary["analyzed_at"]  = now_str
@@ -129,7 +142,8 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     # รวม SSL/BSL จากทั้งสองไทม์เฟรมเข้าด้วยกัน dedup โดย proximity 1.5 USD
     if res15 is not None:
         from agents.smc_engine import classify_liquidity as _cl
-        m15_liq = _cl(res15, current_price, timeframe="M15", df=df15)
+        m15_liq = _cl(res15, current_price, timeframe="M15", df=df15,
+                      swing_highs=res15_pool.swing_highs, swing_lows=res15_pool.swing_lows)
         m5_liq  = summary.get("liquidity", {})
         m5_bsl  = m5_liq.get("bsl_pools", [])
         m5_ssl  = m5_liq.get("ssl_pools", [])
