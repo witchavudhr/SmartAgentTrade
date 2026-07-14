@@ -578,41 +578,12 @@ def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict
             else:
                 _major_pool_note = f"\n✅ MAJOR POOL CHECK: sweep ที่ {_swept_lvl} ไม่มี pool ที่ไกลกว่ายังไม่ sweep ค้างอยู่ — ใช้ approve ได้ตามปกติ\n"
 
-    # ── TREND STRUCTURE CHECK — คำนวณเอง ว่า sweep นี้สวน trend ที่ยัง "ไม่แตก" จริงมั้ย ──
-    # (เจอเคสจริง: วันนั้นราคาขึ้นต่อเนื่องเป็นสิบชั่วโมง มี BOT SELL SWEEP-GRAB ยิงออกมา
-    # หลายรอบระหว่างทาง sweep แต่ละครั้งโดน high ใหม่ที่สูงกว่าล้างทิ้งหมด เพราะ trend
-    # ขาขึ้นยังไม่เคยแตกจริง (ไม่มี CHoCH bearish ยืนยันเลยสักครั้ง) — sweep เฉยๆ ไม่พอ
-    # ต้องมี CHoCH ยืนยันว่า structure เปลี่ยนจริงก่อน ไม่งั้นก็แค่ noise ระหว่าง trend เดิม)
+    # NOTE: เคยลองเพิ่ม TREND STRUCTURE CHECK (บังคับต้องมี CHoCH ยืนยันก่อน sweep-reversal)
+    # แต่ user feedback: CHoCH เองก็ "หลอก" ได้ (fake CHoCH ที่จริงคือ sweep เฉยๆ แล้วเด้งกลับ
+    # ทันที ไม่ใช่ structure เปลี่ยนจริง) — บังคับ CHoCH เป็นเงื่อนไขจึงผิด ถอดออกแล้ว
+    # เกณฑ์ที่ถูกต้องคือ: BSL/SSL level คำนวณถูกตัว (MAJOR POOL CHECK) + sweep depth พอ
+    # ($5-10 เกินระดับจริง — MIN_SWEEP_DEPTH) + มี rejection candle ยืนยัน เท่านั้นพอ
     _trend_struct_note = ""
-    if setup_type_s in ("BSL_SWEEP_SELL", "SSL_SWEEP_BUY") and smc_summary:
-        _bos_chk   = smc_summary.get("last_bos") or {}
-        _choch_chk = smc_summary.get("last_choch") or {}
-        _need_dir  = "bearish" if setup_type_s == "BSL_SWEEP_SELL" else "bullish"
-        _trend_dir = "bullish" if setup_type_s == "BSL_SWEEP_SELL" else "bearish"
-        if _bos_chk.get("direction") == _trend_dir:
-            _bos_age   = _bos_chk.get("age_bars")
-            _choch_age = _choch_chk.get("age_bars")
-            _choch_confirms = (
-                _choch_chk.get("direction") == _need_dir
-                and _choch_age is not None and _bos_age is not None
-                and _choch_age < _bos_age
-            )
-            if not _choch_confirms:
-                _trend_struct_note = (
-                    f"\n🚫 TREND STRUCTURE CHECK (คำนวณแล้ว ยึดตามนี้): BOS ล่าสุดยัง {_trend_dir} อยู่ "
-                    f"(@ {_bos_chk.get('level')}, {_bos_age} bars ago) และไม่มี CHoCH {_need_dir} ที่สดกว่า "
-                    f"BOS นี้มายืนยันว่า structure เปลี่ยนจริง → {setup_type_s} นี้กำลังสวน trend ที่ยังไม่แตก "
-                    f"เป็นแค่ sweep noise ระหว่างทาง trend เดิม ไม่ใช่จุดกลับตัวจริง ต้อง REJECT รอ CHoCH "
-                    f"{_need_dir} ก่อน\n"
-                )
-            else:
-                _trend_struct_note = (
-                    f"\n✅ TREND STRUCTURE CHECK: มี CHoCH {_need_dir} @ {_choch_chk.get('level')} "
-                    f"({_choch_age} bars ago) สดกว่า BOS {_trend_dir} เดิม ({_bos_age} bars ago) แล้ว — "
-                    f"structure เปลี่ยนจริง ใช้ approve ได้ตามปกติ\n"
-                )
-        else:
-            _trend_struct_note = f"\n✅ TREND STRUCTURE CHECK: BOS ล่าสุดไม่ได้สวนทาง {setup_type_s} — ผ่าน\n"
 
     # ── OB PATH CHECK — คำนวณเอง (authoritative) ว่า OB ขวางเส้นทาง entry→TP จริงมั้ย ──
     # (เจอเคสจริง: SELL entry ต่ำกว่า Bear OB อยู่แล้ว [Bear OB อยู่ฝั่งตรงข้ามกับ TP,
@@ -683,7 +654,6 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 ⚖️ Risk Manager: Lot={risk.get('lot')} | Risk={risk.get('risk_pct')}% | Caution={risk.get('caution_mode')} | {risk.get('notes','')}
 {m15_ctx}
 {_major_pool_note}
-{_trend_struct_note}
 {_ob_path_note}
 
 ═══ วิธีตัดสิน ═══
@@ -694,9 +664,9 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
      (rejection ต้องเกิดภายใน 1-2 แท่งหลัง sweep — ดู PULLBACK STATUS ที่ Chart Analyst ระบุ ถ้า
      Chart บอกว่า pullback_status=SECOND/EXPIRED เพราะรอเกิน 2-4 แท่งไปแล้ว ราคาวิ่งไปไกลจากจุด
      sweep แล้ว ไม่ใช่ entry ที่ดีอีกต่อไป — ให้ REJECT ตามที่ Chart Analyst ประเมิน ไม่ใช่ APPROVE
-     ทันทีเพราะเห็นแค่ชื่อ setup_type — และต้องเป็น ✅ ทั้งใน "MAJOR POOL CHECK" และ "TREND
-     STRUCTURE CHECK" ด้วย ถ้าอันใดอันหนึ่งขึ้น 🚫 ต้อง REJECT เท่านั้น ไม่ว่า timing/rejection
-     จะดูดีแค่ไหนก็ตาม)
+     ทันทีเพราะเห็นแค่ชื่อ setup_type — และต้องเป็น ✅ ใน "MAJOR POOL CHECK" ด้วย ถ้าขึ้น 🚫 ต้อง
+     REJECT เท่านั้น ไม่ว่า timing/rejection จะดูดีแค่ไหนก็ตาม — ไม่ต้องรอ CHoCH ยืนยัน sweep
+     ล้วนๆ + depth พอ + rejection candle ก็เพียงพอแล้ว, CHoCH เองก็ fake ได้ ไม่ใช่เกณฑ์ที่เชื่อถือได้)
    • setup_type = BULL_OB_SWEEP_REJECT → sweep+reject ที่ OB เกิดแล้ว = confirmation ชัดที่สุด
    • setup_type = BULL_OB_ENTRY / BEAR_OB_ENTRY + Chart YES + ราคาอยู่ใน OB (หรือเพิ่งโดน rejection
      ดันออกจาก OB ภายใน ≤2 แท่ง) + RR ≥ 1.5
@@ -714,15 +684,6 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
    • OB ขวางเส้นทาง entry→TP จริง (ดู "OB PATH CHECK" ด้านบน — ต้องเป็น ✅ เท่านั้น)
    • Chart Analyst ระบุว่า sweep/pullback หมดอายุแล้ว (รอเกิน 2-4 แท่งหลัง sweep ราคาไปไกลแล้ว)
    • MAJOR POOL CHECK ขึ้น 🚫 (sweep แค่ pool รอง, major pool ยังไม่โดนแตะ — ดูด้านล่าง)
-   • TREND STRUCTURE CHECK ขึ้น 🚫 (BSL/SSL sweep สวน trend ที่ยังไม่แตก ไม่มี CHoCH ยืนยัน — ดูด้านล่าง)
-
-── กฎเหล็ก: BSL/SSL sweep ต้องมี CHoCH ยืนยันก่อน ถ้ากำลังสวน trend ที่ยังไม่แตก ──
-"TREND STRUCTURE CHECK" ด้านบนคำนวณแล้วว่า BOS ล่าสุดยังสวนทางกับ BSL_SWEEP_SELL/SSL_SWEEP_BUY
-นี้อยู่มั้ย (เช่น BOS bullish ต่อเนื่อง แต่ signal จะ SELL) และมี CHoCH ยืนยันการกลับตัวจริงที่สด
-กว่า BOS นั้นหรือยัง — ถ้าขึ้น 🚫 (trend เดิมยังไม่แตก ไม่มี CHoCH ยืนยัน) ต้อง REJECT เสมอ ไม่ว่า
-sweep+rejection จะดูสวยแค่ไหน เพราะในตลาดที่ trend แข็งแรงต่อเนื่อง (เช่น ราคาทำ high ใหม่ทุกชั่วโมง)
-sweep ของ swing high/low ระหว่างทางเป็นแค่ noise ที่โดน high/low ใหม่ล้างทิ้งซ้ำๆ ไม่ใช่จุดกลับตัวจริง
-จนกว่าจะมี CHoCH ยืนยันว่า structure เปลี่ยนทิศแล้วจริงๆ
 
 ── กฎเหล็ก: BSL/SSL sweep ต้อง sweep pool ตัวจริง ห้าม sweep แค่ pool รอง ──
 "MAJOR POOL CHECK" ด้านบนคำนวณแล้วว่า sweep ที่ Chart Analyst อ้างถึงเป็น pool ใหญ่/major
