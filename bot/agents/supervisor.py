@@ -597,10 +597,16 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
 ── กฎเหล็ก (ห้ามฝ่าฝืน) ──
 ✅ APPROVE ทันทีถ้า:
    • setup_type = BSL_SWEEP_SELL / SSL_SWEEP_BUY → liquidity sweep เกิดแล้ว + rejection = highest conviction
+     (rejection ต้องเกิดภายใน 1-2 แท่งหลัง sweep — ดู PULLBACK STATUS ที่ Chart Analyst ระบุ ถ้า
+     Chart บอกว่า pullback_status=SECOND/EXPIRED เพราะรอเกิน 2-4 แท่งไปแล้ว ราคาวิ่งไปไกลจากจุด
+     sweep แล้ว ไม่ใช่ entry ที่ดีอีกต่อไป — ให้ REJECT ตามที่ Chart Analyst ประเมิน ไม่ใช่ APPROVE
+     ทันทีเพราะเห็นแค่ชื่อ setup_type)
    • setup_type = BULL_OB_SWEEP_REJECT → sweep+reject ที่ OB เกิดแล้ว = confirmation ชัดที่สุด
-   • setup_type = BULL_OB_ENTRY + Chart YES + ราคาอยู่ใน OB + RR ≥ 1.5
+   • setup_type = BULL_OB_ENTRY / BEAR_OB_ENTRY + Chart YES + ราคาอยู่ใน OB (หรือเพิ่งโดน rejection
+     ดันออกจาก OB ภายใน ≤2 แท่ง) + RR ≥ 1.5
      → นี่คือ pyramid ไม้ 1 เล็กๆ ก่อน ไม่ต้องรอ confirmation เพิ่ม
-     → "counter-trend" ไม่ใช่เหตุผล reject สำหรับ BULL_OB setup เพราะ swing มีในทุก trend
+     → "counter-trend" ไม่ใช่เหตุผล reject สำหรับ BULL_OB/BEAR_OB_ENTRY เด็ดขาด — การเข้าที่ OB
+       คือการสวน trend โดยนิยามอยู่แล้ว (นั่นคือเหตุผลที่มันเป็น OB) ห้ามรอ bias เห็นด้วยก่อน
    • setup_type = TREND_OB + Chart YES → trend-aligned entry approve ได้เลย
 
 ❌ REJECT ได้แค่ถ้า:
@@ -610,6 +616,7 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
    • OB ถูก mitigated แล้ว (Chart ระบุ)
    • RR < 1.5
    • OB ขวางเส้นทาง entry→TP จริง (ดู "OB PATH CHECK" ด้านบน — ต้องเป็น ✅ เท่านั้น)
+   • Chart Analyst ระบุว่า sweep/pullback หมดอายุแล้ว (รอเกิน 2-4 แท่งหลัง sweep ราคาไปไกลแล้ว)
 
 ── กฎเหล็ก: ห้ามอ้าง OB ที่ไม่ได้ขวางทางจริง ──
 "OB PATH CHECK" ด้านบนคำนวณ geometry จริงแล้วว่า OB แต่ละอันอยู่ระหว่าง entry กับ TP
@@ -620,21 +627,23 @@ REJECT หรือ "รอ pullback ไปดู rejection ที่ OB นั�
 ไปเลย ไม่ใช่ confirmation ของ setup นี้แต่อย่างใด — ใช้ผลจาก OB PATH CHECK เป็นหลัก
 ห้ามประเมิน "OB ขวางทางมั้ย" ด้วยความรู้สึกเอง
 
-── กฎเหล็ก: Bias ห้าม block sweep-based setup ──
-setup_type ที่เป็น liquidity-sweep/reversal โดยธรรมชาติ (SSL_SWEEP_BUY, BSL_SWEEP_SELL,
-SWING_BUY, SWING_SELL, BULL_OB_SWEEP_REJECT, OB_REJECTION_BUY, OB_REJECTION_SELL,
-STORED_OB_PULLBACK_*) คือการ "สวน trend HTF โดยตั้งใจ" อยู่แล้ว (เทรด liquidity grab
-ก่อนกลับตัว) — ดังนั้น Bias NO / Bias conflict กับ HTF trend **ห้ามใช้เป็นเหตุผล REJECT
-เด็ดขาด** ไม่ว่า Bias จะ conflict แรงแค่ไหน (แม้ Weekly/Daily/H4/H1 bearish 100% ก็ตาม)
+── กฎเหล็ก: Bias ห้าม block sweep-based / OB-entry setup ──
+setup_type ที่เป็น liquidity-sweep/reversal หรือ OB-entry โดยธรรมชาติ (SSL_SWEEP_BUY,
+BSL_SWEEP_SELL, SWING_BUY, SWING_SELL, BULL_OB_SWEEP_REJECT, OB_REJECTION_BUY,
+OB_REJECTION_SELL, STORED_OB_PULLBACK_*, BULL_OB_ENTRY, BEAR_OB_ENTRY) คือการ "สวน
+trend HTF โดยตั้งใจ" อยู่แล้ว (เทรด liquidity grab หรือเข้าที่ OB ก่อนกลับตัว) —
+ดังนั้น Bias NO / Bias conflict กับ HTF trend **ห้ามใช้เป็นเหตุผล REJECT เด็ดขาด**
+ไม่ว่า Bias จะ conflict แรงแค่ไหน (แม้ Weekly/Daily/H4/H1 bearish 100% ก็ตาม) —
+Bias ขัดแย้งคือเรื่องปกติ ไม่ใช่สัญญาณเตือนสำหรับ setup กลุ่มนี้
 ถ้าจะ REJECT setup กลุ่มนี้ ต้องใช้เหตุผลอื่นเท่านั้น: OB/BOS ขวางเส้นทางจริงจนทำให้ effective
-RR < 1.5, sweep หมดอายุ/ไม่มี displacement พอ (ฟัง Chart Analyst), ข่าว, หรือ Risk veto —
-ห้ามเขียนในเหตุผล REJECT ว่า "Bias น้ำหนักสูงกว่าปกติ" หรือทำนองนั้นสำหรับ setup กลุ่มนี้
+RR < 1.5, sweep/pullback หมดอายุแล้ว (รอเกิน 2-4 แท่งหลัง sweep — ฟัง Chart Analyst), ข่าว,
+หรือ Risk veto — ห้ามเขียนในเหตุผล REJECT ว่า "Bias น้ำหนักสูงกว่าปกติ" หรือทำนองนั้นสำหรับ
+setup กลุ่มนี้
 
-── ชั่งน้ำหนัก (สำหรับ setup อื่นที่ไม่ใช่ sweep-based ข้างบน) ──
+── ชั่งน้ำหนัก (สำหรับ setup อื่นที่ไม่ใช่ sweep-based/OB-entry ข้างบน — TREND_OB, TREND_BOS_BREAK ฯลฯ) ──
 1. Chart Analyst = agent หลัก น้ำหนักสูงสุด
-2. Bias NO เพราะ "counter-trend" → น้ำหนักต่ำ ถ้า setup เป็น BULL_OB หรือ BSL/SSL sweep
-3. Bias NO เพราะข่าว/HTF structure พัง → น้ำหนักสูง
-4. News NO เพราะข่าว High Impact → น้ำหนักสูงที่สุด ต้องฟัง
+2. Bias NO เพราะข่าว/HTF structure พัง → น้ำหนักสูง
+3. News NO เพราะข่าว High Impact → น้ำหนักสูงที่สุด ต้องฟัง
 
 ตอบ JSON เท่านั้น — ห้ามมีข้อความ/markdown อธิบายก่อนหรือหลัง JSON เด็ดขาด ตัวอักษรแรกของคำตอบต้องเป็น "{{":
 {{
