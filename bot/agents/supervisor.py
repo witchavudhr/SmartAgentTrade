@@ -40,6 +40,33 @@ def _get_bias(signal_direction: str) -> dict:
     _bias_cache_ts = time.time()
     print(f"[Supervisor] 🔄 bias refreshed (cache miss, age was {int(age)}s)")
     return result
+
+
+# ── Reject cooldown — กัน AI call ซ้ำสำหรับ setup เดิมที่เพิ่งโดน NO_TRADE ──
+# (has_signal() เป็น rule-based ฟรี เจอ setup เดิมซ้ำทุก scan รอบใหม่ๆ ถ้ายังไม่มี
+# อะไรเปลี่ยน (ราคาไม่ขยับพ้น tolerance) การเรียก Chart Analyst ซ้ำจะได้ผลเหมือนเดิม
+# แน่ๆ (เช่น รอ CHoCH bullish ที่ยังไม่เกิด) เสียเงินฟรีทุก 5 นาที)
+_REJECT_COOLDOWN_SEC = 15 * 60   # 15 นาที
+_REJECT_PRICE_TOLERANCE = 8.0    # ราคาต้องขยับเกินนี้ถึงจะถือว่า "เปลี่ยนสถานการณ์" แล้ว
+_reject_cache: dict = {}
+
+
+def _check_reject_cooldown(setup_key: str, price: float | None) -> dict | None:
+    if not setup_key or price is None:
+        return None
+    cached = _reject_cache.get(setup_key)
+    if not cached:
+        return None
+    age = time.time() - cached["time"]
+    if age < _REJECT_COOLDOWN_SEC and abs(price - cached["price"]) <= _REJECT_PRICE_TOLERANCE:
+        return {"age": int(age), "price": cached["price"], "reason": cached.get("reason", "")}
+    return None
+
+
+def _record_reject(setup_key: str, price: float | None, reason: str) -> None:
+    if not setup_key or price is None:
+        return
+    _reject_cache[setup_key] = {"time": time.time(), "price": price, "reason": reason}
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
 from agents.trade_log import get_performance_summary, get_loss_lesson_digest
@@ -126,6 +153,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     )
     result["current_price"] = smc_summary.get("current_price")
 
+    # ── Reject cooldown gate — setup เดิม + ราคาใกล้เดิม เพิ่งโดน NO_TRADE ไปเมื่อกี้ ──
+    _cd_hit = _check_reject_cooldown(result["smc_setup"], result["current_price"])
+    if _cd_hit:
+        result["reject_reason"] = (
+            f"AI Call Cooldown — setup '{result['smc_setup']}' เพิ่งโดนปฏิเสธเมื่อ {_cd_hit['age']}s "
+            f"ที่แล้ว ราคาใกล้เดิม ({_cd_hit['price']} vs {result['current_price']}) — ข้าม AI call "
+            f"รอบนี้เพื่อประหยัด (เหตุผลเดิม: {_cd_hit['reason'][:150]})"
+        )
+        result["stages"]["smc"] = "AI_CALL_SKIPPED_COOLDOWN"
+        return result
+
     # ── Stage 2: Chart Analyst — SDK (subscription) ──
     try:
         from agents import chart_analyst_agent
@@ -167,6 +205,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
                 return result
 
     if signal == "NO_TRADE" or chart_vote == "NO":
+        _record_reject(result["smc_setup"], result["current_price"], analysis.get("vote_reasoning", ""))
         result["reject_reason"] = f"Chart Analyst voted NO — {analysis.get('vote_reasoning', 'NO_TRADE')}"
         # ตรวจว่า Claude ปฏิเสธเพราะ Liquidity Gate (รอ SSL/BSL sweep) หรือเปล่า
         _vote_reason = (analysis.get("vote_reasoning") or "").lower()
@@ -406,6 +445,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         result["liquidity_summary"] = verdict.get("liquidity_summary", "")
         result["analysis"]          = analysis
     else:
+        _record_reject(result["smc_setup"], result["current_price"], verdict.get("reasoning", ""))
         result["reject_reason"] = verdict.get("reasoning", "Supervisor rejected")
 
     return result
