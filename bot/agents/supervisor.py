@@ -570,7 +570,17 @@ Vote รวม {vote_score}/3 — อ่านเหตุผลของทุ�
    • OB ถูก mitigated แล้ว (Chart ระบุ)
    • RR < 1.5
 
-── ชั่งน้ำหนัก ──
+── กฎเหล็ก: Bias ห้าม block sweep-based setup ──
+setup_type ที่เป็น liquidity-sweep/reversal โดยธรรมชาติ (SSL_SWEEP_BUY, BSL_SWEEP_SELL,
+SWING_BUY, SWING_SELL, BULL_OB_SWEEP_REJECT, OB_REJECTION_BUY, OB_REJECTION_SELL,
+STORED_OB_PULLBACK_*) คือการ "สวน trend HTF โดยตั้งใจ" อยู่แล้ว (เทรด liquidity grab
+ก่อนกลับตัว) — ดังนั้น Bias NO / Bias conflict กับ HTF trend **ห้ามใช้เป็นเหตุผล REJECT
+เด็ดขาด** ไม่ว่า Bias จะ conflict แรงแค่ไหน (แม้ Weekly/Daily/H4/H1 bearish 100% ก็ตาม)
+ถ้าจะ REJECT setup กลุ่มนี้ ต้องใช้เหตุผลอื่นเท่านั้น: OB/BOS ขวางเส้นทางจริงจนทำให้ effective
+RR < 1.5, sweep หมดอายุ/ไม่มี displacement พอ (ฟัง Chart Analyst), ข่าว, หรือ Risk veto —
+ห้ามเขียนในเหตุผล REJECT ว่า "Bias น้ำหนักสูงกว่าปกติ" หรือทำนองนั้นสำหรับ setup กลุ่มนี้
+
+── ชั่งน้ำหนัก (สำหรับ setup อื่นที่ไม่ใช่ sweep-based ข้างบน) ──
 1. Chart Analyst = agent หลัก น้ำหนักสูงสุด
 2. Bias NO เพราะ "counter-trend" → น้ำหนักต่ำ ถ้า setup เป็น BULL_OB หรือ BSL/SSL sweep
 3. Bias NO เพราะข่าว/HTF structure พัง → น้ำหนักสูง
