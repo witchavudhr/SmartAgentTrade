@@ -522,10 +522,15 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         return True
 
     # ── ชั้น 11: CASE K — CHoCH + Sweep → Rejection ─────────────────
+    # confidence=MEDIUM ไม่ได้บังคับว่ามี rejection candle จริง (แค่ sweep age ≤12
+    # bars) — บังคับ rejection_confirmed=True เพิ่ม ไม่งั้นเป็นแค่ CHoCH+sweep เฉยๆ
+    # ยังไม่มีแท่งยืนยันว่าตลาดเด้งกลับจริง
     _ck = smc_summary.get("choch_sweep_setup")
-    if _ck and _ck.get("confidence") in ("HIGH", "MEDIUM"):
+    if _ck and _ck.get("confidence") in ("HIGH", "MEDIUM") and _ck.get("rejection_confirmed"):
         print(f"[has_signal] ✅ {_now_th} CHOCH_SWEEP — dir={_ck['direction']} choch={_ck['choch_level']} sweep={_ck['sweep_level']} conf={_ck['confidence']}")
         return True
+    elif _ck and _ck.get("confidence") in ("HIGH", "MEDIUM"):
+        print(f"[has_signal] ⛔ {_now_th} CHOCH_SWEEP no rejection candle yet — conf={_ck.get('confidence')} รอ rejection ก่อน")
 
     print(f"[has_signal] ❌ {_now_th} NO_SIGNAL — sweep={has_sweep} ob_nearby={has_ob_nearby}({min(bull_dist,bear_dist):.0f}p) struct={has_structure} liq_nearby={has_liq_nearby}({_liq_dist_str}) bias={bias} score={score}/4")
     return False
