@@ -1885,7 +1885,8 @@ def _sweep_obj_by_kind(sweeps: list, kind: str, df: pd.DataFrame = None) -> dict
 
 
 def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
-              pool_swing_highs: list = None, pool_swing_lows: list = None) -> dict:
+              pool_swing_highs: list = None, pool_swing_lows: list = None,
+              pool_sweeps: list = None) -> dict:
     """
     แปลง SMCResult เป็น dict สรุปสำหรับส่งให้ Claude
     ถ้าส่ง df มาด้วย จะรวม advanced_signals + session อัตโนมัติ
@@ -1968,8 +1969,15 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
         # ผิดตัวไปเลย (เห็น last_sweep.kind='low' แล้วสรุปว่า "ไม่มี BSL sweep"
         # ทั้งที่จริงมี BSL sweep อยู่ก่อนหน้า แค่ไม่ใช่ตัวล่าสุดสุด) — เก็บแยกทั้งสอง
         # ทิศไว้เสมอ ให้ chart_analyst_agent เลือกใช้ตัวที่ตรงกับทิศที่กำลังประเมิน
-        "last_sweep_high": _sweep_obj_by_kind(result.sweeps, "sweep_high", df),
-        "last_sweep_low":  _sweep_obj_by_kind(result.sweeps, "sweep_low", df),
+        #
+        # ใช้ pool_sweeps (จาก swing_length=15 engine) แทน result.sweeps (swing_length=50)
+        # ถ้ามีส่งมา — result.sweeps ต้องรอ swing high/low ยืนยันนาน 50 bars (~4ชม. บน M5)
+        # ก่อนจะเข้าไปอยู่ใน swing_highs/lows เลย กว่าจะ "sweep" อะไรได้ก็เป็นสวิงที่เก่าไป
+        # หลายชม.แล้ว พลาด sweep ที่กำลังเกิดจริงตอนนี้ (ตรงกับที่ Pine indicator เห็น
+        # BSL Rejected ด้วย swing length 15 เร็วกว่ามาก) — ไม่ส่งมาจะ fallback ไปใช้
+        # result.sweeps เหมือนเดิม (backward compat)
+        "last_sweep_high": _sweep_obj_by_kind(pool_sweeps if pool_sweeps is not None else result.sweeps, "sweep_high", df),
+        "last_sweep_low":  _sweep_obj_by_kind(pool_sweeps if pool_sweeps is not None else result.sweeps, "sweep_low", df),
 
         "active_ob": {
             "kind": active_ob.kind,

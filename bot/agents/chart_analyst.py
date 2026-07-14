@@ -117,10 +117,11 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     res15_pool = None
     if df15 is not None and not df15.empty:
         res15      = smc_m15.analyze(df15)
-        res15_pool = smc_pool.analyze(df15)  # swing_length=15 แยกสำหรับ BSL/SSL pool
+        res15_pool = smc_pool.analyze(df15)  # swing_length=15 แยกสำหรับ BSL/SSL pool + sweep
         m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2),
                                  pool_swing_highs=res15_pool.swing_highs,
-                                 pool_swing_lows=res15_pool.swing_lows)
+                                 pool_swing_lows=res15_pool.swing_lows,
+                                 pool_sweeps=res15_pool.sweeps)
         m15_summary["timeframe"] = "M15"
 
     # ── M5 summary ─────────────────────────────────────────────────
@@ -128,10 +129,15 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     current_price = mt5_price or round(df5['close'].iloc[-1], 2)
 
     res5      = smc.analyze(df5)
-    res5_pool = smc_pool.analyze(df5)  # swing_length=15 แยกสำหรับ BSL/SSL pool
+    res5_pool = smc_pool.analyze(df5)  # swing_length=15 แยกสำหรับ BSL/SSL pool + sweep
+    # last_sweep_high/low ใช้ res5_pool.sweeps (swing_length=15) แทน res5.sweeps
+    # (swing_length=50) — ตรงกับที่ Pine indicator เห็น "BSL Rejected" เร็วกว่ามาก
+    # เพราะไม่ต้องรอ 50 bars ยืนยัน swing high/low ก่อนถึงจะ sweep อะไรได้ — ไม่งั้น
+    # CASE F จะ sweep แต่ swing high/low เก่าเป็นชั่วโมง พลาด sweep จริงที่กำลังเกิด
     summary = summarize(res5, current_price, df5,
                          pool_swing_highs=res5_pool.swing_highs,
-                         pool_swing_lows=res5_pool.swing_lows)
+                         pool_swing_lows=res5_pool.swing_lows,
+                         pool_sweeps=res5_pool.sweeps)
     summary["pair"]         = pair
     summary["timeframe"]    = "M5"
     summary["analyzed_at"]  = now_str
