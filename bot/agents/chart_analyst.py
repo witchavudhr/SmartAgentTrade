@@ -381,6 +381,9 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # ใช้ last_sweep_high/last_sweep_low แยกทิศ (ไม่ใช่ last_sweep เดี่ยว) เพราะถ้า
     # SSL sweep เกิดทีหลัง BSL sweep, last_sweep จะทับเป็น SSL ทำให้มองไม่เห็นว่ายังมี
     # BSL sweep ที่ valid อยู่ก่อนหน้า (setup ฝั่ง SELL หายไปจาก pre-filter ทั้งที่ยังใช้ได้)
+    # user feedback: ต้องเข้าใน 1-2 แท่งแรกหลัง sweep ไม่รอ 3-4 แท่ง (ราคาวิ่งไปไกล
+    # แล้วไม่ใช่ entry ที่ดี) — ต้องตรงกับ window เดียวกับที่ chart_analyst_agent.py
+    # ใช้ตัดสินจริง ไม่งั้น pre-filter จะยัง "เห็น signal" ทั้งที่ AI จะตอบ EXPIRED แน่ๆ
     def _sweep_valid(sw: dict | None) -> bool:
         if not sw:
             return False
@@ -392,9 +395,9 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         _depth = round(abs(_lvl - _wick), 2) if (_lvl and _wick is not None) else 0
         _dist  = abs(price - _lvl) if _lvl else 9999
         _window = max(15.0, _depth * 2.5)
-        if _age is not None and _age <= 12 and _dist <= _window:
+        if _age is not None and _age <= 2 and _dist <= _window:
             return True
-        return _dist <= 10.0
+        return _age is not None and _age <= 4 and _dist <= 10.0
 
     has_sweep = _sweep_valid(smc_summary.get("last_sweep_low")) or _sweep_valid(smc_summary.get("last_sweep_high"))
 

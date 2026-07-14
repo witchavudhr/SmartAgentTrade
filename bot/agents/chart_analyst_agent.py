@@ -23,14 +23,22 @@ or explanation before or after the JSON. Do not narrate your reasoning in prose 
 inside the "vote_reasoning" JSON field. A response that starts with anything other than "{" is wrong.
 
 PATTERN PRIORITY (highest → lowest):
-0. CASE B ★★★: Price currently INSIDE an OB (in_ob=True) + rejection candle confirmed + bias not
-   conflicting → BULL_OB_ENTRY / BEAR_OB_ENTRY (conf 55-70)
-   Bull OB: bull_ob.in_ob=True + a bullish rejection candle at/in the zone + bias not bearish → BUY
-   Bear OB: bear_ob.in_ob=True + a bearish rejection candle at/in the zone + bias not bullish → SELL
-   This is the simplest, most common setup — no sweep needed, just "price sitting in a valid OB with
-   confirmation right now". Treat it as a small first-leg / pyramid entry, not a max-conviction signal.
+0. CASE B ★★★: Price INSIDE an OB right now (in_ob=True), OR price was in the OB and a rejection
+   candle just pushed it back OUT of the zone within the last 1-2 bars (RECENT BEAR/BULL OB
+   REJECTION data) → BULL_OB_ENTRY / BEAR_OB_ENTRY (conf 55-70)
+   Bull OB: bull_ob.in_ob=True (or recent bull OB rejection ≤2 bars ago) + a bullish rejection candle
+             at/in the zone → BUY
+   Bear OB: bear_ob.in_ob=True (or recent bear OB rejection ≤2 bars ago) + a bearish rejection candle
+             at/in the zone → SELL
+   This is the simplest, most common setup — no sweep needed, just "price sitting in (or just rejected
+   from) a valid OB with confirmation right now". Treat it as a small first-leg / pyramid entry, not a
+   max-conviction signal. A genuine rejection candle often WICKS through the OB and CLOSES just outside
+   it — that is still a valid CASE B, do not require in_ob=True at this exact instant if the rejection
+   candle itself is what pushed price back out.
    entry_zone = [ob.bottom, ob.top] (the OB boundaries themselves, NOT current price alone)
-   ⚠️ Only fire this when in_ob is actually True right now — do NOT use it for price merely "nearby" an OB
+   ⚠️ DO NOT require bias to agree — entering directly at an OB is counter-trend by definition (that is
+   the whole point of an OB entry). Bias conflicting is the expected, normal case here, not a red flag.
+   ⚠️ Only fire this for price in/just-rejected-from the OB — do NOT use it for price merely "nearby" an OB
    (that is CASE G/I below, which have their own displacement rules).
 1. CASE F ★★★★: BSL/SSL Sweep + Rejection → BSL_SWEEP_SELL / SSL_SWEEP_BUY (conf 75-90)
    NOTE: EQL (Equal Lows) = SSL pool; EQH (Equal Highs) = BSL pool — treat identically as CASE F
@@ -259,6 +267,9 @@ def _build_prompt(smc: dict) -> str:
     # last_sweep จะทับเป็น SSL ไปเลย ทำให้ประเมิน SELL setup (BSL_SWEEP_SELL) ผิดตัว
     # (เห็น last_sweep.kind='low' แล้วสรุปว่า "ไม่มี BSL sweep" ทั้งที่จริงมีอยู่ก่อนหน้า)
     # — ใช้ last_sweep_high สำหรับฝั่ง SELL และ last_sweep_low สำหรับฝั่ง BUY เสมอ
+    # user feedback: rejection ต้องเข้าใน 1-2 แท่งแรก แล้วตามเข้าเลย — ไม่ชอบรอ
+    # 3-4 แท่งค่อยเข้า เพราะราคาวิ่งไปไกลจากจุด sweep แล้ว ไม่ใช่ entry ที่ดีอีกต่อไป
+    # (เดิม FIRST ใช้ age<=12, SECOND ใช้ age<=48 แบบไม่จำกัด — หลวมเกินไปมาก)
     def _pullback(sw: dict) -> tuple[str, float, float, int]:
         _lvl   = sw.get("level") or 0
         _wick  = sw.get("wick_extreme") or _lvl
@@ -271,9 +282,9 @@ def _build_prompt(smc: dict) -> str:
             _status = "NONE"
         elif _age > 48:
             _status = "EXPIRED"
-        elif _age <= 12 and _dist <= _window:
+        elif _age <= 2 and _dist <= _window:
             _status = "FIRST"
-        elif _dist <= 10.0:
+        elif _age <= 4 and _dist <= 10.0:
             _status = "SECOND"
         else:
             _status = "EXPIRED"
