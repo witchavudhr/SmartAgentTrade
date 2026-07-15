@@ -336,9 +336,17 @@ class SMCEngine:
                     ob.mitigated = True
                     break
 
-        # เก็บแค่ 5 OB ล่าสุดต่อฝั่ง (เหมือน internalOrderBlocksSizeInput=5)
-        bulls = [o for o in obs if o.kind == 'bullish'][-5:]
-        bears = [o for o in obs if o.kind == 'bearish'][-5:]
+        # เก็บ OB ต่อฝั่ง — เดิม cap 5 ตัวล่าสุด "ไม่สนใจว่า mitigated หรือยัง"
+        # (เหมือน internalOrderBlocksSizeInput=5) ทำให้ OB ที่ยัง valid จริง (ไม่
+        # เคยโดนราคาทะลุ bottom เลย) หลุดจาก list ไปเงียบๆ ถ้ามี OB ใหม่เกิดตามมา
+        # อีก 5 ตัว (ง่ายมากในตลาด choppy ที่มี BOS/CHoCH ถี่) ทั้งที่ยังไม่เคย
+        # mitigated เลยจริงๆ — เก็บ unmitigated ทั้งหมด (bound ไว้ 20 กันบวมไม่
+        # จำกัด) ไม่ให้ cap ตัดตัวที่ยัง valid ทิ้งไปก่อน แค่ mitigated แล้วค่อย cap
+        # แน่นๆ (แค่ไว้อ้างอิงบริบทประวัติ ไม่ได้ใช้เทรดต่อแล้ว)
+        _bulls_all = [o for o in obs if o.kind == 'bullish']
+        _bears_all = [o for o in obs if o.kind == 'bearish']
+        bulls = [o for o in _bulls_all if not o.mitigated][-20:] + [o for o in _bulls_all if o.mitigated][-3:]
+        bears = [o for o in _bears_all if not o.mitigated][-20:] + [o for o in _bears_all if o.mitigated][-3:]
         return bulls + bears
 
     # ─── Fair Value Gaps ─────────────────────────────────────────
