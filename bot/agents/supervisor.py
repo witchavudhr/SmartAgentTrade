@@ -199,6 +199,16 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     _watch = [(lbl, d) for lbl, d in _watchlist_candidates(smc_summary) if 0 <= d <= 100]
     _approach_lbl = min(_watch, key=lambda x: x[1])[0] if _watch else None
 
+    # ถ้าราคาเพิ่งลงไปแตะ OB แล้วเด้งออกมาแล้วจริงๆ (recent_bear/bull_ob_rejection
+    # มีข้อมูล) label ต้องบอกว่า "โดน rejection ไปแล้ว" ไม่ใช่ "กำลังเข้าใกล้"
+    # (ซึ่งฟังดูเหมือนยังไม่ถึง ทั้งที่จริงราคาไปถึงและเด้งกลับมาแล้ว)
+    _bear_rej_lbl = smc_summary.get("recent_bear_ob_rejection")
+    _bull_rej_lbl = smc_summary.get("recent_bull_ob_rejection")
+    _rejected_lbl = (
+        "BEAR_OB_REJECTED" if _bear_rej_lbl else
+        "BULL_OB_REJECTED" if _bull_rej_lbl else None
+    )
+
     # swing_signal (จาก detect_swing_entry — ใช้ sweep สดของตัวเอง ≤3-5 แท่ง) มาก่อน
     # sweep label เสมอ เพราะ sweep_signal สดกว่าและตรงกับ trigger จริงมากกว่า
     result["smc_setup"] = (
@@ -206,6 +216,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
         or (_fresh_sweep_kind and f"SWEEP_{_fresh_sweep_kind}")
         or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
+        or _rejected_lbl
         or _approach_lbl
         or "SIGNAL"
     )

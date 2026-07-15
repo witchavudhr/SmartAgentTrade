@@ -71,10 +71,16 @@ PATTERN PRIORITY (highest → lowest):
 CRITICAL RULES:
 - NO_TRADE FOCUS: when voting NO_TRADE, do not just repeat that sweep/pullback statuses are EXPIRED —
   that only explains why the LAST setup died, it does not tell the user what to actually watch for next.
-  Check the ORDER BLOCKS data: if price is approaching (within ~100pts, not yet inside) an unmitigated
-  Bull OB or Bear OB in the direction it is currently moving, vote_reasoning MUST name that OB's level
-  and the remaining distance to it — that is the more useful, forward-looking thing to watch than
-  restating why an old, already-dead sweep expired.
+  ⚠️ FIRST check RECENT BEAR/BULL OB REJECTION in the data — if present, price has ALREADY dipped into
+  that OB and bounced back out. Do NOT describe this as "approaching" or state a current distance from
+  the OB as if it hasn't been touched yet — say explicitly that price already tested the zone (bars_ago)
+  and bounced, and explain why that specific test wasn't good enough to trigger a signal (e.g. rejection
+  candle too weak, momentum still against it, RR from that level too small) — that is a materially
+  different, more accurate statement than "still approaching, X pts away".
+  Only if there is NO recent OB rejection: check the ORDER BLOCKS data — if price is approaching
+  (within ~100pts, not yet inside) an unmitigated Bull OB or Bear OB in the direction it is currently
+  moving, vote_reasoning MUST name that OB's level and the remaining distance to it — that is the more
+  useful, forward-looking thing to watch than restating why an old, already-dead sweep expired.
 - PULLBACK VALIDITY: SELL pullback close must stay BELOW rejection high; BUY must stay ABOVE rejection low → if violated = INVALIDATED → NO_TRADE
 - CHASING CHECK (for OB_REJECTION and STORED_OB_PULLBACK setups): these setups require price to be
   RETURNING toward the OB for a genuine retest, not continuing to run away from it. If momentum_bear=True
