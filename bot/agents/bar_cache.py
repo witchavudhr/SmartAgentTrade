@@ -199,28 +199,35 @@ def get_extended_history(df_mt5: pd.DataFrame, max_days: int = 45) -> pd.DataFra
     โดยใช้ cache ที่สะสมไว้ — สำหรับหา weekly/monthly BSL/SSL pool เก่าที่ยังไม่
     ถูก sweep (pool ที่ MT5 bulk fetch มองไม่เห็นเพราะจำกัดแค่ 2016 แท่ง)
 
-    df_mt5 (7 วันล่าสุด, สดที่สุด) เป็นตัวหลักเสมอ — cache เติมแค่ส่วนที่เก่ากว่า
-    ขอบเขตล่างของ df_mt5 เท่านั้น (ไม่ทับข้อมูลสดของรอบนี้)
+    df_mt5 (7 วันล่าสุด, สดที่สุด) เป็นตัวหลักเสมอสำหรับ timestamp ที่มีอยู่จริง
+    — แต่ MT5 copy_rates_* มี gap ประจำ 06:50-08:00 ทุกวันสำหรับ XAUUSD (ตามที่
+    เขียนไว้บนสุดของไฟล์นี้) ซึ่งทำให้ pivot/swing detection (ที่พึ่ง positional
+    window ต่อเนื่อง) พลาด swing high/low จริงที่เกิดใกล้ๆ ช่วง gap นั้นไปเงียบๆ
+    เดิม cache ถูกใช้แค่ "ต่อขยายย้อนหลัง" เกิน 7 วันเท่านั้น ไม่เคยถูกใช้ "เติม
+    ช่องว่าง" ภายในหน้าต่าง 7 วันล่าสุดเลย ทั้งที่ cache เก็บแท่งจาก live scan
+    ไว้แบบไม่มี gap (ยกเว้นช่วงที่บอทดับจริงๆ) — เติมจาก cache ทุก timestamp ที่
+    MT5 fetch รอบนี้ไม่มีให้ครบ ไม่ใช่แค่ก่อน df_mt5.index.min() อีกต่อไป
     """
     if df_mt5 is None or df_mt5.empty:
         return df_mt5
     try:
-        import datetime as _dt
         cutoff_start = (df_mt5.index.min() - pd.Timedelta(days=max_days)).strftime("%Y-%m-%d %H:%M:%S")
-        cutoff_end   = df_mt5.index.min().strftime("%Y-%m-%d %H:%M:%S")
-        older = load_range(cutoff_start, cutoff_end)
-        if older.empty:
+        cutoff_end   = df_mt5.index.max().strftime("%Y-%m-%d %H:%M:%S")
+        cached = load_range(cutoff_start, cutoff_end)
+        if cached.empty:
             return df_mt5
-        older = older.set_index("time").rename(columns={"volume": "volume"})[
-            ["open", "high", "low", "close", "volume"]
-        ]
-        older = older[older.index < df_mt5.index.min()]  # กันซ้อนกับ df_mt5
-        if older.empty:
+        cached = cached.set_index("time")[["open", "high", "low", "close", "volume"]]
+        # เติมเฉพาะ timestamp ที่ df_mt5 "ไม่มี" (gap จริง) — timestamp ที่ซ้ำกัน
+        # ให้ df_mt5 (สดกว่า) ชนะเสมอ ไม่ใช่แค่กันซ้อนก่อน min() แบบเดิม
+        missing = cached[~cached.index.isin(df_mt5.index)]
+        if missing.empty:
             return df_mt5
-        extended = pd.concat([older, df_mt5]).sort_index()
+        extended = pd.concat([missing, df_mt5]).sort_index()
+        _gap_fill = missing[missing.index >= df_mt5.index.min()]
         print(
-            f"[bar_cache] 📚 extended history: +{len(older)} bar(s) จาก cache "
-            f"({older.index.min()} .. {older.index.max()}) รวมเป็น {len(extended)} แท่ง"
+            f"[bar_cache] 📚 extended history: +{len(missing)} bar(s) จาก cache "
+            f"({missing.index.min()} .. {missing.index.max()}) รวมเป็น {len(extended)} แท่ง"
+            + (f" — รวม {len(_gap_fill)} bar(s) เติม gap ภายในหน้าต่าง MT5 เอง" if not _gap_fill.empty else "")
         )
         return extended
     except Exception as e:
