@@ -3333,11 +3333,11 @@ async def poll_dashboard_scan(ctx: ContextTypes.DEFAULT_TYPE):
     """Poll dashboard every 5s — if 'Scan Now' was clicked, run real supervisor.run()."""
     global _dashboard_scan_running
 
-    # ข้ามนอก session window 06:30-19:00 Thai time
+    # ข้ามนอก session window 06:00-19:00 Thai time
     from datetime import timezone as _tz, timedelta as _tdd
     _now_th = datetime.now(tz=_tz(_tdd(hours=7)))
     _mins_now = _now_th.hour * 60 + _now_th.minute
-    if not (6 * 60 + 30 <= _mins_now < 19 * 60):
+    if not (6 * 60 <= _mins_now < 19 * 60):
         return
 
     if _dashboard_scan_running:
@@ -3738,10 +3738,10 @@ def run():
         now_th = datetime.now(tz=_THAI_TZ_RUN)
         _time_str = now_th.strftime("%H:%M")
         print(f"[scheduler] ⏰ {_time_str} — _auto_scan_15min fired")
-        # เทรดเฉพาะ 06:30-19:00 (ตัดสินใจไว้แล้ว — เดิม gate 06:00-23:00 กว้างเกิน)
+        # เทรดเฉพาะ 06:00-19:00 (เดิมเคยแคบเป็น 06:30 แล้วปรับกลับมา 06:00 ตามคำขอ)
         _mins_now = now_th.hour * 60 + now_th.minute
-        if not (6 * 60 + 30 <= _mins_now < 19 * 60):
-            print(f"[scheduler] 💤 off-hours (นอกช่วง 06:30-19:00), skip")
+        if not (6 * 60 <= _mins_now < 19 * 60):
+            print(f"[scheduler] 💤 off-hours (นอกช่วง 06:00-19:00), skip")
             return
         if not bot_state.get("is_running", True):
             print(f"[scheduler] ⛔ is_running=False, skip")

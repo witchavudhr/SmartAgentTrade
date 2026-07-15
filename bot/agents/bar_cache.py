@@ -124,7 +124,7 @@ def resample_m15(df_m5: pd.DataFrame) -> pd.DataFrame:
     return m15
 
 
-def today_summary(date_str: str, session_start: str = "06:30", session_end: str = None) -> dict:
+def today_summary(date_str: str, session_start: str = "06:00", session_end: str = None) -> dict:
     """
     สรุปข้อมูลของวันนี้ที่สะสมไว้ — ใช้ตอบคำสั่ง Telegram
     คืน dict: m5_count, m15_count, first_time, last_time, gaps (list), expected_start
