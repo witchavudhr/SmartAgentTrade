@@ -3496,6 +3496,17 @@ async def auto_scan(ctx: ContextTypes.DEFAULT_TYPE):
     # (กัน crash ทั้ง auto_scan ถ้า Markdown parse พัง — เจอจริงจาก log)
     _bot_send = lambda t, **kw: ctx.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=t, **kw)
 
+    # ── ข้ามทั้ง scan ถ้ามีไม้เปิดอยู่แล้ว ──────────────────────
+    # supervisor.run() เรียก Chart/Bias/News Sonnet เต็มรูปแบบทุกครั้งไม่ว่าจะมี
+    # ไม้เปิดอยู่หรือไม่ก็ตาม — เดิม existing_trade เช็คแค่ "หลัง" ได้ result กลับ
+    # มาแล้ว (เพื่อตัดสินใจว่าจะ pyramid หรือบล็อกสวนทาง) ทำให้เสียเงินเรียก AI
+    # ไปแล้วทุกรอบไม่ว่าผลจะออกมายังไง ทั้งที่ pyramid logic เองก็ไม่ค่อยทำงาน —
+    # ถ้ามีไม้เปิดอยู่ ข้ามทั้ง scan ไปเลย ไม่เรียก AI จนกว่าไม้จะปิด
+    _ot_gate = bot_state.get("open_trade")
+    if _ot_gate:
+        print(f"[auto_scan] 🔒 มีไม้ {_ot_gate.get('direction','?')} #{_ot_gate.get('trade_id','?')} เปิดอยู่ — ข้าม scan ทั้งหมด")
+        return
+
     # ── ข้ามถ้ามีข่าว High Impact ──────────────────────
     blocked, block_reason = news_scout.should_block_trade()
     if blocked:

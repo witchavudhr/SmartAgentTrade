@@ -400,18 +400,18 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
                 # _prox_pts > 0  = ราคายังอยู่เหนือ ob_top (กำลังเข้าใกล้ แต่ยังไม่ถึง)
                 # _prox_pts <= 0 = ราคาอยู่ใน/ต่ำกว่า OB แล้ว (valid rejection) → ไม่ filter
                 _prox_pts = round(_cur_px - _ob_t, 1)
-                if 0 < _prox_pts < 15:
+                if 0 < _prox_pts < 25:
                     _too_close = True
             else:
                 # _prox_pts > 0  = ราคายังอยู่ต่ำกว่า ob_bottom (กำลังเข้าใกล้ แต่ยังไม่ถึง)
                 # _prox_pts <= 0 = ราคาอยู่ใน/เหนือ OB แล้ว (valid rejection) → ไม่ filter
                 _prox_pts = round(_ob_b - _cur_px, 1)
-                if 0 < _prox_pts < 15:
+                if 0 < _prox_pts < 25:
                     _too_close = True
             if _too_close:
                 result["reject_reason"] = (
                     f"OB ใกล้เกินไป — ราคา {_cur_px} ห่าง OB {_ob_b}–{_ob_t} แค่ {_prox_pts} pts "
-                    f"(ต้องการ ≥15 pts เพื่อให้มี displacement พอก่อน rejection)\n"
+                    f"(ต้องการ ≥25 pts เพื่อให้มี displacement พอก่อน rejection)\n"
                     f"รอ OB ที่ไกลกว่าหรือรอ setup ใหม่"
                 )
                 return result

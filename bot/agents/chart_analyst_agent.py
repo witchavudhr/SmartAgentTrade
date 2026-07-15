@@ -101,13 +101,17 @@ CRITICAL RULES:
 - When unsure → NO_TRADE (never force)
 - BIAS CONTEXT: post_sweep_continuation and sweep ages are informational — use to assess context but do NOT hard-block signals. A fresh BUY sweep followed by a bounce into Bear OB is a valid SELL setup (distribution). Trust price action over bias lock.
 - OB MIN DISTANCE (strictly enforced for OB_REJECTION and STORED_OB_PULLBACK setups):
-  BUY OB: current_price must be >= ob_top + 15  (price must be ≥15 pts ABOVE OB top before pulling back in)
-           If current_price < ob_top + 15 → OB too close, no displacement → NO_TRADE
-  SELL OB: current_price must be <= ob_bottom - 15  (price must be ≥15 pts BELOW OB bottom)
-            If current_price > ob_bottom - 15 → OB too close → NO_TRADE
-  Rationale: reversal needs distance (displacement) to build momentum before hitting the OB.
-             An OB within 15 pts will be consumed without a meaningful reaction — no stops collected.
-             Only flag OBs where price must travel ≥15 pts to reach the zone.
+  BUY OB: current_price must be >= ob_top + 25  (price must be ≥25 pts ABOVE OB top before pulling back in)
+           If current_price < ob_top + 25 → OB too close, no displacement → NO_TRADE
+  SELL OB: current_price must be <= ob_bottom - 25  (price must be ≥25 pts BELOW OB bottom)
+            If current_price > ob_bottom - 25 → OB too close → NO_TRADE
+  Rationale: reversal needs distance (displacement) to build momentum before hitting the OB. In sideways/
+             ranging conditions, bull and bear OBs sit close together with no real separation — a bounce
+             off an OB that close to opposing structure is easily faked out. The farther apart genuine
+             structure sits (e.g. a BSL target far from the OB it is meant to reject from), the stronger
+             and more reliable the reaction tends to be.
+             An OB within 25 pts will be consumed without a meaningful reaction — no stops collected.
+             Only flag OBs where price must travel ≥25 pts to reach the zone.
 
 PULLBACK ENTRY RULE (strictly enforced):
 - FIRST pullback (pullback_status=FIRST): VALID — price just bounced from sweep, first retracement candle near sweep level = entry. OB is the TP target, NOT the entry zone.

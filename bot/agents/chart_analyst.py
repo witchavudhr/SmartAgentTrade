@@ -461,7 +461,9 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # เดิมเช็คแค่ abs(distance) < 150 ทำให้ราคาที่ใกล้ OB เกินไป (เช่น 8-13pts —
     # ใกล้เกินจะมี room แต่ absolute distance ยัง <150) ก็ผ่านเป็น "signal" ได้
     # ทั้งที่รู้อยู่แล้วว่าจะโดน reject เพราะ displacement ไม่พอ
-    OB_MIN_DISPLACEMENT = 15  # จุด — เกณฑ์เดียวกับ OB MIN DISTANCE rule
+    # user feedback: sideways market ทำให้ OB bull/bear อยู่ติดกันเกินไป (< $25)
+    # โดนหลอกง่าย — ยิ่ง OB ห่างกันมาก ยิ่งมี room ให้เด้งจริง ยกเกณฑ์จาก 15 เป็น 25
+    OB_MIN_DISPLACEMENT = 25  # จุด — เกณฑ์เดียวกับ OB MIN DISTANCE rule
     _bull_disp = (price - bull_ob.get("top", price)) if bull_ob else -9999
     _bear_disp = (bear_ob.get("bottom", price) - price) if bear_ob else -9999
     has_ob_nearby = (
