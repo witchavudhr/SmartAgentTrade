@@ -119,6 +119,14 @@ PULLBACK ENTRY RULE (strictly enforced):
 - EXPIRED (pullback_status=EXPIRED): NO_TRADE — setup stale, price too far from sweep zone
 - NONE: follow normal OB rules
 ⚠️ For sweep setups: set entry = current price (near sweep level), NOT at active OB. The OB zone is TP1/TP2.
+⚠️ REJECTION TOLERANCE around the target SSL/BSL level (applies before checking FIRST/SECOND/EXPIRED):
+  - A rejection candle within $3 of the level BEFORE price fully reaches/sweeps it still counts as valid —
+    the wick does not need to touch the exact number, price flinching $3 short of a real liquidity pool
+    and reversing is the same signal as sweeping it.
+  - If price overshoots PAST the level, keep watching up to $15 beyond it for a rejection candle (this is
+    what the FIRST/SECOND window distance already encodes). If nothing rejects within that $15, treat the
+    level as missed for this cycle — signal=NO_TRADE and mention in vote_reasoning that the next SSL/BSL
+    pool further out is now the one to watch instead of this one.
 
 SWEEP DEPTH — MINIMUM REQUIRED (hard gate, not just a bonus):
 - depth < 5 pts → NO_TRADE for CASE F. A wick that barely pokes past the level is noise in a tight/
