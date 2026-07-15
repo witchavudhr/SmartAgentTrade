@@ -154,6 +154,26 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _fresh_sweep_kind = "HIGH"
     elif (_sw_low.get("age_bars") if _sw_low.get("age_bars") is not None else 999) <= 48:
         _fresh_sweep_kind = "LOW"
+    # ไม่มี layer ไหนใน has_signal()/smc_setup เดิมรู้จัก "ราคากำลังเข้าใกล้ OB"
+    # เลย (มีแค่ CASE B ที่ต้อง in_ob=True หรือเพิ่ง rejection ≤2 bars) — ทำให้
+    # เคสที่ราคาไหลลงมาเรื่อยๆ ใกล้ Bull OB แต่ยังไม่ถึง ตกไปอยู่ label "SIGNAL"
+    # เฉยๆ ไม่บอกอะไรเลยว่ากำลังโฟกัสอะไรอยู่ — เพิ่ม APPROACHING_BULL/BEAR_OB
+    # ให้ label สื่อความหมายจริง (≤100pts จาก OB ที่ยังไม่ถูก mitigate)
+    _m15_lbl     = smc_summary.get("m15") or {}
+    _bull_ob_lbl = _m15_lbl.get("active_bull_ob") or smc_summary.get("active_bull_ob") or {}
+    _bear_ob_lbl = _m15_lbl.get("active_bear_ob") or smc_summary.get("active_bear_ob") or {}
+    _px_lbl      = smc_summary.get("current_price")
+    _approach_lbl = None
+    if _px_lbl is not None:
+        _bull_top = _bull_ob_lbl.get("top")
+        _bear_bot = _bear_ob_lbl.get("bottom")
+        _bull_dist = (_px_lbl - _bull_top) if (_bull_top is not None and _px_lbl >= _bull_top) else None
+        _bear_dist = (_bear_bot - _px_lbl) if (_bear_bot is not None and _px_lbl <= _bear_bot) else None
+        if _bull_dist is not None and 0 <= _bull_dist <= 100 and (_bear_dist is None or _bull_dist <= _bear_dist):
+            _approach_lbl = "APPROACHING_BULL_OB"
+        elif _bear_dist is not None and 0 <= _bear_dist <= 100:
+            _approach_lbl = "APPROACHING_BEAR_OB"
+
     # swing_signal (จาก detect_swing_entry — ใช้ sweep สดของตัวเอง ≤3-5 แท่ง) มาก่อน
     # sweep label เสมอ เพราะ sweep_signal สดกว่าและตรงกับ trigger จริงมากกว่า
     result["smc_setup"] = (
@@ -161,6 +181,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
         or (_fresh_sweep_kind and f"SWEEP_{_fresh_sweep_kind}")
         or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
+        or _approach_lbl
         or "SIGNAL"
     )
     result["current_price"] = smc_summary.get("current_price")
