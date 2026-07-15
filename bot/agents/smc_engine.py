@@ -851,16 +851,24 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
             bear_candle = True
 
     # ── Sweep Age (ทะลุ 20-bar high/low ใน 3 บาร์ที่ผ่านมา) ──
+    # user feedback: sideways/ranging price ทำให้ bull_score/bear_score ของ
+    # detect_swing_entry() แกว่งไปมา (SWING_BUY/SWING_SELL สลับกันทุก scan) เพราะ
+    # กลไกนี้ไม่มี minimum depth เลย — แค่ low/high ทะลุ 20-bar extreme ไปนิดเดียว
+    # (แม้ $0.01) ก็นับเป็น sweep ได้ ต่างจาก CASE F ที่บังคับ MIN_SWEEP_DEPTH=5
+    # ไปแล้ว — เพิ่ม depth check แบบเดียวกันตรงนี้ด้วย กัน noise ระดับนี้ผสมเข้าไป
+    # ใน swing_signal ทำให้ smc_setup label กระโดดไปมาจน reject cooldown (ที่ key
+    # ด้วย label) ใช้งานไม่ได้ผล เรียก AI ซ้ำๆ ทุก 15-20 นาทีบน setup ที่ตายแล้ว
+    _MIN_SWEEP_DEPTH_ADV = 5.0
     lb = min(20, n - 1)
     sweep_l_age = sweep_h_age = 999
     for i in range(1, min(4, n)):
         lo = df['low'].iloc[-(lb + i):-i].min() if n > lb + i else df['low'].iloc[:-i].min()
-        if df['low'].iloc[-i] < lo:
+        if df['low'].iloc[-i] < lo - _MIN_SWEEP_DEPTH_ADV:
             sweep_l_age = i
             break
     for i in range(1, min(4, n)):
         hi = df['high'].iloc[-(lb + i):-i].max() if n > lb + i else df['high'].iloc[:-i].max()
-        if df['high'].iloc[-i] > hi:
+        if df['high'].iloc[-i] > hi + _MIN_SWEEP_DEPTH_ADV:
             sweep_h_age = i
             break
 
@@ -895,7 +903,7 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
         for _z in _sup_zones:
             for _i in range(1, _check_bars + 1):
                 _bar = df.iloc[-_i]
-                if _bar['low'] < _z['price_low'] and _bar['close'] >= _z['price_low']:
+                if _bar['low'] < _z['price_low'] - _MIN_SWEEP_DEPTH_ADV and _bar['close'] >= _z['price_low']:
                     zone_sweep_bull       = True
                     zone_sweep_bull_age   = _i - 1
                     zone_sweep_bull_level = _z['mid']
@@ -906,7 +914,7 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
         for _z in _res_zones:
             for _i in range(1, _check_bars + 1):
                 _bar = df.iloc[-_i]
-                if _bar['high'] > _z['price_high'] and _bar['close'] <= _z['price_high']:
+                if _bar['high'] > _z['price_high'] + _MIN_SWEEP_DEPTH_ADV and _bar['close'] <= _z['price_high']:
                     zone_sweep_bear       = True
                     zone_sweep_bear_age   = _i - 1
                     zone_sweep_bear_level = _z['mid']
