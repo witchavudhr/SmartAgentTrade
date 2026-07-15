@@ -168,15 +168,21 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             return []
         cands: list[tuple[str, float]] = []
 
-        _m15w    = smc.get("m15") or {}
-        _bull_ob = _m15w.get("active_bull_ob") or smc.get("active_bull_ob") or {}
-        _bear_ob = _m15w.get("active_bear_ob") or smc.get("active_bear_ob") or {}
-        _bull_top = _bull_ob.get("top")
-        _bear_bot = _bear_ob.get("bottom")
-        if _bull_top is not None and price >= _bull_top:
-            cands.append(("APPROACHING_BULL_OB", price - _bull_top))
-        if _bear_bot is not None and price <= _bear_bot:
-            cands.append(("APPROACHING_BEAR_OB", _bear_bot - price))
+        # เช็คทั้ง M5 และ M15 OB แล้วเอาตัวที่ระยะห่างน้อยสุดจริง — เดิม preferred
+        # M15 ก่อนเสมอ (ถ้ามี) ทำให้พลาดเคสที่ M5 OB ใกล้กว่า M15 OB จริงๆ (เช่น
+        # M15 Bull OB top=4024.38 ห่างกว่า M5 Bull OB top=4028.97 แต่ยังไปเลือก
+        # M15 มาเทียบกับ Bear OB ทำให้ผลออกมาว่า Bear OB ใกล้กว่าทั้งที่ไม่จริง)
+        _m15w = smc.get("m15") or {}
+        _bull_tops = [ob.get("top") for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"))
+                      if ob and ob.get("top") is not None]
+        _bear_bots = [ob.get("bottom") for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"))
+                      if ob and ob.get("bottom") is not None]
+        _valid_bull_tops = [t for t in _bull_tops if price >= t]
+        _valid_bear_bots = [b for b in _bear_bots if price <= b]
+        if _valid_bull_tops:
+            cands.append(("APPROACHING_BULL_OB", price - max(_valid_bull_tops)))
+        if _valid_bear_bots:
+            cands.append(("APPROACHING_BEAR_OB", min(_valid_bear_bots) - price))
 
         _liqw = smc.get("liquidity") or {}
         _ssl_raw = _liqw.get("nearest_ssl")
