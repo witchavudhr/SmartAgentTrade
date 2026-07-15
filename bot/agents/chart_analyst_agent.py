@@ -69,6 +69,14 @@ PATTERN PRIORITY (highest → lowest):
 7. CASE K ★★:   CHoCH + Sweep → Reversal → CHOCH_SWEEP_SELL/BUY (conf 65-80)
 
 CRITICAL RULES:
+- CASE B BIAS/STRUCTURE IMMUNITY (strictly enforced, repeated here because it keeps getting missed):
+  for BULL_OB_ENTRY / BEAR_OB_ENTRY specifically, NEVER vote NO because of bearish/bullish bias,
+  BOS direction, or CHoCH structure direction. An OB entry is counter-trend BY DEFINITION — bias and
+  structure will ALWAYS look like they disagree with it, every single time, with no exception. That is
+  not new information, it is not a red flag, and it must never appear in vote_reasoning as a reason to
+  reject CASE B. If price is in_ob=True (or a rejection just pushed it out ≤2 bars ago) with a genuine
+  rejection candle, that is sufficient — the ONLY valid reasons to vote NO on CASE B are: no rejection
+  candle actually present, OB already mitigated, or SL/TP math fails RR≥1.5.
 - NO_TRADE FOCUS: when voting NO_TRADE, do not just repeat that sweep/pullback statuses are EXPIRED —
   that only explains why the LAST setup died, it does not tell the user what to actually watch for next.
   ⚠️ FIRST check RECENT BEAR/BULL OB REJECTION in the data — if present, price has ALREADY dipped into
