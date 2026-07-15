@@ -2212,9 +2212,15 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             _bear_rej = None
             _bull_rej = None
 
-            if active_bear_ob:
-                _ob_bot = active_bear_ob.bottom
-                _ob_top = active_bear_ob.top
+            # เช็คทุก non-mitigated Bear/Bull OB (ไม่ใช่แค่ active_bear/bull_ob ตัว
+            # เดียว) — active_bull_ob เลือกใหม่ทุก scan จาก current_price สดๆ
+            # (MIN_DEP filter + "closest OB") ทำให้ scan ติดกันแค่ไม่กี่นาทีอาจ
+            # เลือกคนละ OB กันได้ถ้ามี OB ใกล้เคียงกันหลายตัว (เช่น 4014-4019 กับ
+            # 4023-4028) — ถ้า rejection เกิดที่ OB ตัวหนึ่งแต่ scan รอบนั้นดัน
+            # active_bull_ob ชี้ไปอีกตัว การเช็คจะพลาด touch ที่เกิดขึ้นจริงไปเลย
+            # วนดูทุกตัวแทน แล้วเอา rejection ที่ bars_ago น้อยสุด (สดสุด)
+            for _bo in _bear_obs:
+                _ob_bot, _ob_top = _bo.bottom, _bo.top
                 for _i, _row in _recent.iterrows():
                     if _row['high'] >= _ob_bot:          # wick/body แตะ Bear OB
                         _this_bear = _row['close'] < _row['open']
@@ -2224,16 +2230,17 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
                             _next_bear = (_nxt['close'] < _nxt['open']
                                           and _nxt['close'] < _ob_bot)
                         if _this_bear or _next_bear:
-                            _bear_rej = {
+                            _cand = {
                                 "ob_zone": [round(_ob_bot, 2), round(_ob_top, 2)],
                                 "bars_ago": int(_lookback - 1 - _i),
                                 "direction": "SELL",
                             }
-                            break
+                            if _bear_rej is None or _cand["bars_ago"] < _bear_rej["bars_ago"]:
+                                _bear_rej = _cand
+                        break
 
-            if active_bull_ob:
-                _ob_bot = active_bull_ob.bottom
-                _ob_top = active_bull_ob.top
+            for _bo in _bull_obs:
+                _ob_bot, _ob_top = _bo.bottom, _bo.top
                 for _i, _row in _recent.iterrows():
                     if _row['low'] <= _ob_top:           # wick/body แตะ Bull OB
                         _this_bull = _row['close'] > _row['open']
@@ -2243,12 +2250,14 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
                             _next_bull = (_nxt['close'] > _nxt['open']
                                           and _nxt['close'] > _ob_top)
                         if _this_bull or _next_bull:
-                            _bull_rej = {
+                            _cand = {
                                 "ob_zone": [round(_ob_bot, 2), round(_ob_top, 2)],
                                 "bars_ago": int(_lookback - 1 - _i),
                                 "direction": "BUY",
                             }
-                            break
+                            if _bull_rej is None or _cand["bars_ago"] < _bull_rej["bars_ago"]:
+                                _bull_rej = _cand
+                        break
 
             summary["recent_bear_ob_rejection"] = _bear_rej
             summary["recent_bull_ob_rejection"] = _bull_rej
