@@ -85,10 +85,14 @@ CRITICAL RULES:
   and bounced, and explain why that specific test wasn't good enough to trigger a signal (e.g. rejection
   candle too weak, momentum still against it, RR from that level too small) — that is a materially
   different, more accurate statement than "still approaching, X pts away".
-  Only if there is NO recent OB rejection: check the ORDER BLOCKS data — if price is approaching
-  (within ~100pts, not yet inside) an unmitigated Bull OB or Bear OB in the direction it is currently
-  moving, vote_reasoning MUST name that OB's level and the remaining distance to it — that is the more
-  useful, forward-looking thing to watch than restating why an old, already-dead sweep expired.
+  Only if there is NO recent OB rejection: check BOTH the ORDER BLOCKS data (Bull OB / Bear OB) AND the
+  LIQUIDITY data (SSL / BSL pool levels) — compute the distance from current price to each of the four,
+  and name whichever ONE is actually closest as the thing to watch (with its level and exact distance).
+  ⚠️ Do not default to describing the OB just because CASE B is the highest-priority pattern — if the
+  nearest SSL/BSL liquidity pool is closer than either OB, that is the more relevant thing to mention,
+  not the OB. Naming an OB that is farther away than an unmentioned closer SSL/BSL pool is misleading:
+  the user has no way to tell from your text why a completely different level shows up elsewhere as the
+  "closest" reference. Whichever of the four is nearest is what belongs in vote_reasoning.
 - PULLBACK VALIDITY: SELL pullback close must stay BELOW rejection high; BUY must stay ABOVE rejection low → if violated = INVALIDATED → NO_TRADE
 - CHASING CHECK (for OB_REJECTION and STORED_OB_PULLBACK setups): these setups require price to be
   RETURNING toward the OB for a genuine retest, not continuing to run away from it. If momentum_bear=True
