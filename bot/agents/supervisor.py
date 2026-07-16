@@ -157,6 +157,12 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     _sw_low  = smc_summary.get("last_sweep_low") or {}
     _price_lbl = smc_summary.get("current_price")
 
+    # user feedback: sweep depth 0.93pts (< MIN_SWEEP_DEPTH=5 ที่ใช้ทุกที่อื่นใน
+    # ระบบ) ยังโผล่เป็น label "SWEEP_LOW" ได้ เพราะ _sweep_label_ok เดิมเช็คแค่
+    # age+distance ไม่เคยเช็ค depth เลย — sweep ตื้นแบบนี้ไม่ควรถือว่าเป็น signal
+    # เดียวกับ CASE F ตั้งแต่แรก ต้องเช็ค depth ให้ตรงกับเกณฑ์เดียวกันทั้งระบบ
+    _MIN_SWEEP_DEPTH_LBL = 5.0
+
     def _sweep_label_ok(sw: dict) -> bool:
         if not sw or _price_lbl is None:
             return False
@@ -164,6 +170,9 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         if _age is not None and _age > 100:
             return False
         _lvl = sw.get("level")
+        _wick = sw.get("wick_extreme")
+        if _lvl is not None and _wick is not None and abs(_lvl - _wick) < _MIN_SWEEP_DEPTH_LBL:
+            return False
         if _lvl is None:
             return _age is not None and _age <= 48
         return abs(_price_lbl - _lvl) <= 20
