@@ -224,11 +224,29 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # ถ้าราคาเพิ่งลงไปแตะ OB แล้วเด้งออกมาแล้วจริงๆ (recent_bear/bull_ob_rejection
     # มีข้อมูล) label ต้องบอกว่า "โดน rejection ไปแล้ว" ไม่ใช่ "กำลังเข้าใกล้"
     # (ซึ่งฟังดูเหมือนยังไม่ถึง ทั้งที่จริงราคาไปถึงและเด้งกลับมาแล้ว)
+    # แต่ต้องเช็คด้วยว่าราคา "ยังอยู่ใกล้ zone นั้นจริง" (≤$5 ตามที่ตกลงกันไว้กับ
+    # APPROACHING_* ทุกตัว) ไม่งั้น rejection ที่เกิดไปแล้วแต่ราคาวิ่งหนีไปไกลมาก
+    # (เช่น 15pts+) จะยังโผล่เป็น label หลักอยู่ ทั้งที่ไม่เกี่ยวกับสถานการณ์ตอนนี้แล้ว
+    _px_rej = smc_summary.get("current_price")
+
+    def _rej_still_near(rej: dict | None) -> bool:
+        if not rej or _px_rej is None:
+            return False
+        _zone = rej.get("ob_zone")
+        if not isinstance(_zone, list) or len(_zone) != 2:
+            return True  # ไม่มีข้อมูล zone พอเช็ค ไม่กรองเกินจำเป็น
+        _lo, _hi = _zone
+        if _px_rej < _lo:
+            return (_lo - _px_rej) <= 5
+        if _px_rej > _hi:
+            return (_px_rej - _hi) <= 5
+        return True  # ราคาอยู่ใน zone เลย ใกล้แน่นอน
+
     _bear_rej_lbl = smc_summary.get("recent_bear_ob_rejection")
     _bull_rej_lbl = smc_summary.get("recent_bull_ob_rejection")
     _rejected_lbl = (
-        "BEAR_OB_REJECTED" if _bear_rej_lbl else
-        "BULL_OB_REJECTED" if _bull_rej_lbl else None
+        "BEAR_OB_REJECTED" if (_bear_rej_lbl and _rej_still_near(_bear_rej_lbl)) else
+        "BULL_OB_REJECTED" if (_bull_rej_lbl and _rej_still_near(_bull_rej_lbl)) else None
     )
 
     # user feedback (หลักการทั่วไป): OB/SSL/BSL สำคัญที่สุดเสมอ เพราะคือจุดกลับตัว
