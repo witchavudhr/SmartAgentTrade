@@ -57,16 +57,31 @@ _reject_cache: dict = {}
 # cooldown เพิ่มอีกชั้น — ราคานิ่งจริงก็ข้าม AI call ได้แม้ label จะเปลี่ยนไป
 _last_reject_any: dict | None = None
 
+# user feedback: สำหรับ setup ที่ผูกกับระยะห่างถึง OB/SSL/BSL โดยตรง (NEAR_BULL_OB,
+# NEAR_BEAR_OB, APPROACHING_SSL, APPROACHING_BSL) ไม่ต้องสนเวลาเลย ("เอาเป็นจุดที่
+# เปลี่ยนดีกว่า") — เช็คแค่ว่าราคาตอนนี้ "ใกล้ zone นั้นกว่าตอนที่โดน reject ครั้ง
+# ก่อนหรือเปล่า" ถ้าไม่ได้ใกล้กว่าเดิม (dist เท่าเดิมหรือไกลกว่า) ก็ไม่ต้องเรียก AI
+# ซ้ำ ไม่ว่าจะผ่านไปนานแค่ไหน — ถ้าใกล้กว่าเดิมจริง (เกิน epsilon กันราคา noise
+# เล็กๆน้อยๆ) ถึงจะปล่อยให้เรียกใหม่ setup อื่นที่ไม่มี dist (EQL/SWEEP/SWING) ยังใช้
+# เกณฑ์เดิม (time + price tolerance) เพราะไม่มีแนวคิด "ระยะห่างถึง level" ที่ชัดเจน
+_DIST_IMPROVE_EPS = 0.5
 
-def _check_reject_cooldown(setup_key: str, price: float | None) -> dict | None:
+
+def _check_reject_cooldown(setup_key: str, price: float | None, dist: float | None = None) -> dict | None:
     if price is None:
         return None
     if setup_key:
         cached = _reject_cache.get(setup_key)
         if cached:
-            age = time.time() - cached["time"]
-            if age < _REJECT_COOLDOWN_SEC and abs(price - cached["price"]) <= _REJECT_PRICE_TOLERANCE:
-                return {"age": int(age), "price": cached["price"], "reason": cached.get("reason", "")}
+            cached_dist = cached.get("dist")
+            if dist is not None and cached_dist is not None:
+                if dist >= cached_dist - _DIST_IMPROVE_EPS:
+                    age = time.time() - cached["time"]
+                    return {"age": int(age), "price": cached["price"], "reason": cached.get("reason", ""), "dist": cached_dist}
+            else:
+                age = time.time() - cached["time"]
+                if age < _REJECT_COOLDOWN_SEC and abs(price - cached["price"]) <= _REJECT_PRICE_TOLERANCE:
+                    return {"age": int(age), "price": cached["price"], "reason": cached.get("reason", "")}
     if _last_reject_any:
         age = time.time() - _last_reject_any["time"]
         if age < _REJECT_COOLDOWN_SEC and abs(price - _last_reject_any["price"]) <= _REJECT_PRICE_TOLERANCE:
@@ -74,12 +89,12 @@ def _check_reject_cooldown(setup_key: str, price: float | None) -> dict | None:
     return None
 
 
-def _record_reject(setup_key: str, price: float | None, reason: str) -> None:
+def _record_reject(setup_key: str, price: float | None, reason: str, dist: float | None = None) -> None:
     global _last_reject_any
     if price is None:
         return
     if setup_key:
-        _reject_cache[setup_key] = {"time": time.time(), "price": price, "reason": reason}
+        _reject_cache[setup_key] = {"time": time.time(), "price": price, "reason": reason, "dist": dist}
     _last_reject_any = {"time": time.time(), "price": price, "reason": reason}
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
@@ -255,6 +270,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # (≤$5) เท่านั้น ไม่กระทบเกณฑ์การเข้าเทรดจริง (OB_MIN_DISPLACEMENT ฯลฯ แยกกัน)
     _watch = [(lbl, d) for lbl, d in _watchlist_candidates(smc_summary) if 0 <= d <= 5]
     _approach_lbl = min(_watch, key=lambda x: x[1])[0] if _watch else None
+    _watch_dist_map = dict(_watch)
 
     # user feedback: label "BEAR_OB_REJECTED" (จาก recent_bear/bull_ob_rejection
     # event) กับ "APPROACHING_BEAR_OB" (จาก _watchlist_candidates ระยะห่างล้วนๆ)
@@ -301,12 +317,18 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         return result
 
     # ── Reject cooldown gate — setup เดิม + ราคาใกล้เดิม เพิ่งโดน NO_TRADE ไปเมื่อกี้ ──
-    _cd_hit = _check_reject_cooldown(result["smc_setup"], result["current_price"])
+    _cd_dist = _watch_dist_map.get(result["smc_setup"])
+    _cd_hit = _check_reject_cooldown(result["smc_setup"], result["current_price"], _cd_dist)
     if _cd_hit:
+        _cd_setup_disp = result["smc_setup"].replace("_", " ")
+        if _cd_dist is not None:
+            _cd_why = f"ราคายังไม่ใกล้ zone นี้กว่าตอนโดน reject ครั้งก่อน ({_cd_dist:.1f} vs {_cd_hit.get('dist', '?')})"
+        else:
+            _cd_why = f"ราคาใกล้เดิม ({_cd_hit['price']} vs {result['current_price']})"
         result["reject_reason"] = (
-            f"AI Call Cooldown — setup '{result['smc_setup']}' เพิ่งโดนปฏิเสธเมื่อ {_cd_hit['age']}s "
-            f"ที่แล้ว ราคาใกล้เดิม ({_cd_hit['price']} vs {result['current_price']}) — ข้าม AI call "
-            f"รอบนี้เพื่อประหยัด (เหตุผลเดิม: {_cd_hit['reason'][:150]})"
+            f"AI Call Cooldown — setup {_cd_setup_disp} เพิ่งโดนปฏิเสธเมื่อ {_cd_hit['age']}s "
+            f"ที่แล้ว {_cd_why} — ข้าม AI call รอบนี้เพื่อประหยัด "
+            f"(เหตุผลเดิม: {_cd_hit['reason'][:150]})"
         )
         result["stages"]["smc"] = "AI_CALL_SKIPPED_COOLDOWN"
         return result
@@ -359,7 +381,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
                 return result
 
     if signal == "NO_TRADE" or chart_vote == "NO":
-        _record_reject(result["smc_setup"], result["current_price"], analysis.get("vote_reasoning", ""))
+        _record_reject(result["smc_setup"], result["current_price"], analysis.get("vote_reasoning", ""), _cd_dist)
         result["reject_reason"] = f"Chart Analyst voted NO — {analysis.get('vote_reasoning', 'NO_TRADE')}"
         # ตรวจว่า Claude ปฏิเสธเพราะ Liquidity Gate (รอ SSL/BSL sweep) หรือเปล่า
         _vote_reason = (analysis.get("vote_reasoning") or "").lower()
@@ -634,7 +656,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         result["liquidity_summary"] = verdict.get("liquidity_summary", "")
         result["analysis"]          = analysis
     else:
-        _record_reject(result["smc_setup"], result["current_price"], verdict.get("reasoning", ""))
+        _record_reject(result["smc_setup"], result["current_price"], verdict.get("reasoning", ""), _cd_dist)
         result["reject_reason"] = verdict.get("reasoning", "Supervisor rejected")
 
     return result

@@ -1950,11 +1950,17 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
             print(f"[notifier] 🔇 smc={_smc_setup} chart=NO_TRADE | {_rej[:100]}")
             if _smc_setup:
                 _price = result.get("current_price", "?")
+                # ใช้ backtick แทน italic (_..._) — legacy Markdown parse_mode ของ
+                # Telegram ไม่รองรับ \_ escape เหมือน MarkdownV2 ถ้า _rej มีคำที่มี
+                # underscore ฝังอยู่ (เช่นชื่อ setup "APPROACHING_BSL") underscore
+                # ตัวในคำจะโดนตีความเป็น delimiter ปิด/เปิด italic ไปด้วย ทำให้
+                # underscore หายไปตอนแสดงผล (เช่น "APPROACHINGBSL") — backtick
+                # (code span) ไม่มีปัญหานี้ เหมือนที่ Setup field ใช้อยู่แล้ว
                 _msg = (
                     f"🔇 *ไม่มี Trade — smc เจอ signal แต่ AI ปฏิเสธ*\n"
                     f"━━━━━━━━━━━━━━━\n"
                     f"💰 ราคา: `{_price}` | Setup: `{_smc_setup}`\n"
-                    f"📝 _{_rej[:250]}_"
+                    f"📝 `{_rej[:250]}`"
                 )
                 await _safe_send(send_fn, _msg, parse_mode="Markdown")
 
