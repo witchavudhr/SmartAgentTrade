@@ -147,12 +147,31 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # ก่อนเอามาตั้งชื่อ label ไม่งั้น label ใน Telegram (เช่น "Setup: SWEEP_LOW")
     # จะโชว์ sweep ที่หมดอายุไปนานแล้วและไม่เกี่ยวกับ trigger จริงเลย (เช่น 79-379
     # bars) ทำให้ดูสับสนว่า "sweep ยังใหม่อยู่" ทั้งที่จริงไม่มี sweep ที่ valid เลย
+    # user feedback: sweep ที่ 4047.78 (SSL) โดนไปแล้ว 52 bars ก่อน (เกิน 48 bars
+    # นิดเดียว) แต่ราคาเพิ่งไหลกลับมาใกล้ระดับนี้อีกครั้ง (retest จริง) — เดิมเช็ค
+    # แค่ age<=48 ไม่สนระยะห่างจากราคาปัจจุบันเลย พอ age เกินนิดเดียว label เลย
+    # หลุดไปเป็น SWING_SELL (จาก detect_swing_entry's generic score) ทั้งที่ราคา
+    # กำลัง retest sweep zone ที่ควรจับตาดูจริงๆ — เปลี่ยนมาเช็คระยะห่างเป็นหลัก
+    # (สำคัญกว่า age ตรงๆ) ยังกัน sweep เก่ามากๆ (>100 bars) ไว้ไม่ให้หลุดมาได้
     _sw_high = smc_summary.get("last_sweep_high") or {}
     _sw_low  = smc_summary.get("last_sweep_low") or {}
+    _price_lbl = smc_summary.get("current_price")
+
+    def _sweep_label_ok(sw: dict) -> bool:
+        if not sw or _price_lbl is None:
+            return False
+        _age = sw.get("age_bars")
+        if _age is not None and _age > 100:
+            return False
+        _lvl = sw.get("level")
+        if _lvl is None:
+            return _age is not None and _age <= 48
+        return abs(_price_lbl - _lvl) <= 20
+
     _fresh_sweep_kind = None
-    if (_sw_high.get("age_bars") if _sw_high.get("age_bars") is not None else 999) <= 48:
+    if _sweep_label_ok(_sw_high):
         _fresh_sweep_kind = "HIGH"
-    elif (_sw_low.get("age_bars") if _sw_low.get("age_bars") is not None else 999) <= 48:
+    elif _sweep_label_ok(_sw_low):
         _fresh_sweep_kind = "LOW"
     # ไม่มี layer ไหนใน has_signal()/smc_setup เดิมรู้จัก "ราคากำลังเข้าใกล้เงื่อนไข
     # ไหนอยู่" เลย — มีแค่เช็คแบบ all-or-nothing รายตัว (CASE B ต้อง in_ob=True,
@@ -212,12 +231,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         "BULL_OB_REJECTED" if _bull_rej_lbl else None
     )
 
-    # swing_signal (จาก detect_swing_entry — ใช้ sweep สดของตัวเอง ≤3-5 แท่ง) มาก่อน
-    # sweep label เสมอ เพราะ sweep_signal สดกว่าและตรงกับ trigger จริงมากกว่า
+    # user feedback: เจอเคสจริง — ราคาไปแตะ retest SSL ที่เพิ่ง sweep ไปแล้ว (label
+    # ควรเป็น SWEEP_LOW รอ rejection) แต่ swing_signal (คะแนน bull/bear score แบบ
+    # กว้างๆ จาก detect_swing_entry) ดันมาก่อนในลำดับความสำคัญ เลยได้ label
+    # SWING_SELL ซึ่งไม่ตรงกับสถานการณ์จริงเลย (ราคากำลัง retest SSL ไม่ใช่กำลัง
+    # จะไปต่อทิศตรงข้าม) — สลับลำดับ: sweep-retest (เฉพาะเจาะจง มี level ชัดเจน,
+    # ผ่านการ validate depth/age/distance มาแล้ว) ต้องมาก่อน swing_signal (คะแนน
+    # ทั่วไป ไม่ผูกกับ level ไหนเป๊ะๆ)
     result["smc_setup"] = (
         _eql.get("signal")
-        or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
         or (_fresh_sweep_kind and f"SWEEP_{_fresh_sweep_kind}")
+        or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
         or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
         or _rejected_lbl
         or _approach_lbl
