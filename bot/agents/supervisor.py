@@ -225,6 +225,20 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     )
     result["current_price"] = smc_summary.get("current_price")
 
+    # ── ไม่เรียก AI ถ้า label ตกไปที่ "SIGNAL" (fallback ทั่วไป) ──────────
+    # แปลว่าไม่มี pattern ที่มีความหมายจริงเลยสักอัน (ไม่มี EQL/SWING/SWEEP สด,
+    # ไม่มี rejection, ไม่มีอะไรใกล้ ≤$5) — เจอซ้ำๆ ตลอด session นี้ว่าเคสแบบนี้
+    # เรียก Chart Analyst แล้วได้ NO_TRADE แน่ๆ ทุกครั้ง (has_signal() ยัง True
+    # จาก TREND branch แบบคะแนนกว้างๆ เช่น structure+liquidity score≥3/4 ซึ่งไม่ผูก
+    # กับอะไรที่ actionable จริง) ข้ามไปเลยประหยัดเงิน ไม่ต้องรอ reject cooldown
+    if result["smc_setup"] == "SIGNAL":
+        result["reject_reason"] = (
+            "ไม่มี pattern ที่มีความหมายจริง (ไม่มี EQL/SWING/SWEEP สด, ไม่มี OB rejection, "
+            "ไม่มีอะไรใกล้ OB/SSL/BSL ภายใน $5) — ข้าม AI call เพื่อประหยัด"
+        )
+        result["stages"]["smc"] = "NO_MEANINGFUL_SIGNAL"
+        return result
+
     # ── Reject cooldown gate — setup เดิม + ราคาใกล้เดิม เพิ่งโดน NO_TRADE ไปเมื่อกี้ ──
     _cd_hit = _check_reject_cooldown(result["smc_setup"], result["current_price"])
     if _cd_hit:
