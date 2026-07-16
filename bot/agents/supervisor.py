@@ -49,24 +49,38 @@ def _get_bias(signal_direction: str) -> dict:
 _REJECT_COOLDOWN_SEC = 15 * 60   # 15 นาที
 _REJECT_PRICE_TOLERANCE = 8.0    # ราคาต้องขยับเกินนี้ถึงจะถือว่า "เปลี่ยนสถานการณ์" แล้ว
 _reject_cache: dict = {}
+# smc_setup label มาจากหลาย data source ผสมกัน (sweep/rejection/approach/swing)
+# ที่แต่ละอันมี threshold คาบเกี่ยวกันได้ (เช่น เพิ่งเข้า/หลุดเกณฑ์ $5 ไปมา) ทำให้
+# label สลับไปมาได้ทุก scan แม้ราคาแทบไม่ขยับเลย — cooldown เดิม key ด้วย label
+# string ตรงๆ เลยโดน reset ทุกครั้งที่ label เปลี่ยน ทั้งที่ราคาเหมือนเดิมเป๊ะ
+# เก็บ "ครั้งล่าสุดที่โดน reject ไม่ว่า label ไหน" แยกไว้ต่างหาก ใช้เป็น fallback
+# cooldown เพิ่มอีกชั้น — ราคานิ่งจริงก็ข้าม AI call ได้แม้ label จะเปลี่ยนไป
+_last_reject_any: dict | None = None
 
 
 def _check_reject_cooldown(setup_key: str, price: float | None) -> dict | None:
-    if not setup_key or price is None:
+    if price is None:
         return None
-    cached = _reject_cache.get(setup_key)
-    if not cached:
-        return None
-    age = time.time() - cached["time"]
-    if age < _REJECT_COOLDOWN_SEC and abs(price - cached["price"]) <= _REJECT_PRICE_TOLERANCE:
-        return {"age": int(age), "price": cached["price"], "reason": cached.get("reason", "")}
+    if setup_key:
+        cached = _reject_cache.get(setup_key)
+        if cached:
+            age = time.time() - cached["time"]
+            if age < _REJECT_COOLDOWN_SEC and abs(price - cached["price"]) <= _REJECT_PRICE_TOLERANCE:
+                return {"age": int(age), "price": cached["price"], "reason": cached.get("reason", "")}
+    if _last_reject_any:
+        age = time.time() - _last_reject_any["time"]
+        if age < _REJECT_COOLDOWN_SEC and abs(price - _last_reject_any["price"]) <= _REJECT_PRICE_TOLERANCE:
+            return {"age": int(age), "price": _last_reject_any["price"], "reason": _last_reject_any.get("reason", "")}
     return None
 
 
 def _record_reject(setup_key: str, price: float | None, reason: str) -> None:
-    if not setup_key or price is None:
+    global _last_reject_any
+    if price is None:
         return
-    _reject_cache[setup_key] = {"time": time.time(), "price": price, "reason": reason}
+    if setup_key:
+        _reject_cache[setup_key] = {"time": time.time(), "price": price, "reason": reason}
+    _last_reject_any = {"time": time.time(), "price": price, "reason": reason}
 from config.settings import ANTHROPIC_API_KEY, MODEL_SMART
 from agents import chart_analyst, bias_analyst, news_scout, risk_manager
 from agents.trade_log import get_performance_summary, get_loss_lesson_digest
