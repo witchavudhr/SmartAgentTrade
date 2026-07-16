@@ -1572,17 +1572,11 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         return
 
     # ── NO_MEANINGFUL_SIGNAL — smc_setup ตกไปที่ "SIGNAL" เฉยๆ ข้าม AI call ──
-    # user อยากเห็นว่า "ไม่มี signal" ก็จริง แต่ระยะห่างจาก OB/SSL/BSL ตอนนี้
-    # เป็นเท่าไหร่ ไม่ใช่แค่เงียบไปเฉยๆ (ต่างจาก NO_SIGNAL ปกติที่ has_signal()
-    # เป็น False ตั้งแต่แรก — เคสนี้ has_signal() ผ่านแล้วแต่ไม่มี pattern ที่มี
-    # ความหมายพอจะเสียเงินเรียก AI)
+    # user feedback: เดิมส่ง Telegram ทุกครั้ง (เพื่อโชว์ระยะห่าง) แต่กลายเป็นสแปม
+    # ทุก 5-15 นาที — ตอนนี้แค่ log ไว้ใน console เฉยๆ ไม่ส่ง Telegram (เหมือน
+    # NO_SIGNAL ปกติ) ข้อมูลระยะห่างยังคำนวณอยู่ใน reject_reason เผื่อ debug
     if result.get("stages", {}).get("smc") == "NO_MEANINGFUL_SIGNAL":
-        await _safe_send(
-            send_fn,
-            f"💤 *ไม่มี Signal* — ราคา `{result.get('current_price')}`\n"
-            f"_{result.get('reject_reason', '')}_",
-            parse_mode="Markdown"
-        )
+        print(f"[notifier] 💤 NO_MEANINGFUL_SIGNAL @ {result.get('current_price')} — {result.get('reject_reason','')[:150]}")
         return
 
     _current_price  = float(result.get("current_price") or 0)
