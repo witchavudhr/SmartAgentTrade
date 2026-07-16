@@ -53,6 +53,15 @@ PATTERN PRIORITY (highest → lowest):
    SL: post_bos_choch_retest.sl_ref (3 pts beyond swing_extreme)
    Conf bonus: +10 if rejection_confirmed=True | reduce -10 if retrace_pct > 60 (deep = risky)
    ⚡ This is the "pullback to CHoCH level after BOS" — trend continuation, HIGH probability
+   ⚠️ CASE L PROXIMITY (strictly enforced): this is a RETEST pattern, not a trend-following chase.
+   dist_to_choch (shown in the data) is the distance from current price to the CHoCH swing_extreme —
+   the entry must actually be AT/NEAR that level (dist_to_choch ≤15pts). If dist_to_choch is large
+   (price has already moved well past the CHoCH level, continuing in the trade direction), the retest
+   window is over — do NOT approve CASE L using current price as if it were still at the retest zone,
+   even if rejection_confirmed=True describes something that happened bars ago at the CHoCH level
+   itself. A rejection that occurred back at the CHoCH level does not make chasing price far away from
+   that level a valid entry — that is CASE F/H territory (a fresh sweep/pullback near CURRENT price), not
+   CASE L. If dist_to_choch is large and no other case applies at current price → NO_TRADE.
 3. CASE I ★★★:  Stored OB Pullback (ob_rejection_zones) → STORED_OB_PULLBACK_SELL/BUY (conf 60-75)
 4. CASE G ★★★:  OB Rejection (recent, no sweep needed) → OB_REJECTION_SELL/BUY (conf 65-80)
 5. CASE J ★★:   Strong Rejection at EQL/EQH → STRONG_REJECTION_SELL/BUY (conf 50-65)

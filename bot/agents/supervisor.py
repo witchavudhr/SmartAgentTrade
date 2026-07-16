@@ -422,6 +422,23 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             except (TypeError, ValueError, ZeroDivisionError):
                 rr = 0
 
+    # ── CASE L PROXIMITY GUARD — retest ต้องอยู่ใกล้ CHoCH level จริง ──────
+    # user feedback: เจอเคสจริง — POST_BOS_CHOCH_RETEST_SELL อนุมัติที่ราคาปัจจุบัน
+    # (4043) ทั้งที่ CHoCH swing high (retest zone จริง) อยู่ที่ ~4062 (~$19 ห่าง)
+    # นี่คือ pattern "รอราคากลับไป retest ที่ระดับ CHoCH" ไม่ใช่ trend-following —
+    # เชื่อ prompt instruction อย่างเดียวไม่พอ (เจอ AI ข้ามเงื่อนไขนี้มาแล้ว) เพิ่ม
+    # code-level gate บังคับเลย
+    if setup_type in ("POST_BOS_CHOCH_RETEST_SELL", "POST_BOS_CHOCH_RETEST_BUY"):
+        _pbcr = smc_summary.get("post_bos_choch_retest") or {}
+        _dist_choch = _pbcr.get("dist_pts")
+        if _dist_choch is not None and _dist_choch > 15:
+            result["reject_reason"] = (
+                f"{setup_type} rejected: ราคาปัจจุบันห่างจาก CHoCH retest zone อยู่ {_dist_choch}pts "
+                f"(ต้องการ ≤15pts) — นี่คือ pattern รอราคากลับไป retest ที่ CHoCH level ไม่ใช่ chase "
+                f"ตามเทรนด์ที่ราคาปัจจุบัน"
+            )
+            return result
+
     # ── OB PROXIMITY GUARD — ก่อน fast-approve ──────────────────
     # OB_REJECTION / STORED_OB_PULLBACK: OB ต้องห่างจากราคาปัจจุบัน ≥10 pts
     # ถ้า OB ใกล้เกินไป → ราคาจะผ่านทะลุทันที ไม่มี significance
