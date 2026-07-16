@@ -196,7 +196,10 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
 
         return cands
 
-    _watch = [(lbl, d) for lbl, d in _watchlist_candidates(smc_summary) if 0 <= d <= 100]
+    # user feedback: 100pts (=$100) กว้างเกินไป — เจอเคส label โชว์ "approaching"
+    # ทั้งที่จริงยังห่างอยู่มาก ไม่ค่อยมีประโยชน์ ให้แจ้งเตือนเฉพาะตอนใกล้จริงๆ
+    # (≤$5) เท่านั้น ไม่กระทบเกณฑ์การเข้าเทรดจริง (OB_MIN_DISPLACEMENT ฯลฯ แยกกัน)
+    _watch = [(lbl, d) for lbl, d in _watchlist_candidates(smc_summary) if 0 <= d <= 5]
     _approach_lbl = min(_watch, key=lambda x: x[1])[0] if _watch else None
 
     # ถ้าราคาเพิ่งลงไปแตะ OB แล้วเด้งออกมาแล้วจริงๆ (recent_bear/bull_ob_rejection
