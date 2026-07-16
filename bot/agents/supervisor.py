@@ -506,6 +506,24 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
                 )
                 return result
 
+    # ── SSL/BSL CONFLUENCE — CASE B: ถ้า OB ใกล้ SSL/BSL มาก (≤$10) ให้เข้าที่
+    # ระดับ SSL/BSL แทน OB zone ตรงๆ (ระดับ liquidity คือจุด stop-hunt จริงที่
+    # แม่นกว่า OB) — ไม่พึ่งแค่ prompt instruction เพราะเจอ AI ข้ามเงื่อนไขแบบนี้
+    # มาหลายรอบแล้วในเซสชันนี้ บังคับ override entry_zone ที่ code เลย
+    if setup_type in ("BULL_OB_ENTRY", "BEAR_OB_ENTRY"):
+        _liq_conf = smc_summary.get("liquidity") or {}
+        _ssl_conf_raw = _liq_conf.get("nearest_ssl")
+        _bsl_conf_raw = _liq_conf.get("nearest_bsl")
+        _ssl_conf = _ssl_conf_raw.get("level") if isinstance(_ssl_conf_raw, dict) else _ssl_conf_raw
+        _bsl_conf = _bsl_conf_raw.get("level") if isinstance(_bsl_conf_raw, dict) else _bsl_conf_raw
+        _ob_zone_conf = (analysis.get("bull_ob_zone") if setup_type == "BULL_OB_ENTRY"
+                         else analysis.get("bear_ob_zone")) or {}
+        _ob_ref = _ob_zone_conf.get("top") if setup_type == "BULL_OB_ENTRY" else _ob_zone_conf.get("bottom")
+        _pool_conf = _ssl_conf if setup_type == "BULL_OB_ENTRY" else _bsl_conf
+        if _ob_ref is not None and _pool_conf is not None and abs(_pool_conf - _ob_ref) <= 10:
+            analysis["entry_zone"] = [round(_pool_conf - 2, 2), round(_pool_conf + 2, 2)]
+            analysis["entry"] = _pool_conf
+
     # ── Fast APPROVE: OB setups — rule-based ไม่ต้องให้ Claude ตัดสิน ──
     # เพิ่มเงื่อนไข: TREND_OB ต้องมี entry zone ใกล้ OB จริงๆ
     # ป้องกัน Claude return TREND_OB แต่ entry zone ไม่ใช่ OB (กลางอากาศ)

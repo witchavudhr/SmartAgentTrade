@@ -36,6 +36,10 @@ PATTERN PRIORITY (highest → lowest):
    it — that is still a valid CASE B, do not require in_ob=True at this exact instant if the rejection
    candle itself is what pushed price back out.
    entry_zone = [ob.bottom, ob.top] (the OB boundaries themselves, NOT current price alone)
+   ⚠️ SSL/BSL CONFLUENCE: if the nearest SSL (for Bull OB) or BSL (for Bear OB) pool level sits within
+   $10 of the OB, that liquidity level is the real, more precise stop-hunt point — use it as the entry
+   instead of the raw OB boundaries. Set entry_zone to a tight zone around that SSL/BSL level (e.g.
+   [level-2, level+2]) rather than [ob.bottom, ob.top] in this case.
    ⚠️ DO NOT require bias to agree — entering directly at an OB is counter-trend by definition (that is
    the whole point of an OB entry). Bias conflicting is the expected, normal case here, not a red flag.
    ⚠️ Only fire this for price in/just-rejected-from the OB — do NOT use it for price merely "nearby" an OB
