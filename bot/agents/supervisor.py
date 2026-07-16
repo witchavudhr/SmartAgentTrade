@@ -231,19 +231,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         "BULL_OB_REJECTED" if _bull_rej_lbl else None
     )
 
-    # user feedback: เจอเคสจริง — ราคาไปแตะ retest SSL ที่เพิ่ง sweep ไปแล้ว (label
-    # ควรเป็น SWEEP_LOW รอ rejection) แต่ swing_signal (คะแนน bull/bear score แบบ
-    # กว้างๆ จาก detect_swing_entry) ดันมาก่อนในลำดับความสำคัญ เลยได้ label
-    # SWING_SELL ซึ่งไม่ตรงกับสถานการณ์จริงเลย (ราคากำลัง retest SSL ไม่ใช่กำลัง
-    # จะไปต่อทิศตรงข้าม) — สลับลำดับ: sweep-retest (เฉพาะเจาะจง มี level ชัดเจน,
-    # ผ่านการ validate depth/age/distance มาแล้ว) ต้องมาก่อน swing_signal (คะแนน
-    # ทั่วไป ไม่ผูกกับ level ไหนเป๊ะๆ)
+    # user feedback (หลักการทั่วไป): OB/SSL/BSL สำคัญที่สุดเสมอ เพราะคือจุดกลับตัว
+    # จริง — ทุกอย่างที่ผูกกับ OB/SSL/BSL level เจาะจง (EQL/EQH sweep, sweep-retest,
+    # OB rejection, post-sweep continuation) ต้องมาก่อน swing_signal (คะแนน
+    # bull/bear แบบกว้างๆ จาก detect_swing_entry ที่ไม่ผูกกับ level ไหนเป๊ะๆ) เสมอ
+    # — swing_signal เป็นแค่ fallback ตอนไม่มีอะไรที่ผูกกับ OB/SSL/BSL จริงเท่านั้น
     result["smc_setup"] = (
         _eql.get("signal")
         or (_fresh_sweep_kind and f"SWEEP_{_fresh_sweep_kind}")
-        or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
-        or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
         or _rejected_lbl
+        or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
+        or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
         or _approach_lbl
         or "SIGNAL"
     )
