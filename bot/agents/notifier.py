@@ -1571,6 +1571,20 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         await _safe_send(send_fn, _off_note)
         return
 
+    # ── NO_MEANINGFUL_SIGNAL — smc_setup ตกไปที่ "SIGNAL" เฉยๆ ข้าม AI call ──
+    # user อยากเห็นว่า "ไม่มี signal" ก็จริง แต่ระยะห่างจาก OB/SSL/BSL ตอนนี้
+    # เป็นเท่าไหร่ ไม่ใช่แค่เงียบไปเฉยๆ (ต่างจาก NO_SIGNAL ปกติที่ has_signal()
+    # เป็น False ตั้งแต่แรก — เคสนี้ has_signal() ผ่านแล้วแต่ไม่มี pattern ที่มี
+    # ความหมายพอจะเสียเงินเรียก AI)
+    if result.get("stages", {}).get("smc") == "NO_MEANINGFUL_SIGNAL":
+        await _safe_send(
+            send_fn,
+            f"💤 *ไม่มี Signal* — ราคา `{result.get('current_price')}`\n"
+            f"_{result.get('reject_reason', '')}_",
+            parse_mode="Markdown"
+        )
+        return
+
     _current_price  = float(result.get("current_price") or 0)
     _liq_snapshot   = result.get("liq_snapshot", {})
     _watching_gate  = bot_state.get("watching_gate")

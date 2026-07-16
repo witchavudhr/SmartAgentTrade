@@ -231,10 +231,14 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # เรียก Chart Analyst แล้วได้ NO_TRADE แน่ๆ ทุกครั้ง (has_signal() ยัง True
     # จาก TREND branch แบบคะแนนกว้างๆ เช่น structure+liquidity score≥3/4 ซึ่งไม่ผูก
     # กับอะไรที่ actionable จริง) ข้ามไปเลยประหยัดเงิน ไม่ต้องรอ reject cooldown
+    # — แต่ยังบอกระยะห่างจริงของทุกอย่าง (ไม่ filter ≤$5) ให้เห็นว่าห่างจากอะไร
+    # เท่าไร ไม่ใช่แค่บอกเฉยๆ ว่า "ไม่มี signal"
     if result["smc_setup"] == "SIGNAL":
+        _all_watch = sorted(_watchlist_candidates(smc_summary), key=lambda x: x[1])
+        _dist_str = ", ".join(f"{lbl} {round(d,1)}p" for lbl, d in _all_watch[:4]) or "ไม่มีข้อมูล OB/SSL/BSL"
         result["reject_reason"] = (
-            "ไม่มี pattern ที่มีความหมายจริง (ไม่มี EQL/SWING/SWEEP สด, ไม่มี OB rejection, "
-            "ไม่มีอะไรใกล้ OB/SSL/BSL ภายใน $5) — ข้าม AI call เพื่อประหยัด"
+            f"ไม่มี pattern ที่มีความหมายจริง (ไม่มี EQL/SWING/SWEEP สด, ไม่มี OB rejection) — "
+            f"ระยะห่างตอนนี้: {_dist_str} — ข้าม AI call เพื่อประหยัด"
         )
         result["stages"]["smc"] = "NO_MEANINGFUL_SIGNAL"
         return result
