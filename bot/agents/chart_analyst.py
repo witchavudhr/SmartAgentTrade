@@ -531,15 +531,32 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         return True
 
     # ── ชั้น 7: Recent OB Rejection (CASE G) — rejection เพิ่งเกิดใน 5 แท่ง ──
+    # ต้องเช็คด้วยว่าราคา "ยังอยู่ใกล้ zone นั้นจริง" (≤$5) ไม่งั้น rejection ที่
+    # bars_ago<=3 ตอน scan รอบก่อนๆ (ราคาอาจวิ่งหนีไปไกลแล้วตั้งแต่ตอนนั้น หรือ
+    # object เดิมยังค้างอยู่จาก state เก่า) จะยังเรียก AI ซ้ำทั้งที่ไม่เกี่ยวกับ
+    # ราคาปัจจุบันแล้ว — เป็น defense-in-depth เดียวกับที่แก้ label ไปแล้ว
+    def _rej_zone_near(rej: dict | None) -> bool:
+        if not rej:
+            return False
+        _zone = rej.get("ob_zone")
+        if not isinstance(_zone, list) or len(_zone) != 2:
+            return True
+        _lo, _hi = _zone
+        if price < _lo:
+            return (_lo - price) <= 5
+        if price > _hi:
+            return (price - _hi) <= 5
+        return True
+
     _bear_rej = smc_summary.get("recent_bear_ob_rejection")
     _bull_rej = smc_summary.get("recent_bull_ob_rejection")
-    if _bear_rej and _bear_rej.get("bars_ago", 99) <= 3:
+    if _bear_rej and _bear_rej.get("bars_ago", 99) <= 3 and _rej_zone_near(_bear_rej):
         if _buy_bias_active:
             print(f"[has_signal] ⛔ {_now_th} COUNTER-TREND BLOCK — Bear OB rejection แต่ BUY sweep active, ข้าม")
         else:
             print(f"[has_signal] ✅ {_now_th} OB_REJECTION (BEAR) — zone={_bear_rej.get('ob_zone')} bars_ago={_bear_rej.get('bars_ago')}")
             return True
-    if _bull_rej and _bull_rej.get("bars_ago", 99) <= 3:
+    if _bull_rej and _bull_rej.get("bars_ago", 99) <= 3 and _rej_zone_near(_bull_rej):
         if _sell_bias_active:
             print(f"[has_signal] ⛔ {_now_th} COUNTER-TREND BLOCK — Bull OB rejection แต่ SELL sweep active, ข้าม")
         else:
