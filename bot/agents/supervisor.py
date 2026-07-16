@@ -239,19 +239,16 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _near_bull_top = max(_valid_bull_tops) if _valid_bull_tops else None
         _near_bear_bot = min(_valid_bear_bots) if _valid_bear_bots else None
 
-        # user feedback: ถ้า Bull OB กับ Bear OB ที่ใกล้ราคาสุด อยู่ห่างกันเองไม่ถึง
-        # $20 (sideways/choppy — โครงสร้างติดกันเกินไป) ห้ามใช้เป็น "จุดรอ" เลยทั้งคู่
-        # เพราะโดนหลอกง่าย ("จะโดนหลอกไง") — ข้ามทั้งคู่ไปเลยถ้าเข้าเงื่อนไขนี้
-        _MIN_OB_GAP = 20.0
-        _obs_too_clustered = (
-            _near_bull_top is not None and _near_bear_bot is not None
-            and (_near_bear_bot - _near_bull_top) < _MIN_OB_GAP
-        )
-        if not _obs_too_clustered:
-            if _near_bull_top is not None:
-                cands.append(("NEAR_BULL_OB", price - _near_bull_top))
-            if _near_bear_bot is not None:
-                cands.append(("NEAR_BEAR_OB", _near_bear_bot - price))
+        # user feedback: เดิมมี clustering guard ตัด Bull/Bear OB ทิ้งทั้งคู่ถ้าห่างกัน
+        # เองไม่ถึง $20 (กัน sideways/choppy) แต่กลายเป็นบั๊ก — OB ที่ /ob โชว์ว่าเป็น
+        # OB จริงที่ active อยู่ กลับไม่โผล่ใน watchlist เลยแม้ราคาจะเข้าใกล้จนเกือบชน
+        # (เช่น 5 จุด) เพราะโดน guard นี้ตัดทิ้งไปก่อน ทำให้พลาด sweep+bounce จริงที่
+        # เกิดขึ้น ("ob ล่าสุด มันจะไม่ใช่ได้ไง ถ้าคิดว่าไม่สนใจ pool นี้ ก็ไม่ต้องโชว์
+        # ใน /ob สิ") — ตัด guard นี้ออก ให้ OB ที่ /ob โชว์ ถือเป็น watchable เสมอ
+        if _near_bull_top is not None:
+            cands.append(("NEAR_BULL_OB", price - _near_bull_top))
+        if _near_bear_bot is not None:
+            cands.append(("NEAR_BEAR_OB", _near_bear_bot - price))
 
         _liqw = smc.get("liquidity") or {}
         _ssl_raw = _liqw.get("nearest_ssl")
