@@ -192,11 +192,20 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # เดียวกับ CASE F ตั้งแต่แรก ต้องเช็ค depth ให้ตรงกับเกณฑ์เดียวกันทั้งระบบ
     _MIN_SWEEP_DEPTH_LBL = 5.0
 
+    # user feedback: sweep ที่ rejection ยืนยันแล้ว (recovered=True) แต่ราคาเปลี่ยน
+    # ทางไปแล้วเกิน 3 แท่ง ควรถือว่า "หมดเวลาแล้ว" ไม่ต้องมาโผล่เป็น SWEEP_HIGH/LOW
+    # อีก — ถ้า rejection ยืนยันจริง ต้องเข้าไม้ไปนานแล้วตั้งแต่ 1-3 แท่งแรก ปล่อยไว้
+    # นานกว่านั้นแปลว่าไม่ใช่ setup ที่ actionable แล้ว (เจอเคส SWEEP_HIGH ค้าง label
+    # อยู่ 20+ นาที ถูก AI reject ซ้ำๆ ทั้งที่ rejection confirmed ตั้งแต่ age=1bar)
+    _SWEEP_REJECTED_MAX_AGE = 3
+
     def _sweep_label_ok(sw: dict) -> bool:
         if not sw or _price_lbl is None:
             return False
         _age = sw.get("age_bars")
         if _age is not None and _age > 100:
+            return False
+        if sw.get("recovered") and _age is not None and _age > _SWEEP_REJECTED_MAX_AGE:
             return False
         _lvl = sw.get("level")
         _wick = sw.get("wick_extreme")
