@@ -238,15 +238,25 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         # M15 ก่อนเสมอ (ถ้ามี) ทำให้พลาดเคสที่ M5 OB ใกล้กว่า M15 OB จริงๆ (เช่น
         # M15 Bull OB top=4024.38 ห่างกว่า M5 Bull OB top=4028.97 แต่ยังไปเลือก
         # M15 มาเทียบกับ Bear OB ทำให้ผลออกมาว่า Bear OB ใกล้กว่าทั้งที่ไม่จริง)
+        # user feedback: ราคาอยู่ "ใน" OB แล้ว (in_ob=True, กรณีดีที่สุด) แต่เดิม
+        # เช็คแค่ price >= top (เฉพาะตอนยังไม่ถึง OB) พอราคาลงมาอยู่ในโซนแล้ว
+        # (ระหว่าง bottom-top) จะหลุด filter ไปเลยเพราะ price < top ทำให้ OB หายไป
+        # จาก watchlist ทั้งที่ price อยู่ในโซนพอดี (ดีกว่า "ใกล้" อีก) ต้องนับ OB
+        # ที่ price ยังไม่หลุดออกไปทั้งโซน (price >= bottom สำหรับ Bull, price <=
+        # top สำหรับ Bear) แล้ว clamp ระยะห่างที่ 0 ถ้าราคาอยู่ในโซนแล้ว
         _m15w = smc.get("m15") or {}
-        _bull_tops = [ob.get("top") for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"))
-                      if ob and ob.get("top") is not None]
-        _bear_bots = [ob.get("bottom") for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"))
-                      if ob and ob.get("bottom") is not None]
-        _valid_bull_tops = [t for t in _bull_tops if price >= t]
-        _valid_bear_bots = [b for b in _bear_bots if price <= b]
-        _near_bull_top = max(_valid_bull_tops) if _valid_bull_tops else None
-        _near_bear_bot = min(_valid_bear_bots) if _valid_bear_bots else None
+        _bull_obs = [ob for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"))
+                     if ob and ob.get("top") is not None and ob.get("bottom") is not None]
+        _bear_obs = [ob for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"))
+                     if ob and ob.get("top") is not None and ob.get("bottom") is not None]
+        _valid_bull_obs = [ob for ob in _bull_obs if price >= ob["bottom"]]
+        _valid_bear_obs = [ob for ob in _bear_obs if price <= ob["top"]]
+        _near_bull_ob = max(_valid_bull_obs, key=lambda ob: ob["top"]) if _valid_bull_obs else None
+        _near_bear_ob = min(_valid_bear_obs, key=lambda ob: ob["bottom"]) if _valid_bear_obs else None
+        _near_bull_top = _near_bull_ob["top"] if _near_bull_ob else None
+        _near_bear_bot = _near_bear_ob["bottom"] if _near_bear_ob else None
+        _bull_dist = max(0.0, price - _near_bull_top) if _near_bull_top is not None else None
+        _bear_dist = max(0.0, _near_bear_bot - price) if _near_bear_bot is not None else None
 
         _liqw = smc.get("liquidity") or {}
         _ssl_raw = _liqw.get("nearest_ssl")
@@ -265,9 +275,9 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
 
         if _near_bull_top is not None and _bull_has_room:
-            cands.append(("NEAR_BULL_OB", price - _near_bull_top, _near_bull_top))
+            cands.append(("NEAR_BULL_OB", _bull_dist, _near_bull_top))
         if _near_bear_bot is not None and _bear_has_room:
-            cands.append(("NEAR_BEAR_OB", _near_bear_bot - price, _near_bear_bot))
+            cands.append(("NEAR_BEAR_OB", _bear_dist, _near_bear_bot))
 
         if _ssl_lvl is not None and price >= _ssl_lvl:
             cands.append(("APPROACHING_SSL", price - _ssl_lvl, _ssl_lvl))
