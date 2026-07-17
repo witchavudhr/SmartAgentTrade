@@ -1579,6 +1579,14 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         print(f"[notifier] 💤 NO_MEANINGFUL_SIGNAL @ {result.get('current_price')} — {result.get('reject_reason','')[:150]}")
         return
 
+    # ── AI_CALL_SKIPPED_COOLDOWN — เพิ่ง reject setup เดิม ราคายังไม่ใกล้ขึ้นพอ ──
+    # user feedback: เจอ setup เดิมค้าง (เช่น NEAR_BULL_OB) ส่ง Telegram ซ้ำทุก 5
+    # นาทีนาน 20+ นาทีทั้งที่ไม่มีอะไรเปลี่ยน ("ไม่ต้องเรียก AI และไม่ต้องมี signal")
+    # — เหมือน NO_MEANINGFUL_SIGNAL แค่ log console ไม่ต้องส้ง Telegram สแปม
+    if result.get("stages", {}).get("smc") == "AI_CALL_SKIPPED_COOLDOWN":
+        print(f"[notifier] 💤 AI_CALL_SKIPPED_COOLDOWN @ {result.get('current_price')} — {result.get('reject_reason','')[:150]}")
+        return
+
     _current_price  = float(result.get("current_price") or 0)
     _liq_snapshot   = result.get("liq_snapshot", {})
     _watching_gate  = bot_state.get("watching_gate")

@@ -64,7 +64,10 @@ _last_reject_any: dict | None = None
 # ซ้ำ ไม่ว่าจะผ่านไปนานแค่ไหน — ถ้าใกล้กว่าเดิมจริง (เกิน epsilon กันราคา noise
 # เล็กๆน้อยๆ) ถึงจะปล่อยให้เรียกใหม่ setup อื่นที่ไม่มี dist (EQL/SWEEP/SWING) ยังใช้
 # เกณฑ์เดิม (time + price tolerance) เพราะไม่มีแนวคิด "ระยะห่างถึง level" ที่ชัดเจน
-_DIST_IMPROVE_EPS = 0.5
+# user feedback: 0.5 หลวมเกินไป — เจอเคสห่างขึ้น/ลงแค่ 0.3-0.9 (noise ธรรมดา) แต่ยัง
+# ผ่าน epsilon ทำให้เรียก AI ซ้ำถี่เกิน ("ราคายังไม่เข้าใกล้มากกว่าเดิมเกิน 1$ ไม่ต้อง
+# เรียก AI และไม่ต้องมี signal") ยกเป็น 1.0
+_DIST_IMPROVE_EPS = 1.0
 
 
 def _check_reject_cooldown(setup_key: str, price: float | None, dist: float | None = None) -> dict | None:
