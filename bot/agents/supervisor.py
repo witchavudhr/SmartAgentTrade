@@ -219,11 +219,11 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # แก้แบบทั่วไป: คำนวณ "ระยะห่างจนถึงเงื่อนไข" ของทุก pattern ที่ยัง watch อยู่
     # (OB, BSL/SSL liquidity pool) แล้วเลือก label ตามตัวที่ใกล้สุด — ไม่ใช่ patch
     # ทีละ pattern แบบเดิมอีกต่อไป เพิ่ม pattern ใหม่ในอนาคตแค่เติมใน candidates list
-    def _watchlist_candidates(smc: dict) -> list[tuple[str, float]]:
+    def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
         price = smc.get("current_price")
         if price is None:
             return []
-        cands: list[tuple[str, float]] = []
+        cands: list[tuple[str, float, float]] = []
 
         # เช็คทั้ง M5 และ M15 OB แล้วเอาตัวที่ระยะห่างน้อยสุดจริง — เดิม preferred
         # M15 ก่อนเสมอ (ถ้ามี) ทำให้พลาดเคสที่ M5 OB ใกล้กว่า M15 OB จริงๆ (เช่น
@@ -246,9 +246,9 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         # เกิดขึ้น ("ob ล่าสุด มันจะไม่ใช่ได้ไง ถ้าคิดว่าไม่สนใจ pool นี้ ก็ไม่ต้องโชว์
         # ใน /ob สิ") — ตัด guard นี้ออก ให้ OB ที่ /ob โชว์ ถือเป็น watchable เสมอ
         if _near_bull_top is not None:
-            cands.append(("NEAR_BULL_OB", price - _near_bull_top))
+            cands.append(("NEAR_BULL_OB", price - _near_bull_top, _near_bull_top))
         if _near_bear_bot is not None:
-            cands.append(("NEAR_BEAR_OB", _near_bear_bot - price))
+            cands.append(("NEAR_BEAR_OB", _near_bear_bot - price, _near_bear_bot))
 
         _liqw = smc.get("liquidity") or {}
         _ssl_raw = _liqw.get("nearest_ssl")
@@ -256,18 +256,19 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
         _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
         if _ssl_lvl is not None and price >= _ssl_lvl:
-            cands.append(("APPROACHING_SSL", price - _ssl_lvl))
+            cands.append(("APPROACHING_SSL", price - _ssl_lvl, _ssl_lvl))
         if _bsl_lvl is not None and price <= _bsl_lvl:
-            cands.append(("APPROACHING_BSL", _bsl_lvl - price))
+            cands.append(("APPROACHING_BSL", _bsl_lvl - price, _bsl_lvl))
 
         return cands
 
     # user feedback: 100pts (=$100) กว้างเกินไป — เจอเคส label โชว์ "approaching"
     # ทั้งที่จริงยังห่างอยู่มาก ไม่ค่อยมีประโยชน์ ให้แจ้งเตือนเฉพาะตอนใกล้จริงๆ
     # (≤$5) เท่านั้น ไม่กระทบเกณฑ์การเข้าเทรดจริง (OB_MIN_DISPLACEMENT ฯลฯ แยกกัน)
-    _watch = [(lbl, d) for lbl, d in _watchlist_candidates(smc_summary) if 0 <= d <= 5]
+    _watch = [(lbl, d, lvl) for lbl, d, lvl in _watchlist_candidates(smc_summary) if 0 <= d <= 5]
     _approach_lbl = min(_watch, key=lambda x: x[1])[0] if _watch else None
-    _watch_dist_map = dict(_watch)
+    _watch_dist_map = {lbl: d for lbl, d, _lvl in _watch}
+    _watch_lvl_map = {lbl: lvl for lbl, _d, lvl in _watch}
 
     # user feedback: label "BEAR_OB_REJECTED" (จาก recent_bear/bull_ob_rejection
     # event) กับ "APPROACHING_BEAR_OB" (จาก _watchlist_candidates ระยะห่างล้วนๆ)
@@ -304,11 +305,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # — แต่ยังบอกระยะห่างจริงของทุกอย่าง (ไม่ filter ≤$5) ให้เห็นว่าห่างจากอะไร
     # เท่าไร ไม่ใช่แค่บอกเฉยๆ ว่า "ไม่มี signal"
     if result["smc_setup"] == "SIGNAL":
+        # user feedback: บอกแค่ label+ระยะห่างไม่พอ ("NEAR_BEAR_OB 11.7p" ไม่รู้ว่า
+        # รอราคาไหนอยู่) ต้องบอกราคาจริงของ level ที่กำลังรอด้วย ("รอ Bear OB ที่
+        # 3991.71 ห่าง 11.7$") ถึงจะเทียบกับ /ob หรือชาร์ตได้ตรงๆ
         _all_watch = sorted(_watchlist_candidates(smc_summary), key=lambda x: x[1])
-        _dist_str = ", ".join(f"{lbl} {round(d,1)}p" for lbl, d in _all_watch[:4]) or "ไม่มีข้อมูล OB/SSL/BSL"
+        _dist_str = (
+            ", ".join(f"{lbl} @{lvl} ห่าง{round(d,1)}$" for lbl, d, lvl in _all_watch[:4])
+            or "ไม่มีข้อมูล OB/SSL/BSL"
+        )
         result["reject_reason"] = (
             f"ไม่มี pattern ที่มีความหมายจริง (ไม่มี EQL/SWING/SWEEP สด, ไม่มี OB rejection) — "
-            f"ระยะห่างตอนนี้: {_dist_str} — ข้าม AI call เพื่อประหยัด"
+            f"รอ: {_dist_str} — ข้าม AI call เพื่อประหยัด"
         )
         result["stages"]["smc"] = "NO_MEANINGFUL_SIGNAL"
         return result
@@ -318,8 +325,10 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     _cd_hit = _check_reject_cooldown(result["smc_setup"], result["current_price"], _cd_dist)
     if _cd_hit:
         _cd_setup_disp = result["smc_setup"].replace("_", " ")
+        _cd_lvl = _watch_lvl_map.get(result["smc_setup"])
+        _cd_lvl_str = f" (level {_cd_lvl})" if _cd_lvl is not None else ""
         if _cd_dist is not None:
-            _cd_why = f"ราคายังไม่ใกล้ zone นี้กว่าตอนโดน reject ครั้งก่อน ({_cd_dist:.1f} vs {_cd_hit.get('dist', '?')})"
+            _cd_why = f"ราคายังไม่ใกล้ zone นี้{_cd_lvl_str}กว่าตอนโดน reject ครั้งก่อน ({_cd_dist:.1f} vs {_cd_hit.get('dist', '?')})"
         else:
             _cd_why = f"ราคาใกล้เดิม ({_cd_hit['price']} vs {result['current_price']})"
         result["reject_reason"] = (
