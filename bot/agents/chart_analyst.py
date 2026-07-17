@@ -424,6 +424,12 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # each other — a wick that barely pokes past a level (shallow depth) is noise,
     # not a real liquidity grab. Require depth >= 5pts ก่อนนับเป็น sweep ที่ valid
     _MIN_SWEEP_DEPTH = 5.0
+    # user feedback: SL ผูกกับ level ที่โดน sweep (+ buffer) ไม่ได้ผูกกับราคาที่เข้า
+    # ยิ่ง entry ห่างจาก level เท่าไร risk ยิ่งบวมเท่านั้น — window เดิม
+    # max(15, depth*2.5) ยอมให้ห่างได้ถึง $31.85 (ตอน depth=12.74) ทำให้เจอ signal
+    # ที่ AI จะ reject เพราะ RR ไม่ผ่านอยู่ดีเสมอ (SL ไกลเกิน ไม่มี target รองรับ)
+    # จำกัดเป็น $10 คงที่ ไม่สนใจ depth แล้ว ให้ตรงกับที่ RR จะรอดจริง
+    _SWEEP_ENTRY_WINDOW = 10.0
     def _sweep_valid(sw: dict | None) -> bool:
         if not sw:
             return False
@@ -436,10 +442,9 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         if _depth < _MIN_SWEEP_DEPTH:
             return False
         _dist  = abs(price - _lvl) if _lvl else 9999
-        _window = max(15.0, _depth * 2.5)
-        if _age is not None and _age <= 2 and _dist <= _window:
+        if _age is not None and _age <= 2 and _dist <= _SWEEP_ENTRY_WINDOW:
             return True
-        return _age is not None and _age <= 4 and _dist <= 10.0
+        return _age is not None and _age <= 4 and _dist <= _SWEEP_ENTRY_WINDOW
 
     has_sweep = _sweep_valid(smc_summary.get("last_sweep_low")) or _sweep_valid(smc_summary.get("last_sweep_high"))
 
