@@ -47,7 +47,10 @@ def _get_bias(signal_direction: str) -> dict:
 # อะไรเปลี่ยน (ราคาไม่ขยับพ้น tolerance) การเรียก Chart Analyst ซ้ำจะได้ผลเหมือนเดิม
 # แน่ๆ (เช่น รอ CHoCH bullish ที่ยังไม่เกิด) เสียเงินฟรีทุก 5 นาที)
 _REJECT_COOLDOWN_SEC = 15 * 60   # 15 นาที
-_REJECT_PRICE_TOLERANCE = 8.0    # ราคาต้องขยับเกินนี้ถึงจะถือว่า "เปลี่ยนสถานการณ์" แล้ว
+# user feedback: $8 หลวมไปสำหรับ setup ที่ไม่มี level ชัดเจน (SWING_/EQL/
+# POST_SWEEP) ลดเหลือ $4 — ส่วน SWEEP_HIGH/LOW ย้ายไปใช้ dist-based cooldown
+# (เทียบกับ level ตรงๆ) แล้ว ไม่ผ่าน branch นี้อีกต่อไป
+_REJECT_PRICE_TOLERANCE = 4.0    # ราคาต้องขยับเกินนี้ถึงจะถือว่า "เปลี่ยนสถานการณ์" แล้ว
 _reject_cache: dict = {}
 # smc_setup label มาจากหลาย data source ผสมกัน (sweep/rejection/approach/swing)
 # ที่แต่ละอันมี threshold คาบเกี่ยวกันได้ (เช่น เพิ่งเข้า/หลุดเกณฑ์ $5 ไปมา) ทำให้
@@ -296,6 +299,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     _approach_lbl = min(_watch, key=lambda x: x[1])[0] if _watch else None
     _watch_dist_map = {lbl: d for lbl, d, _lvl in _watch}
     _watch_lvl_map = {lbl: lvl for lbl, _d, lvl in _watch}
+
+    # user feedback: SWEEP_HIGH/SWEEP_LOW ก็มี level ชัดเจนอยู่แล้ว (last_sweep_high/
+    # low) เอามาคำนวณระยะห่างแบบเดียวกับ NEAR_BULL_OB/APPROACHING_SSL ได้เลย แทนที่
+    # จะใช้ time+price tolerance แบบหลวมๆ — จะได้ cooldown ตาม "ใกล้กว่าเดิม" แบบ
+    # เดียวกันทั้งระบบ
+    if _price_lbl is not None and _sw_high.get("level") is not None:
+        _watch_dist_map["SWEEP_HIGH"] = abs(_price_lbl - _sw_high["level"])
+        _watch_lvl_map["SWEEP_HIGH"] = _sw_high["level"]
+    if _price_lbl is not None and _sw_low.get("level") is not None:
+        _watch_dist_map["SWEEP_LOW"] = abs(_price_lbl - _sw_low["level"])
+        _watch_lvl_map["SWEEP_LOW"] = _sw_low["level"]
 
     # user feedback: label "BEAR_OB_REJECTED" (จาก recent_bear/bull_ob_rejection
     # event) กับ "APPROACHING_BEAR_OB" (จาก _watchlist_candidates ระยะห่างล้วนๆ)
