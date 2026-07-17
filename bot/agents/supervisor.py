@@ -239,22 +239,27 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _near_bull_top = max(_valid_bull_tops) if _valid_bull_tops else None
         _near_bear_bot = min(_valid_bear_bots) if _valid_bear_bots else None
 
-        # user feedback: เดิมมี clustering guard ตัด Bull/Bear OB ทิ้งทั้งคู่ถ้าห่างกัน
-        # เองไม่ถึง $20 (กัน sideways/choppy) แต่กลายเป็นบั๊ก — OB ที่ /ob โชว์ว่าเป็น
-        # OB จริงที่ active อยู่ กลับไม่โผล่ใน watchlist เลยแม้ราคาจะเข้าใกล้จนเกือบชน
-        # (เช่น 5 จุด) เพราะโดน guard นี้ตัดทิ้งไปก่อน ทำให้พลาด sweep+bounce จริงที่
-        # เกิดขึ้น ("ob ล่าสุด มันจะไม่ใช่ได้ไง ถ้าคิดว่าไม่สนใจ pool นี้ ก็ไม่ต้องโชว์
-        # ใน /ob สิ") — ตัด guard นี้ออก ให้ OB ที่ /ob โชว์ ถือเป็น watchable เสมอ
-        if _near_bull_top is not None:
-            cands.append(("NEAR_BULL_OB", price - _near_bull_top, _near_bull_top))
-        if _near_bear_bot is not None:
-            cands.append(("NEAR_BEAR_OB", _near_bear_bot - price, _near_bear_bot))
-
         _liqw = smc.get("liquidity") or {}
         _ssl_raw = _liqw.get("nearest_ssl")
         _bsl_raw = _liqw.get("nearest_bsl")
         _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
         _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
+
+        # user feedback: เกณฑ์ $20 เดิมเช็คผิดจุด (ห่างระหว่าง Bull OB กับ Bear OB
+        # คนละฝั่ง) ที่จริงต้องเช็คว่า OB นั้นห่างจาก SSL/BSL (จุดสูงสุด/ต่ำสุดที่ราคา
+        #วิ่งมาจาก) อย่างน้อย $20 ถึงจะมี "room สะสมแล้วกลับตัว" จริง ไม่ใช่แค่ noise
+        # ติดขอบ range (เช่น Bear OB 3991 แต่ SSL ที่มันวิ่งขึ้นมาจากอยู่แค่ 3973 ห่าง
+        # แค่ $18 → sideway โดนหลอกง่าย ข้ามไปเลย) — Bear OB เทียบกับ SSL (จุดต่ำที่
+        # ราคาเด้งขึ้นมา), Bull OB เทียบกับ BSL (จุดสูงที่ราคาร่วงลงมา)
+        _MIN_OB_ROOM = 20.0
+        _bull_has_room = (_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False
+        _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
+
+        if _near_bull_top is not None and _bull_has_room:
+            cands.append(("NEAR_BULL_OB", price - _near_bull_top, _near_bull_top))
+        if _near_bear_bot is not None and _bear_has_room:
+            cands.append(("NEAR_BEAR_OB", _near_bear_bot - price, _near_bear_bot))
+
         if _ssl_lvl is not None and price >= _ssl_lvl:
             cands.append(("APPROACHING_SSL", price - _ssl_lvl, _ssl_lvl))
         if _bsl_lvl is not None and price <= _bsl_lvl:
