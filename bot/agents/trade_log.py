@@ -56,6 +56,12 @@ def init_db():
         )
     """)
 
+    # Migrate old databases — เพิ่ม column ใหม่ให้ scan_log โดยไม่ทำลายข้อมูลเก่า
+    _scan_log_existing = {row[1] for row in conn.execute("PRAGMA table_info(scan_log)").fetchall()}
+    for col, typ in [("smc_setup", "TEXT"), ("current_price", "REAL"), ("smc_stage", "TEXT")]:
+        if col not in _scan_log_existing:
+            conn.execute(f"ALTER TABLE scan_log ADD COLUMN {col} {typ}")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS meta (
             key        TEXT PRIMARY KEY,
@@ -170,8 +176,9 @@ def log_scan(result: dict):
             timestamp, session, signal, confidence, vote_score,
             chart_vote, bias_vote, news_vote,
             approved, reject_reason,
-            entry, sl, tp, rr, h4_bias, setup_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            entry, sl, tp, rr, h4_bias, setup_type,
+            smc_setup, current_price, smc_stage
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         sess.get("session"),
@@ -189,6 +196,9 @@ def log_scan(result: dict):
         analysis.get("rr_ratio") or analysis.get("rr"),
         analysis.get("h4_bias") or analysis.get("smc_bias"),
         analysis.get("setup_type"),
+        result.get("smc_setup"),
+        result.get("current_price"),
+        (result.get("stages") or {}).get("smc"),
     ))
     conn.commit()
     conn.close()
@@ -1186,6 +1196,38 @@ def format_today_summary() -> str:
 
 
 # ── Export ────────────────────────────────────────────────────────
+
+SCAN_LOG_CSV_PATH = Path(__file__).parent.parent / "data" / "scan_log_export.csv"
+
+
+def export_scan_log_csv(day: str | None = None) -> Path:
+    """
+    Export ทุก scan (signal) ของวันเดียว รวม NO_TRADE/rejected/cooldown-skip
+    day: "YYYY-MM-DD" (default = วันนี้ ตามเวลาเครื่อง)
+    """
+    init_db()
+    if day is None:
+        day = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM scan_log WHERE timestamp LIKE ? ORDER BY timestamp",
+        (f"{day}%",),
+    ).fetchall()
+    conn.close()
+
+    fields = [
+        "id", "timestamp", "session", "smc_setup", "smc_stage", "current_price",
+        "signal", "confidence", "vote_score", "chart_vote", "bias_vote", "news_vote",
+        "approved", "entry", "sl", "tp", "rr", "h4_bias", "setup_type", "reject_reason",
+    ]
+    SCAN_LOG_CSV_PATH.parent.mkdir(exist_ok=True)
+    with open(SCAN_LOG_CSV_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(dict(r) for r in rows)
+    return SCAN_LOG_CSV_PATH
+
 
 def export_csv() -> Path:
     trades = get_all_trades(action_filter="confirmed")

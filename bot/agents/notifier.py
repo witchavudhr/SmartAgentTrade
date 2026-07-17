@@ -26,7 +26,7 @@ from agents.trade_log import (
     log_trade, update_outcome, format_report,
     get_all_trades, format_trade_list, export_csv, get_trade,
     format_today_summary, get_summary,
-    log_scan,
+    log_scan, export_scan_log_csv,
 )
 from agents import paper_trader
 from agents import state_manager
@@ -189,6 +189,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/pending — trades ที่ยังรอบันทึก outcome\n"
         "/pnl — สรุป P&amp;L + win rate (paper trade)\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
+        "/scanlog [YYYY-MM-DD] — ดาวน์โหลด CSV ทุก signal ของวันนั้น (รวม NO_TRADE/rejected, default วันนี้)\n"
     )
     msg2 = (
         "🗂 <b>Data &amp; Sync</b>\n"
@@ -872,6 +873,32 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"เปิดด้วย Excel หรือ Google Sheets ได้เลย"
             )
         )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Export ไม่ได้: {e}")
+
+
+async def cmd_scanlog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /scanlog [YYYY-MM-DD] — export ทุก scan (signal) ของวันนั้นเป็น CSV
+    รวม NO_TRADE/rejected/cooldown-skip ทั้งหมด ไม่ใช่แค่ไม้ที่เข้าจริง
+    (ต่างจาก /export ซึ่ง export เฉพาะ trade ที่ confirmed แล้ว)
+    """
+    _day = ctx.args[0] if ctx.args else datetime.now().strftime("%Y-%m-%d")
+    await update.message.reply_text(f"📤 กำลัง export scan log วันที่ {_day}...")
+    try:
+        csv_path = export_scan_log_csv(_day)
+        with open(csv_path, encoding="utf-8") as f:
+            _n_rows = max(0, sum(1 for _ in f) - 1)
+        with open(csv_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"scan_log_{_day}.csv",
+                caption=(
+                    f"📊 Scan Log Export — {_day} ({_n_rows} scans)\n"
+                    f"รวมทุก signal ทั้งที่เข้าเทรดและ NO_TRADE/rejected\n"
+                    f"เปิดด้วย Excel หรือ Google Sheets ได้เลย"
+                )
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ Export ไม่ได้: {e}")
 
@@ -3733,6 +3760,7 @@ def run():
     app.add_handler(CommandHandler("tx", cmd_tx))
     app.add_handler(CommandHandler("txreport", cmd_txreport))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("scanlog", cmd_scanlog))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
     app.add_handler(CommandHandler("news", cmd_news))
