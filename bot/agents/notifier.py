@@ -190,6 +190,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/pnl — สรุป P&amp;L + win rate (paper trade)\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
         "/scanlog [YYYY-MM-DD] — ดาวน์โหลด CSV ทุก signal ของวันนั้น (รวม NO_TRADE/rejected, default วันนี้)\n"
+        "/consolelog [YYYY-MM-DD] — ดาวน์โหลด console log (print ทั้งหมด) ของวันนั้น\n"
     )
     msg2 = (
         "🗂 <b>Data &amp; Sync</b>\n"
@@ -901,6 +902,30 @@ async def cmd_scanlog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         await update.message.reply_text(f"❌ Export ไม่ได้: {e}")
+
+
+async def cmd_consolelog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /consolelog [YYYY-MM-DD] — ดาวน์โหลด console log (print ทั้งหมด) ของวันนั้น
+    ต่างจาก /scanlog (structured data จาก DB) — อันนี้คือ raw text ที่ print()
+    ออกมาจริงๆ ทุกบรรทัด เอาไว้ debug/feedback loop ละเอียดกว่า
+    """
+    from agents.daily_log import log_path_for
+    _day = ctx.args[0] if ctx.args else datetime.now().strftime("%Y-%m-%d")
+    _path = log_path_for(_day)
+    if not _path.exists():
+        await update.message.reply_text(f"❌ ไม่มี console log ของวันที่ {_day}")
+        return
+    await update.message.reply_text(f"📤 กำลังส่ง console log วันที่ {_day}...")
+    try:
+        with open(_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"console_{_day}.log",
+                caption=f"📝 Console Log — {_day}",
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ ส่งไม่ได้: {e}")
 
 
 async def cmd_bias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3761,6 +3786,7 @@ def run():
     app.add_handler(CommandHandler("txreport", cmd_txreport))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("scanlog", cmd_scanlog))
+    app.add_handler(CommandHandler("consolelog", cmd_consolelog))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))
     app.add_handler(CommandHandler("news", cmd_news))

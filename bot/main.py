@@ -18,6 +18,11 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 # เพิ่ม path ให้ import config และ agents ได้
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# เก็บ console log (print ทุกที่ในโปรเจกต์) ลงไฟล์แยกตามวัน — เอาไว้ทำ feedback
+# loop ย้อนหลังได้ ต้อง setup ก่อน import อื่นๆ ที่อาจจะ print ตอน import
+from agents.daily_log import setup_daily_console_log
+setup_daily_console_log()
+
 from agents.notifier import run
 
 _RESTART_DELAY = 30   # วินาทีที่รอก่อน restart
