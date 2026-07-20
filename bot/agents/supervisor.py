@@ -205,21 +205,29 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # อยู่ 20+ นาที ถูก AI reject ซ้ำๆ ทั้งที่ rejection confirmed ตั้งแต่ age=1bar)
     _SWEEP_REJECTED_MAX_AGE = 3
 
+    # user feedback: เดิม label เช็คแค่ age<=100 + dist<=20 (หลวมกว่ามาก) ทำให้ label
+    # ขึ้นเรียก AI ทั้งที่ chart_analyst_agent.py's _pullback() (FIRST/SECOND window
+    # age<=4, dist<=10) จะตอบ EXPIRED แน่ๆ อยู่แล้ว — เสียเงินเรียก AI ไปฟรีๆ ซ้ำๆ
+    # ("BSL pullback status is EXPIRED (dist=1.2pts, age=6bars)" ฯลฯ) ตอนนี้ใช้
+    # เกณฑ์เดียวกันกับ _pullback() เป๊ะ (age<=4, dist<=10) — label จะไม่ขึ้นเลยถ้ารู้
+    # อยู่แล้วว่า AI จะตอบ EXPIRED
+    _SWEEP_ENTRY_WINDOW = 10.0
+
     def _sweep_label_ok(sw: dict) -> bool:
         if not sw or _price_lbl is None:
             return False
         _age = sw.get("age_bars")
-        if _age is not None and _age > 100:
+        if _age is None or _age > 4:
             return False
-        if sw.get("recovered") and _age is not None and _age > _SWEEP_REJECTED_MAX_AGE:
+        if sw.get("recovered") and _age > _SWEEP_REJECTED_MAX_AGE:
             return False
         _lvl = sw.get("level")
         _wick = sw.get("wick_extreme")
         if _lvl is not None and _wick is not None and abs(_lvl - _wick) < _MIN_SWEEP_DEPTH_LBL:
             return False
         if _lvl is None:
-            return _age is not None and _age <= 48
-        return abs(_price_lbl - _lvl) <= 20
+            return False
+        return abs(_price_lbl - _lvl) <= _SWEEP_ENTRY_WINDOW
 
     _fresh_sweep_kind = None
     if _sweep_label_ok(_sw_high):

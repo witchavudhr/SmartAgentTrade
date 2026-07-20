@@ -341,6 +341,10 @@ def _build_prompt(smc: dict) -> str:
     # not a real liquidity grab. Especially now that FIRST fires within 1-2 bars,
     # a depth-less sweep must never qualify — require depth >= MIN_SWEEP_DEPTH.
     _MIN_SWEEP_DEPTH = 5.0
+    # user feedback: SL ผูกกับ level ที่โดน sweep ไม่ได้ผูกกับ entry — ยิ่ง entry
+    # ห่างจาก level risk ยิ่งบวม เลยตัด window แบบ depth-scaled (เคยกว้างถึง $31.85)
+    # ออก เหลือ $10 คงที่ ให้ตรงกับ chart_analyst.py's _sweep_valid() ที่แก้ไปแล้ว
+    _SWEEP_ENTRY_WINDOW = 10.0
     def _pullback(sw: dict) -> tuple[str, float, float, int]:
         _lvl   = sw.get("level") or 0
         _wick  = sw.get("wick_extreme") or _lvl
@@ -348,16 +352,15 @@ def _build_prompt(smc: dict) -> str:
         _age   = sw.get("age_bars")
         _age   = _age if _age is not None else 999
         _dist  = round(abs(price - _lvl), 1) if _lvl else 999
-        _window = max(15.0, _depth * 2.5)
         if not sw:
             _status = "NONE"
         elif _depth < _MIN_SWEEP_DEPTH:
             _status = "EXPIRED"  # depth ตื้นเกินไป — noise ในโซนแคบ ไม่ใช่ sweep จริง
         elif _age > 48:
             _status = "EXPIRED"
-        elif _age <= 2 and _dist <= _window:
+        elif _age <= 2 and _dist <= _SWEEP_ENTRY_WINDOW:
             _status = "FIRST"
-        elif _age <= 4 and _dist <= 10.0:
+        elif _age <= 4 and _dist <= _SWEEP_ENTRY_WINDOW:
             _status = "SECOND"
         else:
             _status = "EXPIRED"
