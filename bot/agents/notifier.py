@@ -1027,7 +1027,12 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         def _fmt(ob, label):
             if not ob: return f"{label}: ไม่มี"
-            in_tag = " ← IN OB ✅" if ob.get("in_ob") else f" ห่าง {int(round(abs((price or 0) - ob.get('top', 0)) * 10))}p"
+            # user feedback: Bear OB ใช้ 'top' (ขอบไกล) คำนวณระยะห่างมาตลอด — ราคาจะ
+            # ไปแตะ 'bottom' (ขอบใกล้) ก่อนเสมอ ทำให้ตัวเลข "ห่าง" ที่โชว์ใน /ob เว่อร์
+            # กว่าความจริงเกือบ 2 เท่า (เช่น M5 Bear OB จริงห่างแค่ $5.35 แต่โชว์ 127p
+            # =$12.7 เพราะไปวัดจาก top) — ใช้ bottom สำหรับ Bear, top สำหรับ Bull แทน
+            _near_edge = ob.get("bottom") if "Bear" in label else ob.get("top")
+            in_tag = " ← IN OB ✅" if ob.get("in_ob") else f" ห่าง {int(round(abs((price or 0) - (_near_edge or 0)) * 10))}p"
             return f"{label}: `{ob.get('bottom')} – {ob.get('top')}`{in_tag}"
 
         def _fmt_liq_list(pools, icon, max_n=3):
