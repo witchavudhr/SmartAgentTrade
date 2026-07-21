@@ -1853,8 +1853,15 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                         f"_Claude ส่งมาเป็น scalar หรือ None — skip execute เพื่อความปลอดภัย_"
                     )
                 else:
-                    # ราคาต้องอยู่ใน OB zone (เผื่อ spread 3pts)
-                    in_ob_zone = (ob_bottom - 3) <= current_mkt <= (ob_top + 3)
+                    # ราคาต้องอยู่ใน OB zone (เผื่อ spread 3pts) — แต่ถ้าเพิ่งมี
+                    # rejection สดจริง (≤2 แท่ง) ราคาอาจวิ่งออกจากโซนไปแล้วก่อนที่
+                    # scan รอบถัดไป (5 นาที) จะจับทัน (เคส Trade #267: ห่างแค่ $3.97
+                    # จาก OB แต่ rejection เกิดไปแล้ว 1 แท่งก่อน) ขยาย buffer เป็น $6
+                    # เฉพาะตอนนี้ ไม่งั้นพลาด setup ที่ rejection ยืนยันจริงไปเปล่าๆ
+                    _rej_field = "recent_bear_ob_rejection" if direction == "SELL" else "recent_bull_ob_rejection"
+                    _rej_fresh = signal.get(_rej_field) or {}
+                    _ob_buf = 6.0 if (_rej_fresh.get("bars_ago") is not None and _rej_fresh["bars_ago"] <= 2) else 3.0
+                    in_ob_zone = (ob_bottom - _ob_buf) <= current_mkt <= (ob_top + _ob_buf)
                     if not in_ob_zone:
                         entry_far = True
                         dist_p = round(abs(ob_bottom - current_mkt) * 10) if current_mkt < ob_bottom else round(abs(current_mkt - ob_top) * 10)
