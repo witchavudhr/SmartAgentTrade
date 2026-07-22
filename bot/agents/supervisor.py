@@ -414,7 +414,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # ── Stage 2: Chart Analyst — SDK (subscription) ──
     try:
         from agents import chart_analyst_agent
-        analysis = chart_analyst_agent.analyze(smc_summary)
+        analysis = chart_analyst_agent.analyze(smc_summary, setup_hint=result.get("smc_setup"))
     except Exception as _sdk_err:
         print(f"[Supervisor] ⚠️ Agent SDK failed ({_sdk_err}) — skip scan (no API fallback)")
         result["reject_reason"] = f"SDK timeout/error — scan skipped"

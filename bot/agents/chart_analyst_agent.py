@@ -211,7 +211,7 @@ def _fmt(val):
     return str(val) if val is not None else "N/A"
 
 
-def _build_prompt(smc: dict) -> str:
+def _build_prompt(smc: dict, setup_hint: str = None) -> str:
     price    = smc.get("current_price", 0)
     bias     = smc.get("bias", "neutral")
     sweep    = smc.get("last_sweep") or {}
@@ -241,7 +241,26 @@ def _build_prompt(smc: dict) -> str:
     _wick_ext_early    = sweep.get("wick_extreme") or _sweep_level_early
     _sweep_depth       = round(abs(_sweep_level_early - _wick_ext_early), 2) if _sweep_level_early else 0
 
+    # user feedback: pre-filter (supervisor.py) เคยคำนวณแล้วว่าราคาใกล้ BSL/SSL
+    # มากแค่ไหน (APPROACHING_BSL/APPROACHING_SSL) แต่ไม่เคยส่งข้อมูลนี้ต่อให้ AI
+    # เลย — AI เลยหลุดไปโฟกัส CASE B ที่หมดอายุไปแล้วแทนที่จะเช็ค CASE F ของ level
+    # ที่ราคากำลังจะแตะจริงๆ ("ราคาห่างจาก BSL แค่ $0.1 แต่ AI พูดเรื่อง Bull OB
+    # เก่า 11 แท่งก่อนแทน") — ใส่ priority hint ตรงๆ ให้ AI รู้ว่า pre-filter
+    # ระบุอะไรไว้ ต้องประเมิน CASE F ของ level นั้นก่อนเสมอ
+    _priority_line = ""
+    if setup_hint in ("APPROACHING_BSL", "APPROACHING_SSL"):
+        _priority_line = (
+            f"\n⚠️ PRE-FILTER PRIORITY: price is very close (≤$5) to the "
+            f"{'BSL' if setup_hint == 'APPROACHING_BSL' else 'SSL'} level below/above — "
+            f"you MUST evaluate CASE F (sweep+rejection of THIS specific level) as the "
+            f"top priority before considering any other case. Do NOT default to discussing "
+            f"a stale/expired CASE B OB rejection instead just because it appears in the "
+            f"data — if that OB rejection is outside the valid window, move on and properly "
+            f"assess whether this near liquidity level is being swept right now.\n"
+        )
+
     lines = [
+        _priority_line,
         "=== MARKET DATA — XAUUSD M5 ===",
         f"Price: {price} | Bias: {bias} | Session: {sess.get('session','?')}",
         "",
@@ -429,14 +448,16 @@ _MAX_RETRIES = 2   # retry กี่ครั้งก่อน give up
 _RETRY_DELAY = 8   # วินาทีที่รอระหว่าง retry
 
 
-def analyze(smc_summary: dict) -> dict:
+def analyze(smc_summary: dict, setup_hint: str = None) -> dict:
     """
     เรียก Sonnet ผ่าน Anthropic API ตรงๆ
     คืน dict format เดียวกันเป๊ะ — supervisor.py ใช้ต่อได้ทันที
+    setup_hint: smc_setup label ที่ supervisor.py คำนวณไว้แล้ว (เช่น
+    APPROACHING_BSL) — ใช้บอก AI ว่าควรโฟกัสประเมิน pattern ไหนเป็นหลัก
     """
     t0 = time.time()
 
-    prompt = _build_prompt(smc_summary)
+    prompt = _build_prompt(smc_summary, setup_hint)
 
     raw = None
     last_err = None
