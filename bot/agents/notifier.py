@@ -1018,11 +1018,14 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         price = smc.get("current_price") or smc.get("price")
         source = smc.get("price_source", "yfinance")
         m15 = smc.get("m15") or {}
+        m30 = smc.get("m30") or {}
 
         m5_bull  = smc.get("active_bull_ob")
         m5_bear  = smc.get("active_bear_ob")
         m15_bull = m15.get("active_bull_ob")
         m15_bear = m15.get("active_bear_ob")
+        m30_bull = m30.get("active_bull_ob")
+        m30_bear = m30.get("active_bear_ob")
         liq      = smc.get("liquidity", {})
 
         def _fmt(ob, label):
@@ -1139,6 +1142,7 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return c["dist_pts"] == 0 or c["dist_pts"] >= _MIN_ZONE_DIST
 
         buy_candidates = [c for c in [
+            _ob_candidate(m30_bull, "Bull OB (M30)"),
             _ob_candidate(m15_bull, "Bull OB (M15)"),
             _ob_candidate(m5_bull,  "Bull OB (M5)"),
             _liq_candidate(liq.get("nearest_ssl"), f"SSL {(liq.get('nearest_ssl') or {}).get('type','?')}"),
@@ -1147,6 +1151,7 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _fvg_candidate(smc.get("nearest_bull_fvg"), "Bull FVG (M5)"),
         ] if c and _far_enough(c)]
         sell_candidates = [c for c in [
+            _ob_candidate(m30_bear, "Bear OB (M30)"),
             _ob_candidate(m15_bear, "Bear OB (M15)"),
             _ob_candidate(m5_bear,  "Bear OB (M5)"),
             _liq_candidate(liq.get("nearest_bsl"), f"BSL {(liq.get('nearest_bsl') or {}).get('type','?')}"),
@@ -1199,6 +1204,9 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"*M15:*\n"
             f"  🟢 {_fmt(m15_bull, 'Bull OB')}\n"
             f"  🔴 {_fmt(m15_bear, 'Bear OB')}\n\n"
+            f"*M30:*\n"
+            f"  🟢 {_fmt(m30_bull, 'Bull OB')}\n"
+            f"  🔴 {_fmt(m30_bear, 'Bear OB')}\n\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"🌊 *Liquidity Pools — 7d*\n"
             f"*BSL* 🔵 (เหนือราคา):\n{w_bsl_lines}\n\n"

@@ -124,6 +124,17 @@ def resample_m15(df_m5: pd.DataFrame) -> pd.DataFrame:
     return m15
 
 
+def resample_m30(df_m5: pd.DataFrame) -> pd.DataFrame:
+    """แปลง M5 bars เป็น M30 (aggregate) — เหมือน resample_m15 แต่ 30 นาที"""
+    if df_m5 is None or df_m5.empty:
+        return df_m5
+    d = df_m5.set_index("time") if "time" in df_m5.columns else df_m5
+    m30 = d.resample("30min").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+    }).dropna()
+    return m30
+
+
 def today_summary(date_str: str, session_start: str = "06:00", session_end: str = None) -> dict:
     """
     สรุปข้อมูลของวันนี้ที่สะสมไว้ — ใช้ตอบคำสั่ง Telegram

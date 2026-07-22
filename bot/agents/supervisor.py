@@ -229,10 +229,19 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             return False
         return abs(_price_lbl - _lvl) <= _SWEEP_ENTRY_WINDOW
 
+    # user feedback: sweep บน M15/M30 ไม่เคยถูกเช็คเป็น label เลย (เจอ sweep BSL
+    # ของ M15 จริงบนกราฟ แต่ label ไม่เคยขึ้นเพราะเช็คแค่ M5) — รวม M15/M30 เข้ามา
+    # เช็คด้วยเกณฑ์เดียวกัน (_sweep_label_ok ใช้ age_bars ของ timeframe นั้นๆ เอง
+    # ตรงๆ ไม่ได้เทียบข้าม timeframe ดังนั้นเกณฑ์ยังคง fair สำหรับทุก timeframe)
+    _m15_smc_lbl = smc_summary.get("m15") or {}
+    _m30_smc_lbl = smc_summary.get("m30") or {}
+    _sw_high_all = [_sw_high, _m15_smc_lbl.get("last_sweep_high"), _m30_smc_lbl.get("last_sweep_high")]
+    _sw_low_all  = [_sw_low,  _m15_smc_lbl.get("last_sweep_low"),  _m30_smc_lbl.get("last_sweep_low")]
+
     _fresh_sweep_kind = None
-    if _sweep_label_ok(_sw_high):
+    if any(_sweep_label_ok(sw) for sw in _sw_high_all if sw):
         _fresh_sweep_kind = "HIGH"
-    elif _sweep_label_ok(_sw_low):
+    elif any(_sweep_label_ok(sw) for sw in _sw_low_all if sw):
         _fresh_sweep_kind = "LOW"
     # ไม่มี layer ไหนใน has_signal()/smc_setup เดิมรู้จัก "ราคากำลังเข้าใกล้เงื่อนไข
     # ไหนอยู่" เลย — มีแค่เช็คแบบ all-or-nothing รายตัว (CASE B ต้อง in_ob=True,
@@ -258,10 +267,12 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         # จาก watchlist ทั้งที่ price อยู่ในโซนพอดี (ดีกว่า "ใกล้" อีก) ต้องนับ OB
         # ที่ price ยังไม่หลุดออกไปทั้งโซน (price >= bottom สำหรับ Bull, price <=
         # top สำหรับ Bear) แล้ว clamp ระยะห่างที่ 0 ถ้าราคาอยู่ในโซนแล้ว
+        # user feedback: เอา M30 เข้ามาด้วยเลย ("เอา bsl/ssl ของ m15/m30 ด้วยเลยงั้น")
         _m15w = smc.get("m15") or {}
-        _bull_obs = [ob for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"))
+        _m30w = smc.get("m30") or {}
+        _bull_obs = [ob for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"), _m30w.get("active_bull_ob"))
                      if ob and ob.get("top") is not None and ob.get("bottom") is not None]
-        _bear_obs = [ob for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"))
+        _bear_obs = [ob for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"), _m30w.get("active_bear_ob"))
                      if ob and ob.get("top") is not None and ob.get("bottom") is not None]
         _valid_bull_obs = [ob for ob in _bull_obs if price >= ob["bottom"]]
         _valid_bear_obs = [ob for ob in _bear_obs if price <= ob["top"]]
@@ -272,11 +283,23 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         _bull_dist = max(0.0, price - _near_bull_top) if _near_bull_top is not None else None
         _bear_dist = max(0.0, _near_bear_bot - price) if _near_bear_bot is not None else None
 
+        # user feedback: nearest_ssl/nearest_bsl เดิมมาจาก M5 ล้วนๆ ("เอา bsl/ssl
+        # ของ m15/m30 ด้วยเลยงั้น") — ใช้ weekly_ssl/bsl_pools แทน (รวม M5+M15+M30
+        # แล้ว dedup เรียงตามระยะห่างอยู่แล้วจาก get_price_data()) เลือกตัวที่ยัง
+        # ไม่ swept ที่ใกล้ที่สุด
         _liqw = smc.get("liquidity") or {}
-        _ssl_raw = _liqw.get("nearest_ssl")
-        _bsl_raw = _liqw.get("nearest_bsl")
-        _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
-        _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
+        _weekly_ssl = [p for p in (_liqw.get("weekly_ssl_pools") or []) if not p.get("swept")]
+        _weekly_bsl = [p for p in (_liqw.get("weekly_bsl_pools") or []) if not p.get("swept")]
+        if _weekly_ssl:
+            _ssl_lvl = _weekly_ssl[0]["level"]
+        else:
+            _ssl_raw = _liqw.get("nearest_ssl")
+            _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
+        if _weekly_bsl:
+            _bsl_lvl = _weekly_bsl[0]["level"]
+        else:
+            _bsl_raw = _liqw.get("nearest_bsl")
+            _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
 
         # user feedback: เกณฑ์ $20 เดิมเช็คผิดจุด (ห่างระหว่าง Bull OB กับ Bear OB
         # คนละฝั่ง) ที่จริงต้องเช็คว่า OB นั้นห่างจาก SSL/BSL (จุดสูงสุด/ต่ำสุดที่ราคา

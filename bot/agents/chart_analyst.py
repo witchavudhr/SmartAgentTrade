@@ -13,6 +13,7 @@ _CACHE_PATH = Path(__file__).parent.parent / "data" / "ai_cache.json"
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 smc     = SMCEngine(swing_length=50, ob_length=5)   # swing struct=50, OB internal=5 (LuxAlgo default)
 smc_m15 = SMCEngine(swing_length=50, ob_length=5)
+smc_m30 = SMCEngine(swing_length=50, ob_length=5)
 # BSL/SSL pool ใช้ swing length สั้นกว่า struct (50) แยกต่างหาก — ตรงกับ Pine
 # indicator (indicator/SmartAgentTrade_Signal.pine i_pool_swing=15) ที่ตั้งใจใช้
 # pivot สั้นกว่าให้เห็น pool ใหม่ๆ ไวขึ้น ไม่ต้องรอยืนยันนาน 50 bars (~4ชม. บน M5)
@@ -118,11 +119,34 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     if df15 is not None and not df15.empty:
         res15      = smc_m15.analyze(df15)
         res15_pool = smc_pool.analyze(df15)  # swing_length=15 แยกสำหรับ BSL/SSL pool + sweep
-        m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2),
+        # ส่ง df15 เข้าไปด้วย (เดิมไม่ส่ง) — ไม่งั้น last_sweep_high/low.age_bars
+        # จะเป็น None ตลอด ทำให้ _sweep_valid()/_sweep_label_ok() (ที่ต้องเช็ค
+        # age_bars) มองว่า sweep ของ M15 ไม่ valid เสมอ ไม่ว่าจะสดแค่ไหนก็ตาม
+        m15_summary = summarize(res15, round(df15['close'].iloc[-1], 2), df15,
                                  pool_swing_highs=res15_pool.swing_highs,
                                  pool_swing_lows=res15_pool.swing_lows,
                                  pool_sweeps=res15_pool.sweeps)
         m15_summary["timeframe"] = "M15"
+
+    # ── M30 summary — resample จาก df5 เดียวกัน (ไม่มี native M30 fetch) ─────────
+    # user feedback: sweep/OB ที่เกิดบน M15 (และ M30) ไม่เคยถูกเช็คใน has_signal()
+    # เลย ("sweep 4084 BSL ของ M15 แล้วแท่งถัดมาย่อลง แต่ไม่ sell") ทั้งที่ M15
+    # summarize() คำนวณ last_sweep_high/low ของตัวเองไว้อยู่แล้ว — เพิ่ม M30 ให้
+    # ครบชุดตามที่ขอ (M5/M15/M30) แล้วให้ has_signal()/supervisor.py เช็คทุก
+    # timeframe ไม่ใช่แค่ M5 อีกต่อไป
+    from agents.bar_cache import resample_m30
+    df30 = resample_m30(df5)
+    m30_summary = None
+    res30 = None
+    res30_pool = None
+    if df30 is not None and not df30.empty:
+        res30      = smc_m30.analyze(df30)
+        res30_pool = smc_pool.analyze(df30)
+        m30_summary = summarize(res30, round(df30['close'].iloc[-1], 2), df30,
+                                 pool_swing_highs=res30_pool.swing_highs,
+                                 pool_swing_lows=res30_pool.swing_lows,
+                                 pool_sweeps=res30_pool.sweeps)
+        m30_summary["timeframe"] = "M30"
 
     # ── M5 summary ─────────────────────────────────────────────────
     mt5_price = _get_mt5_price() if price_source == "MT5" else None
@@ -143,41 +167,48 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     summary["analyzed_at"]  = now_str
     summary["price_source"] = price_source
     summary["m15"]          = m15_summary
+    summary["m30"]          = m30_summary
 
-    # ── Merge M5 + M15 weekly pools ────────────────────────────────
-    # รวม SSL/BSL จากทั้งสองไทม์เฟรมเข้าด้วยกัน dedup โดย proximity 1.5 USD
+    # ── Merge M5 + M15 + M30 weekly pools ───────────────────────────
+    # รวม SSL/BSL จากทุกไทม์เฟรมเข้าด้วยกัน dedup โดย proximity 1.5 USD
+    _TF_RANK = {"M5": 0, "M15": 1, "M30": 2}
+
+    def _dedup_merge(a, b, proximity=1.5):
+        """รวม pool list, ถ้าระดับใกล้กัน < proximity USD ให้เก็บแค่อันที่ดีกว่า (M30 > M15 > M5, major > minor)"""
+        merged = list(a)
+        for pb in b:
+            close = [p for p in merged if abs(p["level"] - pb["level"]) < proximity]
+            if not close:
+                merged.append(pb)
+            else:
+                for existing in close:
+                    if _TF_RANK.get(pb["timeframe"], 0) > _TF_RANK.get(existing["timeframe"], 0):
+                        existing["timeframe"] = pb["timeframe"]
+                        existing["size"] = "major" if existing["size"] == "major" or pb["size"] == "major" else "minor"
+                        existing["type"] = pb["type"] if pb["type"] in ("EQH", "EQL") else existing["type"]
+                        existing["time"] = pb.get("time")
+                        existing["age_bars"] = pb.get("age_bars")
+        merged.sort(key=lambda x: x["dist_pts"])
+        return merged
+
+    from agents.smc_engine import classify_liquidity as _cl
+    m5_liq  = summary.get("liquidity", {})
+    weekly_bsl = m5_liq.get("bsl_pools", [])
+    weekly_ssl = m5_liq.get("ssl_pools", [])
+
     if res15 is not None:
-        from agents.smc_engine import classify_liquidity as _cl
         m15_liq = _cl(res15, current_price, timeframe="M15", df=df15,
                       swing_highs=res15_pool.swing_highs, swing_lows=res15_pool.swing_lows)
-        m5_liq  = summary.get("liquidity", {})
-        m5_bsl  = m5_liq.get("bsl_pools", [])
-        m5_ssl  = m5_liq.get("ssl_pools", [])
-        m15_bsl = m15_liq.get("bsl_pools", [])
-        m15_ssl = m15_liq.get("ssl_pools", [])
+        weekly_bsl = _dedup_merge(weekly_bsl, m15_liq.get("bsl_pools", []))
+        weekly_ssl = _dedup_merge(weekly_ssl, m15_liq.get("ssl_pools", []))
 
-        def _dedup_merge(a, b, proximity=1.5):
-            """รวม pool list, ถ้าระดับใกล้กัน < proximity USD ให้เก็บแค่อันที่ดีกว่า (M15 > M5, major > minor)"""
-            merged = list(a)
-            for pb in b:
-                close = [p for p in merged if abs(p["level"] - pb["level"]) < proximity]
-                if not close:
-                    merged.append(pb)
-                else:
-                    # ถ้า M15 level ยังไม่อยู่ใน list → replace minor ด้วย M15
-                    for existing in close:
-                        if pb["timeframe"] == "M15" and existing["timeframe"] == "M5":
-                            existing["timeframe"] = "M15"
-                            existing["size"] = "major" if existing["size"] == "major" or pb["size"] == "major" else "minor"
-                            existing["type"] = pb["type"] if pb["type"] in ("EQH","EQL") else existing["type"]
-                            existing["time"] = pb.get("time")
-                            existing["age_bars"] = pb.get("age_bars")
-            merged.sort(key=lambda x: x["dist_pts"])
-            return merged
+    if res30 is not None:
+        m30_liq = _cl(res30, current_price, timeframe="M30", df=df30,
+                      swing_highs=res30_pool.swing_highs, swing_lows=res30_pool.swing_lows)
+        weekly_bsl = _dedup_merge(weekly_bsl, m30_liq.get("bsl_pools", []))
+        weekly_ssl = _dedup_merge(weekly_ssl, m30_liq.get("ssl_pools", []))
 
-        weekly_bsl = _dedup_merge(m5_bsl, m15_bsl)
-        weekly_ssl = _dedup_merge(m5_ssl, m15_ssl)
-
+    if res15 is not None or res30 is not None:
         if "liquidity" not in summary:
             summary["liquidity"] = {}
         summary["liquidity"]["weekly_bsl_pools"] = weekly_bsl
@@ -446,16 +477,22 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
             return True
         return _age is not None and _age <= 4 and _dist <= _SWEEP_ENTRY_WINDOW
 
-    has_sweep = _sweep_valid(smc_summary.get("last_sweep_low")) or _sweep_valid(smc_summary.get("last_sweep_high"))
+    # user feedback: sweep บน M15/M30 ไม่เคยถูกเช็คเลยมาตลอด (เจอเคส sweep BSL
+    # ของ M15 แล้วแท่งถัดมาย่อลงจริง แต่ has_signal() เห็นแค่ M5 เลย sweep=False
+    # ตลอด พลาด CASE F ไปเฉยๆ) — รวม sweep ทั้ง 3 timeframe เข้าด้วยกัน เลือกตัวที่
+    # valid ก่อน (ไม่สนว่ามาจาก timeframe ไหน ขอแค่ผ่านเกณฑ์ freshness/depth/dist)
+    _m15_smc = smc_summary.get("m15") or {}
+    _m30_smc = smc_summary.get("m30") or {}
+    _sw_lows  = [smc_summary.get("last_sweep_low"),  _m15_smc.get("last_sweep_low"),  _m30_smc.get("last_sweep_low")]
+    _sw_highs = [smc_summary.get("last_sweep_high"), _m15_smc.get("last_sweep_high"), _m30_smc.get("last_sweep_high")]
+    has_sweep = any(_sweep_valid(sw) for sw in _sw_lows) or any(_sweep_valid(sw) for sw in _sw_highs)
 
     # ── ชั้น 3a: Sweep + Rejection จริง (SSL/BSL) — ไม่ต้องรอ OB nearby ด้วย ──
     # sweep ที่ recovered แล้ว (rejection ยืนยัน) คือ CASE F เอง — ตอน sweep เกิด
     # ราคามักทะลุ OB ไปแล้วอยู่ดี การบังคับให้ต้องมี OB nearby ประกอบด้วยจะกรอง
     # sweep+rejection ที่ valid จริงทิ้งไปเปล่าๆ (score ไม่ถึง 3/4 เพราะ OB ไกลไปแล้ว)
-    _sw_low  = smc_summary.get("last_sweep_low") or {}
-    _sw_high = smc_summary.get("last_sweep_high") or {}
-    _sweep_low_confirmed  = _sweep_valid(_sw_low)  and _sw_low.get("recovered")
-    _sweep_high_confirmed = _sweep_valid(_sw_high) and _sw_high.get("recovered")
+    _sweep_low_confirmed  = any(_sweep_valid(sw) and sw.get("recovered") for sw in _sw_lows  if sw)
+    _sweep_high_confirmed = any(_sweep_valid(sw) and sw.get("recovered") for sw in _sw_highs if sw)
     if _sweep_low_confirmed or _sweep_high_confirmed:
         print(f"[has_signal] ✅ {_now_th} SWEEP+REJECTION (CASE F, no OB needed) — low={_sweep_low_confirmed} high={_sweep_high_confirmed}")
         return True
