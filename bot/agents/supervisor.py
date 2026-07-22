@@ -213,6 +213,21 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # อยู่แล้วว่า AI จะตอบ EXPIRED
     _SWEEP_ENTRY_WINDOW = 10.0
 
+    # user feedback: MAJOR POOL CHECK เช็คแค่ "ราคาเคยไปถึง level นี้หรือยัง" (ไม่
+    # สนใจ depth) แต่ label เดิมต้อง depth>=$5 ก่อนถึงจะขึ้นเลย ทำให้พอ major pool
+    # (EQH/EQL) โดนแตะแบบตื้นๆ (เช่น $1.75) label ไม่ขึ้น เลยไม่มีการเรียก AI ไป
+    # เช็ค MAJOR POOL CHECK ใหม่เลยทั้งที่ pool ที่รอมาตลอดเพิ่งโดนแตะจริง — แยก
+    # เกณฑ์: major pool ไม่ต้องผ่าน depth check (ถือว่า "แตะแล้ว" คือพอ ปล่อยให้
+    # AI/chart_analyst_agent's _pullback() (ยัง depth>=$5 เหมือนเดิม) เป็นคน
+    # ตัดสินสุดท้ายว่าจะเทรดจริงไหม) — minor pool ยังต้อง depth>=$5 เหมือนเดิม
+    # กันไม่ให้ wick เล็กๆ ทั่วไปเรียก AI ฟรีๆ
+    def _is_major_pool_level(lvl: float) -> bool:
+        if lvl is None:
+            return False
+        _liq = smc_summary.get("liquidity") or {}
+        _pools = (_liq.get("weekly_bsl_pools") or []) + (_liq.get("weekly_ssl_pools") or [])
+        return any(p.get("size") == "major" and abs(p.get("level", 0) - lvl) < 1.5 for p in _pools)
+
     def _sweep_label_ok(sw: dict) -> bool:
         if not sw or _price_lbl is None:
             return False
@@ -223,7 +238,9 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
             return False
         _lvl = sw.get("level")
         _wick = sw.get("wick_extreme")
-        if _lvl is not None and _wick is not None and abs(_lvl - _wick) < _MIN_SWEEP_DEPTH_LBL:
+        if (_lvl is not None and _wick is not None
+                and abs(_lvl - _wick) < _MIN_SWEEP_DEPTH_LBL
+                and not _is_major_pool_level(_lvl)):
             return False
         if _lvl is None:
             return False
