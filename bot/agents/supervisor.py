@@ -375,12 +375,21 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # OB rejection, post-sweep continuation) ต้องมาก่อน swing_signal (คะแนน
     # bull/bear แบบกว้างๆ จาก detect_swing_entry ที่ไม่ผูกกับ level ไหนเป๊ะๆ) เสมอ
     # — swing_signal เป็นแค่ fallback ตอนไม่มีอะไรที่ผูกกับ OB/SSL/BSL จริงเท่านั้น
+    # user feedback (ทดลอง — ปิด case อื่นไว้ก่อน): SWING_BUY/SWING_SELL แทบไม่เคย
+    # ได้เข้าเทรดจริงเลย เพราะ chart_analyst_agent.py ไม่มี CASE ไหนรองรับ "SWING"
+    # โดยตรง (CASE taxonomy มีแค่ B/F/L/I/G/J/H/K) — SWING เป็นแค่คะแนนกว้างๆ จาก
+    # detect_swing_entry ไม่ผูกกับ level ไหนเป๊ะๆ พอไม่มี sweep/OB event ที่ตรง
+    # กับ 8 case จริงมาสนับสนุน AI แทบจะ NO_TRADE ทุกครั้ง — เสีย AI call ไปฟรีๆ
+    # เช่นเดียวกับ NEAR_BULL_OB/NEAR_BEAR_OB/APPROACHING_SSL/APPROACHING_BSL
+    # (_approach_lbl) ที่เป็นแค่ "ระยะห่าง" ไม่ใช่ sweep event จริง — ปิดไว้ก่อน
+    # เหลือแค่กลุ่ม sweep ล้วนๆ (EQL/EQH, SWEEP_HIGH/LOW, POST_SWEEP_CONT) ตามที่
+    # ขอทดลอง ถ้าจะเปิดกลับมาใช้ ให้ uncomment 2 บรรทัดที่ comment ไว้ด้านล่าง
     result["smc_setup"] = (
         _eql.get("signal")
         or (_fresh_sweep_kind and f"SWEEP_{_fresh_sweep_kind}")
         or (_pc.get("direction") and f"POST_SWEEP_{_pc['direction']}")
-        or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
-        or _approach_lbl
+        # or (_rev.get("swing_signal") and f"SWING_{_rev['swing_signal']}")
+        # or _approach_lbl
         or "SIGNAL"
     )
     result["current_price"] = smc_summary.get("current_price")
