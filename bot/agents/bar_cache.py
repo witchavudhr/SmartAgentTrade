@@ -3,8 +3,15 @@ bar_cache.py — เก็บแท่ง M5 ที่ scan สดเจอ (ข
 สะสมไว้ใน local SQLite ทีละ scan — นานไปจะได้ history ของตัวเองที่ไม่พึ่ง
 MT5 copy_rates_* ย้อนหลัง (ซึ่งพบว่ามี gap ประจำ 06:50-08:00 ทุกวันสำหรับ XAUUSD)
 
-ใช้ INSERT OR IGNORE กัน error ตอนแท่งซ้ำ (ทุก scan ดึงย้อนหลัง 7 วันมาเสมอ
-แต่มีแค่แท่งใหม่ที่ไม่เคยเห็นเท่านั้นที่จะถูกเพิ่มจริง)
+ใช้ INSERT OR REPLACE กันแท่งซ้ำ (ทุก scan ดึงย้อนหลัง 7 วันมาเสมอ) — เดิมใช้
+INSERT OR IGNORE ซึ่งเป็นบั๊ก: แท่งล่าสุดที่ scan ตอนยังไม่ปิดสนิท (เช่น เห็นแค่
+ไม่กี่ tick แรก low/volume ยังไม่ครบ) จะถูกบันทึกไปก่อน แล้ว IGNORE จะกันไม่ให้
+scan รอบหลังๆ ที่ได้แท่งสมบูรณ์แล้ว (low/volume ที่แท้จริง) มาทับได้เลย — cache
+ค้างข้อมูลผิด/ไม่ครบตลอดไป (ยืนยันจาก MT5 จริง: low 4116.51 vol 1233 แต่ cache
+มี low 4118.23 vol 61 ของแท่งเดียวกัน) ทำให้ pivot/SSL ที่แท่งนั้นสร้างไว้หายไป
+จาก analysis เพราะ low จริงไม่เคยถูกบันทึก — REPLACE แก้ตรงนี้โดยให้ scan รอบ
+ใหม่เขียนทับด้วยข้อมูลล่าสุดเสมอ (ซึ่งควรสมบูรณ์กว่าหรือเท่าเดิม ไม่มีเคสที่
+ข้อมูลเก่าดีกว่าใหม่)
 """
 import sqlite3
 from pathlib import Path
@@ -50,11 +57,11 @@ def save_bars(df: pd.DataFrame) -> int:
             for t, r in df.iterrows()
         ]
         cur = conn.executemany(
-            "INSERT OR IGNORE INTO m5_bars (time, open, high, low, close, volume) VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO m5_bars (time, open, high, low, close, volume) VALUES (?,?,?,?,?,?)",
             rows,
         )
         conn.commit()
-        added = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        added = len(rows)
         conn.close()
         last_t = df.index.max()
         last_row = df.loc[last_t]
