@@ -740,6 +740,17 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         }
         return result
 
+    # user feedback: MAJOR POOL CHECK คำนวณล้วนๆ จาก pool list ไม่ต้องพึ่ง AI เลย
+    # แต่เดิมคำนวณอยู่ "ข้างใน" _supervisor_judge() (เรียก AI ไปแล้ว) แค่ยัด note
+    # บังคับใน prompt ให้ AI reject ตาม — เสียเงินเรียก AI ทั้งที่รู้คำตอบล่วงหน้า
+    # อยู่แล้วว่าต้อง reject แน่ๆ ("แล้วจะเรียก AI ทำไม") ย้ายมาเช็คก่อนเรียกเลย
+    # ข้ามการเรียก AI ไปเลยถ้ารู้แล้วว่าจะ reject
+    _mp_ok, _mp_note = _major_pool_check(setup_type, smc_summary)
+    if not _mp_ok:
+        result["reject_reason"] = _mp_note
+        result["stages"]["supervisor"] = {"approve": False, "reasoning": _mp_note}
+        return result
+
     # ── Stage 7: Supervisor Final Decision — สำหรับ setup ที่ไม่ชัด ──
     verdict = _supervisor_judge(analysis, bias, news, risk, vote_score, result["vote_details"], smc_summary)
     result["stages"]["supervisor"] = verdict
@@ -763,6 +774,41 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         result["reject_reason"] = verdict.get("reasoning", "Supervisor rejected")
 
     return result
+
+
+def _major_pool_check(setup_type_s: str, smc_summary: dict | None) -> tuple[bool, str]:
+    """
+    เช็คว่า sweep ที่ setup_type_s (BSL_SWEEP_SELL/SSL_SWEEP_BUY) อ้างถึง เป็นการ
+    sweep pool ที่แท้จริง (ไม่มี pool อื่นไกลกว่าในทิศเดียวกันที่ยังไม่โดน sweep) —
+    คำนวณล้วนๆ จาก pool list ไม่ต้องพึ่ง AI เลย ใช้เป็น pre-check ก่อนเรียก
+    Supervisor Judge (เสียเงิน) กันเรียก AI ไปเปล่าๆ ทั้งที่รู้คำตอบล่วงหน้าแล้วว่า
+    ต้อง reject แน่ๆ คืน (ok, note) — ok=False แปลว่าต้อง reject ทันที ไม่ต้องเรียก AI
+    """
+    if setup_type_s not in ("BSL_SWEEP_SELL", "SSL_SWEEP_BUY") or not smc_summary:
+        return True, ""
+    _liq_chk = smc_summary.get("liquidity") or {}
+    if setup_type_s == "BSL_SWEEP_SELL":
+        _swept_lvl = (smc_summary.get("last_sweep_high") or {}).get("level")
+        _pool_list = _liq_chk.get("weekly_bsl_pools") or []
+    else:
+        _swept_lvl = (smc_summary.get("last_sweep_low") or {}).get("level")
+        _pool_list = _liq_chk.get("weekly_ssl_pools") or []
+    if _swept_lvl is None:
+        return True, ""
+    if setup_type_s == "BSL_SWEEP_SELL":
+        _bigger_unswept = [p for p in _pool_list if not p.get("swept") and p.get("level", -9e9) > _swept_lvl + 1.0]
+    else:
+        _bigger_unswept = [p for p in _pool_list if not p.get("swept") and p.get("level", 9e9) < _swept_lvl - 1.0]
+    _bigger_unswept.sort(key=lambda p: abs(p.get("level", 0) - _swept_lvl))
+    if _bigger_unswept:
+        _bp = _bigger_unswept[0]
+        return False, (
+            f"🚫 MAJOR POOL CHECK: sweep ที่ {_swept_lvl} ยังมี pool ที่ {_bp.get('level')} "
+            f"อยู่ไกลกว่า (ไปทิศเดียวกัน) และยังไม่โดน sweep เลย — liquidity ที่แท้จริงกว่า "
+            f"ยังไม่ถูกกวาด premise ของ {setup_type_s} ยังไม่สมเหตุสมผล รอให้ pool ที่ "
+            f"{_bp.get('level')} โดน sweep จริงก่อน — ข้าม AI call เพื่อประหยัด"
+        )
+    return True, ""
 
 
 def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict, smc_summary: dict = None) -> dict:
