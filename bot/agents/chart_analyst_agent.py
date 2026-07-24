@@ -26,15 +26,18 @@ PATTERN PRIORITY (highest → lowest):
 0. CASE B ★★★: Price INSIDE an OB right now (in_ob=True), OR price was in the OB and a rejection
    candle just pushed it back OUT of the zone within the last 1-2 bars (RECENT BEAR/BULL OB
    REJECTION data) → BULL_OB_ENTRY / BEAR_OB_ENTRY (conf 55-70)
-   Bull OB: bull_ob.in_ob=True (or recent bull OB rejection ≤2 bars ago) + a bullish rejection candle
-             at/in the zone → BUY
-   Bear OB: bear_ob.in_ob=True (or recent bear OB rejection ≤2 bars ago) + a bearish rejection candle
-             at/in the zone → SELL
+   Bull OB: bull_ob.in_ob=True (or recent bull OB rejection ≤2 bars ago) → BUY
+   Bear OB: bear_ob.in_ob=True (or recent bear OB rejection ≤2 bars ago) → SELL
+   ⚠️ Do NOT require a rejection/confirmation candle for this case — in_ob=True alone (price
+   simply sitting inside a valid, unmitigated OB right now) is sufficient to enter. Waiting for
+   a confirmation candle means missing the entry while price is still in the zone; if a rejection
+   candle is also present that is a bonus (can support a slightly higher confidence), but its
+   absence must never be used as a reason to vote NO_TRADE for this case.
    This is the simplest, most common setup — no sweep needed, just "price sitting in (or just rejected
-   from) a valid OB with confirmation right now". Treat it as a small first-leg / pyramid entry, not a
-   max-conviction signal. A genuine rejection candle often WICKS through the OB and CLOSES just outside
-   it — that is still a valid CASE B, do not require in_ob=True at this exact instant if the rejection
-   candle itself is what pushed price back out.
+   from) a valid OB right now". Treat it as a small first-leg / pyramid entry, not a max-conviction
+   signal. A genuine rejection candle often WICKS through the OB and CLOSES just outside it — that
+   is still a valid CASE B, do not require in_ob=True at this exact instant if the rejection candle
+   itself is what pushed price back out.
    entry_zone = [ob.bottom, ob.top] (the OB boundaries themselves, NOT current price alone)
    ⚠️ SSL/BSL CONFLUENCE: if the nearest SSL (for Bull OB) or BSL (for Bear OB) pool level sits within
    $10 of the OB, that liquidity level is the real, more precise stop-hunt point — use it as the entry
@@ -87,9 +90,9 @@ CRITICAL RULES:
   BOS direction, or CHoCH structure direction. An OB entry is counter-trend BY DEFINITION — bias and
   structure will ALWAYS look like they disagree with it, every single time, with no exception. That is
   not new information, it is not a red flag, and it must never appear in vote_reasoning as a reason to
-  reject CASE B. If price is in_ob=True (or a rejection just pushed it out ≤2 bars ago) with a genuine
-  rejection candle, that is sufficient — the ONLY valid reasons to vote NO on CASE B are: no rejection
-  candle actually present, OB already mitigated, or SL/TP math fails RR≥1.5.
+  reject CASE B. If price is in_ob=True (or a rejection just pushed it out ≤2 bars ago), that is
+  sufficient on its own — a rejection/confirmation candle is NOT required. The ONLY valid reasons to
+  vote NO on CASE B are: OB already mitigated, or SL/TP math fails RR≥1.5.
 - NO_TRADE FOCUS: when voting NO_TRADE, do not just repeat that sweep/pullback statuses are EXPIRED —
   that only explains why the LAST setup died, it does not tell the user what to actually watch for next.
   ⚠️ FIRST check RECENT BEAR/BULL OB REJECTION in the data — if present, price has ALREADY dipped into
