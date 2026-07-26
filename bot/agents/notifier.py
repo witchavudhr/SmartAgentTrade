@@ -3842,7 +3842,7 @@ def run():
         if not bot_state.get("is_running", True):
             print(f"[scheduler] ⛔ is_running=False, skip")
             return
-        print(f"[auto_scan] ⏱ {_time_str} Thai — starting 5min scan")
+        print(f"[auto_scan] ⏱ {_time_str} Thai — starting 1min scan")
         ctx.job.data = {**(ctx.job.data or {}), "quiet": True, "session_label": f"🔄 {_time_str}"}
         try:
             await auto_scan(ctx)
@@ -3851,14 +3851,16 @@ def run():
             print(f"[auto_scan] ❌ EXCEPTION in auto_scan: {_scan_err}")
             print(traceback.format_exc()[-600:])
 
-    # align first run ให้ตรงกับ :x0 หรือ :x5 (M5 candle close) + 10s เผื่อ data settle
-    def _secs_to_next_5min() -> float:
+    # user feedback: 5 นาทีช้าไปเวลา sweep — ตัด AI ออกแล้ว (USE_AI_ANALYSIS=false)
+    # scan ถี่ขึ้นไม่มีต้นทุนเพิ่มเลย (has_signal()/python-only ล้วนๆ ไม่ใช่ AI call)
+    # ปรับ interval จาก 300s (5 นาที) → 60s (1 นาที) — align ให้ตรงกับวินาที :00
+    # ของทุกนาที + 5s เผื่อ data settle (เดิม align กับ M5 candle close ทุก 5 นาที)
+    def _secs_to_next_1min() -> float:
         _now = datetime.now(tz=timezone.utc)
-        _elapsed = (_now.minute % 5) * 60 + _now.second
-        _remaining = 300 - _elapsed  # วินาทีจนถึง candle close ถัดไป
-        return (_remaining + 10) if _remaining > 10 else (_remaining + 310)
+        _remaining = 60 - _now.second
+        return (_remaining + 5) if _remaining > 5 else (_remaining + 65)
 
-    app.job_queue.run_repeating(_auto_scan_15min, interval=300, first=_secs_to_next_5min())
+    app.job_queue.run_repeating(_auto_scan_15min, interval=60, first=_secs_to_next_1min())
 
     async def _heartbeat(ctx: ContextTypes.DEFAULT_TYPE):
         now_th = datetime.now(tz=_THAI_TZ_RUN)
