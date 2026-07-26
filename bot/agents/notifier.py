@@ -190,6 +190,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/pnl — สรุป P&amp;L + win rate (paper trade)\n"
         "/export — ดาวน์โหลด CSV ประวัติ trade\n"
         "/scanlog [YYYY-MM-DD] — ดาวน์โหลด CSV ทุก signal ของวันนั้น (รวม NO_TRADE/rejected, default วันนี้)\n"
+        "/lastscans [n] — โชว์ scan ล่าสุด n ครั้งตรงๆ ใน Telegram (default 10)\n"
         "/consolelog [YYYY-MM-DD] — ดาวน์โหลด console log (print ทั้งหมด) ของวันนั้น\n"
     )
     msg2 = (
@@ -902,6 +903,41 @@ async def cmd_scanlog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         await update.message.reply_text(f"❌ Export ไม่ได้: {e}")
+
+
+async def cmd_lastscans(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /lastscans [n] — โชว์ scan ล่าสุด n ครั้ง (default 10) ตรงๆ ใน Telegram
+    ไม่ต้องโหลดไฟล์ — สำหรับดูเร็วๆ ว่า scan ล่าสุดเจออะไรบ้าง
+    """
+    from agents.trade_log import get_last_n_scans_detailed
+    try:
+        n = int(ctx.args[0]) if ctx.args else 10
+    except (ValueError, IndexError):
+        n = 10
+    n = max(1, min(n, 30))
+
+    rows = get_last_n_scans_detailed(n)
+    if not rows:
+        await update.message.reply_text("❌ ยังไม่มี scan log เลย")
+        return
+
+    lines = [f"📋 *Last {len(rows)} scans*", "━━━━━━━━━━━━━━━━━"]
+    for r in rows:
+        t = (r.get("timestamp") or "")[11:16] or "--:--"
+        setup = r.get("smc_setup") or r.get("setup_type") or "–"
+        price = r.get("current_price")
+        stage = r.get("smc_stage") or "?"
+        if r.get("approved"):
+            icon = "✅"
+            detail = f"{r.get('signal','?')} entry={r.get('entry')} sl={r.get('sl')} tp={r.get('tp')} rr={r.get('rr')}"
+        else:
+            icon = "❌"
+            _reason = (r.get("reject_reason") or "")[:80]
+            detail = f"{stage} — {_reason}"
+        lines.append(f"{icon} `{t}` {setup} @{price}\n   _{_md(detail)}_")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_consolelog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3806,6 +3842,7 @@ def run():
     app.add_handler(CommandHandler("txreport", cmd_txreport))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("scanlog", cmd_scanlog))
+    app.add_handler(CommandHandler("lastscans", cmd_lastscans))
     app.add_handler(CommandHandler("consolelog", cmd_consolelog))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("bias", cmd_bias))

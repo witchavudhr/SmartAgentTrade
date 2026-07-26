@@ -892,6 +892,25 @@ def get_summary() -> dict:
     }
 
 
+def get_last_n_scans_detailed(n: int = 10) -> list[dict]:
+    """
+    ดึง scan_log ล่าสุด n รายการ (ทุก field ที่มีประโยชน์) ให้ /lastscans command
+    ใช้พิมพ์ผ่าน Telegram ได้ตรงๆ — ต่างจาก get_recent_scans() ที่ format ไว้
+    เฉพาะ dashboard
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT timestamp, smc_setup, smc_stage, current_price, signal, setup_type,
+               approved, entry, sl, tp, rr, reject_reason
+        FROM scan_log
+        ORDER BY id DESC LIMIT ?
+    """, (n,)).fetchall()
+    conn.close()
+    return [dict(r) for r in reversed(rows)]
+
+
 def get_recent_scans(n: int = 9) -> list[dict]:
     """Return last N scan_log entries in dashboard scan_log format."""
     init_db()

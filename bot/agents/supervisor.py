@@ -953,9 +953,23 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     if not in_ob and not rej_fresh:
         return None
 
+    liq = smc_summary.get("liquidity") or {}
+
+    # user feedback: "bull ob แรกที่ใช้ได้ ต้องอยู่ห่างจาก bsl > 20$ / bear ob แรก
+    # ที่ใช้ได้ ต้องอยู่ห่างจาก ssl > 20$" — เกณฑ์ room เดียวกับที่ _watchlist_
+    # candidates() ใช้ (Bull OB เทียบ BSL คือจุดสูงที่ราคาร่วงลงมา, Bear OB เทียบ
+    # SSL คือจุดต่ำที่ราคาเด้งขึ้นมา) ต้องมี room พอถึงจะถือว่าเป็น OB จริง ไม่ใช่
+    # noise ติดขอบ range — เช็คก่อน SSL/BSL CONFLUENCE เพราะ pool ตัวเดียวกันอาจ
+    # ใช้ได้ทั้งสองจุดประสงค์ (room check ใช้ nearest_bsl/ssl ฝั่งตรงข้าม)
+    _MIN_OB_ROOM = 20.0
+    _room_raw = liq.get("nearest_bsl") if direction == "BUY" else liq.get("nearest_ssl")
+    _room_lvl = _room_raw.get("level") if isinstance(_room_raw, dict) else _room_raw
+    _room_ref = top if direction == "BUY" else bottom
+    if _room_lvl is not None and abs(_room_ref - _room_lvl) < _MIN_OB_ROOM:
+        return None
+
     # SSL/BSL CONFLUENCE — ถ้า SSL (สำหรับ Bull OB) / BSL (สำหรับ Bear OB) อยู่ใกล้
     # ขอบ OB ≤$10 ให้ใช้ pool level เป็น entry แทน raw OB boundaries (แม่นกว่า)
-    liq = smc_summary.get("liquidity") or {}
     pool_raw = liq.get("nearest_ssl") if direction == "BUY" else liq.get("nearest_bsl")
     pool_lvl = pool_raw.get("level") if isinstance(pool_raw, dict) else pool_raw
     ob_ref = top if direction == "BUY" else bottom
@@ -1003,11 +1017,46 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     }
 
 
+def _log_python_only_state(smc_summary: dict) -> None:
+    """
+    user feedback: "console log ต้องบอกตลอดว่า ssl/bsl bull/bear ob อยู่ตรงไหน
+    ห่างอีกเท่าไร" — print ทุก scan ไม่ว่าจะเจอ signal หรือไม่ก็ตาม
+    """
+    price = smc_summary.get("current_price")
+    if price is None:
+        return
+    bull_ob = smc_summary.get("active_bull_ob") or {}
+    bear_ob = smc_summary.get("active_bear_ob") or {}
+    liq = smc_summary.get("liquidity") or {}
+    ssl_raw = liq.get("nearest_ssl")
+    bsl_raw = liq.get("nearest_bsl")
+    ssl_lvl = ssl_raw.get("level") if isinstance(ssl_raw, dict) else ssl_raw
+    bsl_lvl = bsl_raw.get("level") if isinstance(bsl_raw, dict) else bsl_raw
+
+    def _fmt_ob(ob, is_bull):
+        top, bottom = ob.get("top"), ob.get("bottom")
+        if top is None or bottom is None:
+            return "ไม่มี"
+        edge = top if is_bull else bottom
+        return f"{bottom}-{top} (ห่าง ${round(abs(price - edge), 2)})"
+
+    def _fmt_lvl(lvl):
+        return "ไม่มี" if lvl is None else f"{lvl} (ห่าง ${round(abs(price - lvl), 2)})"
+
+    print(
+        f"[python-only] 🔍 price={price} | "
+        f"Bull OB: {_fmt_ob(bull_ob, True)} | Bear OB: {_fmt_ob(bear_ob, False)} | "
+        f"SSL: {_fmt_lvl(ssl_lvl)} | BSL: {_fmt_lvl(bsl_lvl)}"
+    )
+
+
 def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
     """
     Path แบบไม่มี AI เลย — เช็ค CASE F/sweep ก่อน แล้วค่อย CASE B/OB (setup อื่น
     ยังไม่ port มา) ลอง SELL ก่อนเสมอ (ตรงกับลำดับความสำคัญเดิม) แล้วค่อย BUY
     """
+    _log_python_only_state(smc_summary)
+
     analysis = (
         _python_only_sweep_decision(smc_summary, "SELL")
         or _python_only_sweep_decision(smc_summary, "BUY")
