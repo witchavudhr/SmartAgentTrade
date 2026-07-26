@@ -1017,6 +1017,59 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     }
 
 
+def _python_only_exhaustion_decision(smc_summary: dict, direction: str) -> dict | None:
+    """
+    เคสเพิ่มเติมจาก user: sweep ที่ทะลุ SSL/BSL ไปเรื่อยๆ ไม่เคย recovered (ปิดกลับ
+    เหนือ/ใต้ level เดิม) แต่ระหว่างทางเจอแท่งกลับทิศ retrace ≥50% ของแท่งก่อนหน้า
+    (M5) — "น่าตามน้ำ" แม้ราคาจะยังไม่กลับไปเหนือ/ใต้ level เดิมก็ตาม ใช้ข้อมูลจาก
+    post_sweep_bounce_bull/bear ที่ smc_engine.py คำนวณไว้แล้ว
+    SL อ้างอิงจากแท่ง anchor (ไม่ใช่ level เดิมที่ราคาทะลุไปไกลแล้ว — เสี่ยงเกินไป)
+    """
+    price = smc_summary.get("current_price")
+    if price is None:
+        return None
+    bounce = smc_summary.get("post_sweep_bounce_bull" if direction == "BUY" else "post_sweep_bounce_bear")
+    if not bounce or bounce.get("bars_ago") is None or bounce["bars_ago"] > 2:
+        return None
+
+    setup_type = "SSL_EXHAUSTION_BUY" if direction == "BUY" else "BSL_EXHAUSTION_SELL"
+    entry = price
+    sl = round(bounce["anchor_low"] - 3.0, 2) if direction == "BUY" else round(bounce["anchor_high"] + 3.0, 2)
+    risk = abs(sl - entry)
+    if risk <= 0:
+        return None
+
+    liq = smc_summary.get("liquidity") or {}
+    pool_list = (liq.get("weekly_bsl_pools") if direction == "BUY" else liq.get("weekly_ssl_pools")) or []
+    tp, rr = _select_tp(entry, risk, direction, pool_list)
+    if tp is None or rr < _PY_MIN_RR:
+        return None
+
+    reasoning = (
+        f"[PYTHON-ONLY, no AI] {setup_type}: post-sweep exhaustion bounce, swept_level="
+        f"{bounce['swept_level']}, retrace={bounce['retrace_pct']}% of prior M5 candle, "
+        f"bars_ago={bounce['bars_ago']}, entry={entry}, SL={sl}, TP={tp}, RR={rr}"
+    )
+    return {
+        "signal": direction,
+        "setup_type": setup_type,
+        "vote": "YES",
+        "confidence": 55,
+        "entry": entry,
+        "entry_zone": [entry, entry],
+        "stop_loss": sl,
+        "take_profit": tp,
+        "rr_ratio": rr,
+        "vote_reasoning": reasoning,
+        "reasoning": reasoning,
+        "liquidity_target": tp,
+        "bull_ob_zone": None,
+        "bear_ob_zone": None,
+        "recent_bear_ob_rejection": None,
+        "recent_bull_ob_rejection": None,
+    }
+
+
 def _log_python_only_state(smc_summary: dict) -> None:
     """
     user feedback: "console log ต้องบอกตลอดว่า ssl/bsl bull/bear ob อยู่ตรงไหน
@@ -1032,6 +1085,8 @@ def _log_python_only_state(smc_summary: dict) -> None:
     bsl_raw = liq.get("nearest_bsl")
     ssl_lvl = ssl_raw.get("level") if isinstance(ssl_raw, dict) else ssl_raw
     bsl_lvl = bsl_raw.get("level") if isinstance(bsl_raw, dict) else bsl_raw
+    bounce_bull = smc_summary.get("post_sweep_bounce_bull")
+    bounce_bear = smc_summary.get("post_sweep_bounce_bear")
 
     def _fmt_ob(ob, is_bull):
         top, bottom = ob.get("top"), ob.get("bottom")
@@ -1043,10 +1098,14 @@ def _log_python_only_state(smc_summary: dict) -> None:
     def _fmt_lvl(lvl):
         return "ไม่มี" if lvl is None else f"{lvl} (ห่าง ${round(abs(price - lvl), 2)})"
 
+    def _fmt_bounce(b):
+        return "ไม่มี" if not b else f"swept={b['swept_level']} retrace={b['retrace_pct']}% bars_ago={b['bars_ago']}"
+
     print(
         f"[python-only] 🔍 price={price} | "
         f"Bull OB: {_fmt_ob(bull_ob, True)} | Bear OB: {_fmt_ob(bear_ob, False)} | "
-        f"SSL: {_fmt_lvl(ssl_lvl)} | BSL: {_fmt_lvl(bsl_lvl)}"
+        f"SSL: {_fmt_lvl(ssl_lvl)} | BSL: {_fmt_lvl(bsl_lvl)} | "
+        f"BounceBull: {_fmt_bounce(bounce_bull)} | BounceBear: {_fmt_bounce(bounce_bear)}"
     )
 
 
@@ -1062,6 +1121,8 @@ def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
         or _python_only_sweep_decision(smc_summary, "BUY")
         or _python_only_ob_decision(smc_summary, "SELL")
         or _python_only_ob_decision(smc_summary, "BUY")
+        or _python_only_exhaustion_decision(smc_summary, "SELL")
+        or _python_only_exhaustion_decision(smc_summary, "BUY")
     )
 
     if analysis is None:

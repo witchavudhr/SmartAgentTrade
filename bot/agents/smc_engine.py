@@ -1900,6 +1900,59 @@ def _sweep_obj_by_kind(sweeps: list, kind: str, df: pd.DataFrame = None) -> dict
     }
 
 
+# user feedback: บาง sweep ทะลุ SSL/BSL ไปเรื่อยๆ ไม่เคยกลับขึ้น/ลงเหนือ/ใต้ level
+# เดิมเลย (ไม่เข้าเกณฑ์ recovered=True ของ _find_liquidity_sweep) แต่ระหว่างทางจะมี
+# แท่งกลับทิศ (เขียวหลังแดงติดกัน — เทียบกับแท่งก่อนหน้าของ M5 โดยตรง สำหรับฝั่ง
+# BUY) ที่ retrace กลับมาอย่างน้อยครึ่งหนึ่งของ range เต็ม (high-low) ของแท่งก่อน
+# หน้า — user ยืนยันว่านี่คือจุดที่ "น่าตามน้ำ" แม้ราคาจะยังไม่กลับขึ้นเหนือ
+# SSL/BSL เดิมก็ตาม (คนละเกณฑ์กับ recovered=True ปกติ)
+def _detect_post_sweep_exhaustion_bounce(df: pd.DataFrame, swing_lows: list, swing_highs: list,
+                                          current_price: float, lookback: int = 20) -> tuple[dict | None, dict | None]:
+    """คืน (bull, bear) — แต่ละอันเป็น dict หรือ None ถ้าไม่เจอ"""
+    if df is None or len(df) < 3:
+        return None, None
+    n = len(df)
+    start = max(0, n - lookback)
+
+    bull = None
+    if swing_lows:
+        level = swing_lows[-1].price
+        if current_price < level:  # ยังอยู่ใต้ level เดิม (sweep ที่ยังไม่ recovered)
+            for i in range(n - 1, start, -1):
+                red, grn = df.iloc[i - 1], df.iloc[i]
+                if red["close"] < red["open"] and grn["close"] > grn["open"]:
+                    red_range = red["high"] - red["low"]
+                    if red_range > 0 and (grn["close"] - red["low"]) >= red_range * 0.5:
+                        bull = {
+                            "swept_level": round(level, 2),
+                            "bounce_close": round(grn["close"], 2),
+                            "anchor_low": round(red["low"], 2),
+                            "retrace_pct": round((grn["close"] - red["low"]) / red_range * 100, 1),
+                            "bars_ago": int(n - 1 - i),
+                        }
+                        break
+
+    bear = None
+    if swing_highs:
+        level = swing_highs[-1].price
+        if current_price > level:  # ยังอยู่เหนือ level เดิม (sweep ที่ยังไม่ recovered)
+            for i in range(n - 1, start, -1):
+                grn, red = df.iloc[i - 1], df.iloc[i]
+                if grn["close"] > grn["open"] and red["close"] < red["open"]:
+                    grn_range = grn["high"] - grn["low"]
+                    if grn_range > 0 and (grn["high"] - red["close"]) >= grn_range * 0.5:
+                        bear = {
+                            "swept_level": round(level, 2),
+                            "bounce_close": round(red["close"], 2),
+                            "anchor_high": round(grn["high"], 2),
+                            "retrace_pct": round((grn["high"] - red["close"]) / grn_range * 100, 1),
+                            "bars_ago": int(n - 1 - i),
+                        }
+                        break
+
+    return bull, bear
+
+
 def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
               pool_swing_highs: list = None, pool_swing_lows: list = None,
               pool_sweeps: list = None) -> dict:
@@ -2136,6 +2189,20 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             }
         except Exception:
             summary["liquidity_zones"] = {"support": [], "resistance": []}
+
+    # ── Post-Sweep Exhaustion Bounce (ทะลุ SSL/BSL ไปเรื่อยๆ ไม่ recovered แต่มี
+    # แท่งกลับทิศ retrace ≥50% ของแท่งก่อนหน้า — user feedback: "ถ้ามันกลับมาเกิน
+    # แท่งแดงเดิมซักครึ่งนึง น่าจะตามน้ำ") ──────────────────────────
+    if df is not None:
+        try:
+            _psl = pool_swing_lows if pool_swing_lows is not None else result.swing_lows
+            _psh = pool_swing_highs if pool_swing_highs is not None else result.swing_highs
+            _bounce_bull, _bounce_bear = _detect_post_sweep_exhaustion_bounce(df, _psl, _psh, current_price)
+            summary["post_sweep_bounce_bull"] = _bounce_bull
+            summary["post_sweep_bounce_bear"] = _bounce_bear
+        except Exception:
+            summary["post_sweep_bounce_bull"] = None
+            summary["post_sweep_bounce_bear"] = None
 
     # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:
