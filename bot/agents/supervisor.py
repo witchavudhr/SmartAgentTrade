@@ -1032,9 +1032,11 @@ def _python_only_exhaustion_decision(smc_summary: dict, direction: str) -> dict 
     if not bounce or bounce.get("bars_ago") is None or bounce["bars_ago"] > 2:
         return None
 
+    # user feedback: buffer $3 เดิมอาจสั้นไป กลัวโดน stop ไวเกิน — ยก buffer เป็น
+    # $10 (เท่ากับ CASE F) ให้มี room มากขึ้น เผื่อออกไม้เพิ่ม (pyramid) ด้วย
     setup_type = "SSL_EXHAUSTION_BUY" if direction == "BUY" else "BSL_EXHAUSTION_SELL"
     entry = price
-    sl = round(bounce["anchor_low"] - 3.0, 2) if direction == "BUY" else round(bounce["anchor_high"] + 3.0, 2)
+    sl = round(bounce["anchor_low"] - 10.0, 2) if direction == "BUY" else round(bounce["anchor_high"] + 10.0, 2)
     risk = abs(sl - entry)
     if risk <= 0:
         return None
