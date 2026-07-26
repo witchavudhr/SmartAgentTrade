@@ -829,6 +829,31 @@ _PY_SWEEP_ENTRY_WINDOW = 10.0
 _PY_MIN_RR = 1.5
 
 
+def _select_tp(entry: float, risk: float, direction: str, pool_list: list, ob_fallback: float | None = None):
+    """
+    TP SELECTION algorithm ก็อปจาก chart_analyst_agent.py's _INSTRUCTIONS ตรงๆ (Step 1-4):
+    scan pool ทั้งหมด (รวม swept แล้วด้วย — ราคากลับไปกิน liquidity ซ้ำได้) เรียงจาก
+    ใกล้ราคาไปไกล หาตัวแรกที่ทำให้ RR≥1.5 ได้ ไม่ใช่แค่หยิบตัวใกล้สุดมาเช็คแล้วเลิก
+    ถ้าตัวใกล้สุดยังไม่พอ ต้องสแกนไกลออกไปเรื่อยๆ จนกว่าจะเจอตัวที่ผ่าน
+    คืน (tp, rr) หรือ (None, None) ถ้าไม่มีตัวไหนผ่านเลย
+    """
+    if risk <= 0:
+        return None, None
+    required_tp = entry + risk * _PY_MIN_RR if direction == "BUY" else entry - risk * _PY_MIN_RR
+    candidates = sorted(
+        (p for p in pool_list if p.get("level") is not None),
+        key=lambda p: abs(p["level"] - entry),
+    )
+    for p in candidates:
+        lvl = p["level"]
+        if (direction == "BUY" and lvl >= required_tp) or (direction == "SELL" and lvl <= required_tp):
+            return lvl, round(abs(lvl - entry) / risk, 2)
+    if ob_fallback is not None:
+        if (direction == "BUY" and ob_fallback >= required_tp) or (direction == "SELL" and ob_fallback <= required_tp):
+            return ob_fallback, round(abs(ob_fallback - entry) / risk, 2)
+    return None, None
+
+
 def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | None:
     """
     ตัดสินใจ CASE F (BSL/SSL sweep+rejection) แบบ Python ล้วนๆ ไม่เรียก AI เลย
@@ -870,26 +895,16 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
         return None
 
     liq = smc_summary.get("liquidity") or {}
-    if direction == "SELL":
-        pool_list = liq.get("weekly_ssl_pools") or []
-        candidates = [p for p in pool_list if not p.get("swept") and p.get("level", 9e9) < entry]
-        candidates.sort(key=lambda p: entry - p.get("level", 0))
-    else:
-        pool_list = liq.get("weekly_bsl_pools") or []
-        candidates = [p for p in pool_list if not p.get("swept") and p.get("level", -9e9) > entry]
-        candidates.sort(key=lambda p: p.get("level", 0) - entry)
-    if not candidates:
-        return None
-    tp = candidates[0]["level"]
-    reward = abs(entry - tp)
-    rr = round(reward / risk, 2) if risk else 0
-    if rr < _PY_MIN_RR:
+    pool_list = (liq.get("weekly_ssl_pools") if direction == "SELL" else liq.get("weekly_bsl_pools")) or []
+    tp_dir = "SELL" if direction == "SELL" else "BUY"
+    tp, rr = _select_tp(entry, risk, tp_dir, pool_list)
+    if tp is None or rr < _PY_MIN_RR:
         return None
 
     reasoning = (
         f"[PYTHON-ONLY, no AI] {setup_type}: pullback={pb_status} (age={age}bars dist={dist}pts "
         f"depth={depth}pts), sweep level={level} recovered=True, entry={entry}, SL={sl} "
-        f"(level{'+' if direction=='SELL' else '-'}10), TP={tp} (nearest unswept pool), RR={rr}"
+        f"(level{'+' if direction=='SELL' else '-'}10), TP={tp} (RR-qualified pool scan), RR={rr}"
     )
     return {
         "signal": direction,
@@ -911,19 +926,99 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     }
 
 
+def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
+    """
+    ตัดสินใจ CASE B (Bull/Bear OB entry) แบบ Python ล้วนๆ ไม่เรียก AI เลย — ก็อป
+    สูตรจาก chart_analyst_agent.py's _INSTRUCTIONS ตรงๆ (in_ob=True หรือ rejection
+    ≤2 แท่งก่อนก็พอ ไม่ต้องมี rejection candle ยืนยันแล้วตามที่แก้ไปก่อนหน้านี้)
+    direction: "BUY" (Bull OB) หรือ "SELL" (Bear OB)
+    """
+    price = smc_summary.get("current_price")
+    if price is None:
+        return None
+    if direction == "BUY":
+        ob  = smc_summary.get("active_bull_ob") or {}
+        rej = smc_summary.get("recent_bull_ob_rejection")
+        setup_type = "BULL_OB_ENTRY"
+    else:
+        ob  = smc_summary.get("active_bear_ob") or {}
+        rej = smc_summary.get("recent_bear_ob_rejection")
+        setup_type = "BEAR_OB_ENTRY"
+
+    top, bottom = ob.get("top"), ob.get("bottom")
+    if top is None or bottom is None:
+        return None
+    in_ob = ob.get("in_ob", False)
+    rej_fresh = bool(rej) and rej.get("bars_ago") is not None and rej["bars_ago"] <= 2
+    if not in_ob and not rej_fresh:
+        return None
+
+    # SSL/BSL CONFLUENCE — ถ้า SSL (สำหรับ Bull OB) / BSL (สำหรับ Bear OB) อยู่ใกล้
+    # ขอบ OB ≤$10 ให้ใช้ pool level เป็น entry แทน raw OB boundaries (แม่นกว่า)
+    liq = smc_summary.get("liquidity") or {}
+    pool_raw = liq.get("nearest_ssl") if direction == "BUY" else liq.get("nearest_bsl")
+    pool_lvl = pool_raw.get("level") if isinstance(pool_raw, dict) else pool_raw
+    ob_ref = top if direction == "BUY" else bottom
+    entry_zone = [bottom, top]
+    if pool_lvl is not None and abs(pool_lvl - ob_ref) <= 10:
+        entry_zone = [round(pool_lvl - 2, 2), round(pool_lvl + 2, 2)]
+
+    entry = round((entry_zone[0] + entry_zone[1]) / 2, 2)
+    sl = round(bottom - 3.0, 2) if direction == "BUY" else round(top + 3.0, 2)
+    risk = abs(sl - entry)
+    if risk <= 0:
+        return None
+
+    if direction == "BUY":
+        pool_list = liq.get("weekly_bsl_pools") or []
+        ob_fallback = (smc_summary.get("active_bear_ob") or {}).get("top")
+    else:
+        pool_list = liq.get("weekly_ssl_pools") or []
+        ob_fallback = (smc_summary.get("active_bull_ob") or {}).get("bottom")
+    tp, rr = _select_tp(entry, risk, direction, pool_list, ob_fallback)
+    if tp is None or rr < _PY_MIN_RR:
+        return None
+
+    reasoning = (
+        f"[PYTHON-ONLY, no AI] {setup_type}: in_ob={in_ob} rejection_fresh={rej_fresh}, "
+        f"entry_zone={entry_zone}, entry={entry}, SL={sl}, TP={tp}, RR={rr}"
+    )
+    return {
+        "signal": direction,
+        "setup_type": setup_type,
+        "vote": "YES",
+        "confidence": 60,
+        "entry": entry,
+        "entry_zone": entry_zone,
+        "stop_loss": sl,
+        "take_profit": tp,
+        "rr_ratio": rr,
+        "vote_reasoning": reasoning,
+        "reasoning": reasoning,
+        "liquidity_target": tp,
+        "bull_ob_zone": ob if direction == "BUY" else None,
+        "bear_ob_zone": ob if direction == "SELL" else None,
+        "recent_bear_ob_rejection": rej if direction == "SELL" else None,
+        "recent_bull_ob_rejection": rej if direction == "BUY" else None,
+    }
+
+
 def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
     """
-    Path แบบไม่มี AI เลย — เช็คแค่ CASE F/sweep ตอนนี้ (setup อื่นยังไม่ port มา)
-    ลอง SELL (BSL sweep) ก่อน แล้วค่อย BUY (SSL sweep) ถ้า SELL ไม่ผ่าน
+    Path แบบไม่มี AI เลย — เช็ค CASE F/sweep ก่อน แล้วค่อย CASE B/OB (setup อื่น
+    ยังไม่ port มา) ลอง SELL ก่อนเสมอ (ตรงกับลำดับความสำคัญเดิม) แล้วค่อย BUY
     """
-    analysis = _python_only_sweep_decision(smc_summary, "SELL")
-    if analysis is None:
-        analysis = _python_only_sweep_decision(smc_summary, "BUY")
+    analysis = (
+        _python_only_sweep_decision(smc_summary, "SELL")
+        or _python_only_sweep_decision(smc_summary, "BUY")
+        or _python_only_ob_decision(smc_summary, "SELL")
+        or _python_only_ob_decision(smc_summary, "BUY")
+    )
 
     if analysis is None:
         result["reject_reason"] = (
-            f"[PYTHON-ONLY] {result.get('smc_setup')} ไม่ผ่านเกณฑ์ CASE F (depth/pullback/"
-            f"MAJOR POOL CHECK/RR) — setup อื่นยังไม่รองรับใน python-only mode ตอนนี้"
+            f"[PYTHON-ONLY] {result.get('smc_setup')} ไม่ผ่านเกณฑ์ CASE F/CASE B (depth/pullback/"
+            f"in_ob/MAJOR POOL CHECK/RR) — setup อื่นยังไม่รองรับใน python-only mode ตอนนี้"
         )
         result["stages"]["smc"] = "PYTHON_ONLY_NO_TRADE"
         return result
