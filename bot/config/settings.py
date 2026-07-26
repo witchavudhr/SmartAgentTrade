@@ -53,6 +53,12 @@ MODEL_SMART = "claude-sonnet-4-6"  # all voting agents + supervisor
 # ตั้งค่า USE_AGENT_SDK=true ใน .env เพื่อทดลอง (code เดิมยังอยู่)
 USE_AGENT_SDK = os.getenv("USE_AGENT_SDK", "false").lower() == "true"
 
+# AI Analysis toggle — ปิดเพื่อตัด Chart Analyst/Bias/News/Supervisor Judge (AI)
+# ออกทั้งหมด ใช้ Python rule-based ล้วนๆ แทน (CASE F/sweep เท่านั้นตอนนี้)
+# ตั้งค่า USE_AI_ANALYSIS=false ใน .env เพื่อทดลอง — code AI เดิมยังอยู่ครบ สลับ
+# กลับมาได้ตลอดเวลาแค่ตั้งเป็น true (หรือไม่ตั้งอะไรเลย ค่า default คือ true)
+USE_AI_ANALYSIS = os.getenv("USE_AI_ANALYSIS", "true").lower() == "true"
+
 # Cache settings
 BIAS_CACHE_MINUTES = 60    # HTF bias cache 1 ชั่วโมง
 NEWS_CACHE_MINUTES = 30    # News cache 30 นาที

@@ -436,6 +436,15 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         result["stages"]["smc"] = "AI_CALL_SKIPPED_COOLDOWN"
         return result
 
+    # ── AI Analysis toggle — ตัด Chart Analyst/Bias/News/Supervisor Judge ออก
+    # ทั้งหมด ใช้ Python rule-based ล้วนๆ แทน (ทดลอง CASE F/sweep ก่อน) ตาม
+    # user feedback: "AI มี bias เลยทำให้ไม่เทรดในบางจังหวะ" + อยาก scan ถี่ขึ้น
+    # (1 นาที) โดยไม่มีค่าใช้จ่าย AI เพิ่ม — code AI เดิมด้านล่างยังอยู่ครบ ไม่ได้
+    # ลบทิ้ง แค่ข้ามไปถ้า USE_AI_ANALYSIS=false ใน .env
+    from config.settings import USE_AI_ANALYSIS
+    if not USE_AI_ANALYSIS:
+        return _run_python_only(result, smc_summary, balance)
+
     # ── Stage 2: Chart Analyst — SDK (subscription) ──
     try:
         from agents import chart_analyst_agent
@@ -809,6 +818,149 @@ def _major_pool_check(setup_type_s: str, smc_summary: dict | None) -> tuple[bool
             f"{_bp.get('level')} โดน sweep จริงก่อน — ข้าม AI call เพื่อประหยัด"
         )
     return True, ""
+
+
+# ── Python-only decision path (no AI) — CASE F/sweep เท่านั้นตอนนี้ ──────────
+# ทุกสูตรก็อปมาจาก chart_analyst_agent.py's _INSTRUCTIONS ตรงๆ (SL/entry/depth/
+# pullback window) — สูตรพวกนี้เป็น deterministic อยู่แล้ว ไม่เคยต้องพึ่ง AI จริงๆ
+# เลย แค่เดิมฝากให้ AI อ่านตัวเลขแล้วทำตามกฎที่เขียนไว้ในข้อความเท่านั้นเอง
+_PY_MIN_SWEEP_DEPTH = 5.0
+_PY_SWEEP_ENTRY_WINDOW = 10.0
+_PY_MIN_RR = 1.5
+
+
+def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | None:
+    """
+    ตัดสินใจ CASE F (BSL/SSL sweep+rejection) แบบ Python ล้วนๆ ไม่เรียก AI เลย
+    direction: "SELL" (BSL sweep, last_sweep_high) หรือ "BUY" (SSL sweep, last_sweep_low)
+    คืน dict รูปแบบเดียวกับที่ chart_analyst_agent.analyze() คืน หรือ None ถ้าไม่ผ่านเกณฑ์
+    """
+    price = smc_summary.get("current_price")
+    if price is None:
+        return None
+    sw = smc_summary.get("last_sweep_high") if direction == "SELL" else smc_summary.get("last_sweep_low")
+    if not sw or not sw.get("recovered"):
+        return None
+    level = sw.get("level")
+    wick  = sw.get("wick_extreme")
+    age   = sw.get("age_bars")
+    if level is None or wick is None or age is None:
+        return None
+
+    depth = round(abs(level - wick), 2)
+    if depth < _PY_MIN_SWEEP_DEPTH:
+        return None
+    dist = round(abs(price - level), 1)
+    if age <= 2 and dist <= _PY_SWEEP_ENTRY_WINDOW:
+        pb_status = "FIRST"
+    elif age <= 4 and dist <= _PY_SWEEP_ENTRY_WINDOW:
+        pb_status = "SECOND"
+    else:
+        return None
+
+    setup_type = "BSL_SWEEP_SELL" if direction == "SELL" else "SSL_SWEEP_BUY"
+    _mp_ok, _mp_note = _major_pool_check(setup_type, smc_summary)
+    if not _mp_ok:
+        return None
+
+    entry = price
+    sl = round(level + 10.0, 2) if direction == "SELL" else round(level - 10.0, 2)
+    risk = abs(sl - entry)
+    if risk <= 0:
+        return None
+
+    liq = smc_summary.get("liquidity") or {}
+    if direction == "SELL":
+        pool_list = liq.get("weekly_ssl_pools") or []
+        candidates = [p for p in pool_list if not p.get("swept") and p.get("level", 9e9) < entry]
+        candidates.sort(key=lambda p: entry - p.get("level", 0))
+    else:
+        pool_list = liq.get("weekly_bsl_pools") or []
+        candidates = [p for p in pool_list if not p.get("swept") and p.get("level", -9e9) > entry]
+        candidates.sort(key=lambda p: p.get("level", 0) - entry)
+    if not candidates:
+        return None
+    tp = candidates[0]["level"]
+    reward = abs(entry - tp)
+    rr = round(reward / risk, 2) if risk else 0
+    if rr < _PY_MIN_RR:
+        return None
+
+    reasoning = (
+        f"[PYTHON-ONLY, no AI] {setup_type}: pullback={pb_status} (age={age}bars dist={dist}pts "
+        f"depth={depth}pts), sweep level={level} recovered=True, entry={entry}, SL={sl} "
+        f"(level{'+' if direction=='SELL' else '-'}10), TP={tp} (nearest unswept pool), RR={rr}"
+    )
+    return {
+        "signal": direction,
+        "setup_type": setup_type,
+        "vote": "YES",
+        "confidence": 65 if pb_status == "FIRST" else 55,
+        "entry": entry,
+        "entry_zone": [entry, entry],
+        "stop_loss": sl,
+        "take_profit": tp,
+        "rr_ratio": rr,
+        "vote_reasoning": reasoning,
+        "reasoning": reasoning,
+        "liquidity_target": tp,
+        "bull_ob_zone": None,
+        "bear_ob_zone": None,
+        "recent_bear_ob_rejection": None,
+        "recent_bull_ob_rejection": None,
+    }
+
+
+def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
+    """
+    Path แบบไม่มี AI เลย — เช็คแค่ CASE F/sweep ตอนนี้ (setup อื่นยังไม่ port มา)
+    ลอง SELL (BSL sweep) ก่อน แล้วค่อย BUY (SSL sweep) ถ้า SELL ไม่ผ่าน
+    """
+    analysis = _python_only_sweep_decision(smc_summary, "SELL")
+    if analysis is None:
+        analysis = _python_only_sweep_decision(smc_summary, "BUY")
+
+    if analysis is None:
+        result["reject_reason"] = (
+            f"[PYTHON-ONLY] {result.get('smc_setup')} ไม่ผ่านเกณฑ์ CASE F (depth/pullback/"
+            f"MAJOR POOL CHECK/RR) — setup อื่นยังไม่รองรับใน python-only mode ตอนนี้"
+        )
+        result["stages"]["smc"] = "PYTHON_ONLY_NO_TRADE"
+        return result
+
+    from agents import risk_manager
+    _neutral_bias = {"aligned": True, "trade_direction": "BOTH"}
+    risk = risk_manager.evaluate(analysis, _neutral_bias, balance)
+
+    result["stages"]["chart"] = {
+        "signal": analysis["signal"], "confidence": analysis["confidence"], "vote": "YES",
+        "vote_reasoning": analysis["vote_reasoning"], "reasoning": analysis["reasoning"],
+        "bull_ob_zone": None, "bear_ob_zone": None,
+        "recent_bear_ob_rejection": None, "recent_bull_ob_rejection": None,
+    }
+    result["analysis"] = analysis
+
+    if not risk.get("approved"):
+        result["reject_reason"] = risk.get("veto_reason") or "Risk Manager rejected"
+        result["stages"]["risk"] = risk
+        return result
+
+    result["approved"]          = True
+    result["final_signal"]      = analysis["signal"]
+    result["lot"]               = risk.get("lot")
+    result["risk_pct"]          = risk.get("risk_pct")
+    result["caution_mode"]      = risk.get("caution_mode", False)
+    result["entry_zone"]        = analysis.get("entry_zone")
+    result["stop_loss"]         = analysis.get("stop_loss")
+    result["take_profit"]       = analysis.get("take_profit")
+    result["rr_ratio"]          = analysis.get("rr_ratio")
+    result["reasoning"]         = analysis["reasoning"]
+    result["entry_condition"]   = analysis["vote_reasoning"]
+    result["liquidity_summary"] = f"TP target: {analysis.get('take_profit')}"
+    result["stages"]["supervisor"] = {
+        "approve": True, "reasoning": analysis["reasoning"], "auto": True, "python_only": True,
+    }
+    return result
 
 
 def _supervisor_judge(analysis, bias, news, risk, vote_score, vote_details: dict, smc_summary: dict = None) -> dict:
