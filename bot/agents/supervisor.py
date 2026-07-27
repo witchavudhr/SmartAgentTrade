@@ -953,12 +953,21 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
         rej = smc_summary.get("recent_bear_ob_rejection")
         setup_type = "BEAR_OB_ENTRY"
 
-    top, bottom = ob.get("top"), ob.get("bottom")
-    if top is None or bottom is None:
-        return None
     in_ob = ob.get("in_ob", False)
     rej_fresh = bool(rej) and rej.get("bars_ago") is not None and rej["bars_ago"] <= 2
     if not in_ob and not rej_fresh:
+        return None
+
+    # ใช้โซนของ OB ที่ "จริงๆ" ทำให้ผ่านเกณฑ์ — ถ้าเข้าทาง rej_fresh ต้องใช้
+    # rej["ob_zone"] เพราะ recent_*_ob_rejection สแกนทุก OB ไม่ใช่แค่ active_*_ob
+    # (active_*_ob เลือกจาก MIN_DEP+nearest ซึ่งอาจเป็นคนละตัวกับที่โดน rejection
+    # จริง — ถ้าใช้ top/bottom ผิดตัว entry/SL จะเพี้ยนไปคนละโซนกับที่ควรเข้า)
+    if in_ob:
+        top, bottom = ob.get("top"), ob.get("bottom")
+    else:
+        _zone = rej.get("ob_zone") or []
+        bottom, top = (_zone[0], _zone[1]) if len(_zone) == 2 else (None, None)
+    if top is None or bottom is None:
         return None
 
     liq = smc_summary.get("liquidity") or {}
