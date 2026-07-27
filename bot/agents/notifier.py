@@ -2072,8 +2072,14 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
                 # ตัวในคำจะโดนตีความเป็น delimiter ปิด/เปิด italic ไปด้วย ทำให้
                 # underscore หายไปตอนแสดงผล (เช่น "APPROACHINGBSL") — backtick
                 # (code span) ไม่มีปัญหานี้ เหมือนที่ Setup field ใช้อยู่แล้ว
+                # user feedback: หัวข้อเขียนว่า "AI ปฏิเสธ" hardcode ไว้ ทั้งที่
+                # python-only mode (USE_AI_ANALYSIS=false) ไม่มี AI เกี่ยวข้องเลย
+                # ทำให้เข้าใจผิดว่ายังเรียก AI อยู่ — เช็ค stage แล้วเปลี่ยนหัวข้อ
+                # ให้ตรงกับความจริง
+                _is_python_only = result.get("stages", {}).get("smc") == "PYTHON_ONLY_NO_TRADE"
+                _header = "🔇 *ไม่มี Trade — python-only ไม่ผ่านเกณฑ์*" if _is_python_only else "🔇 *ไม่มี Trade — smc เจอ signal แต่ AI ปฏิเสธ*"
                 _msg = (
-                    f"🔇 *ไม่มี Trade — smc เจอ signal แต่ AI ปฏิเสธ*\n"
+                    f"{_header}\n"
                     f"━━━━━━━━━━━━━━━\n"
                     f"💰 ราคา: `{_price}` | Setup: `{_smc_setup}`\n"
                     f"📝 `{_rej[:250]}`"
