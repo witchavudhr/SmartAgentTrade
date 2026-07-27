@@ -1688,6 +1688,13 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
         print(f"[notifier] 💤 AI_CALL_SKIPPED_COOLDOWN @ {result.get('current_price')} — {result.get('reject_reason','')[:150]}")
         return
 
+    # ── PYTHON_ONLY_NO_TRADE — python-only mode ไม่ผ่านเกณฑ์ CASE ไหนเลย ──────
+    # user feedback: "ถ้าไม่เจอ signal ก็ไม่ต้องโชว์ telegram" — เหมือน
+    # NO_MEANINGFUL_SIGNAL/AI_CALL_SKIPPED_COOLDOWN แค่ log console ไม่ส่ง Telegram
+    if result.get("stages", {}).get("smc") == "PYTHON_ONLY_NO_TRADE":
+        print(f"[notifier] 💤 PYTHON_ONLY_NO_TRADE @ {result.get('current_price')} — {result.get('reject_reason','')[:150]}")
+        return
+
     _current_price  = float(result.get("current_price") or 0)
     _liq_snapshot   = result.get("liq_snapshot", {})
     _watching_gate  = bot_state.get("watching_gate")
