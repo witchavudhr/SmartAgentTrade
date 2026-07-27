@@ -160,6 +160,14 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         if _ot:
             smc_summary["open_trade"] = _ot
 
+    # user feedback: log OB/SSL/BSL ("[python-only] 🔍 ...") เดิมอยู่ใน
+    # _run_python_only() เท่านั้น แต่ has_signal() gate ด้านล่าง return ก่อนจะไป
+    # ถึงจุดนั้นได้เลยตอน score ไม่ถึงเกณฑ์ — ย้าย log มาพิมพ์ตรงนี้แทน (ก่อน gate)
+    # ให้เห็นทุก scan จริงๆ ไม่ว่า has_signal() จะผ่านหรือไม่ก็ตาม
+    from config.settings import USE_AI_ANALYSIS
+    if not USE_AI_ANALYSIS:
+        _log_python_only_state(smc_summary)
+
     # Pre-filter: ถ้าไม่มี signal ไม่เรียก Claude เลย
     if not chart_analyst.has_signal(smc_summary, force_session=force_session):
         result["reject_reason"] = "SMC Engine: ไม่มี setup ครบเงื่อนไข"
@@ -1115,9 +1123,8 @@ def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
     """
     Path แบบไม่มี AI เลย — เช็ค CASE F/sweep ก่อน แล้วค่อย CASE B/OB (setup อื่น
     ยังไม่ port มา) ลอง SELL ก่อนเสมอ (ตรงกับลำดับความสำคัญเดิม) แล้วค่อย BUY
+    (log OB/SSL/BSL ย้ายไปพิมพ์ก่อน has_signal() gate ใน run() แล้ว ไม่ต้องซ้ำที่นี่)
     """
-    _log_python_only_state(smc_summary)
-
     analysis = (
         _python_only_sweep_decision(smc_summary, "SELL")
         or _python_only_sweep_decision(smc_summary, "BUY")
