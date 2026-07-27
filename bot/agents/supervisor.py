@@ -332,7 +332,7 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
         # ติดขอบ range (เช่น Bear OB 3991 แต่ SSL ที่มันวิ่งขึ้นมาจากอยู่แค่ 3973 ห่าง
         # แค่ $18 → sideway โดนหลอกง่าย ข้ามไปเลย) — Bear OB เทียบกับ SSL (จุดต่ำที่
         # ราคาเด้งขึ้นมา), Bull OB เทียบกับ BSL (จุดสูงที่ราคาร่วงลงมา)
-        _MIN_OB_ROOM = 20.0
+        _MIN_OB_ROOM = 18.0
         _bull_has_room = (_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False
         _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
 
@@ -978,7 +978,7 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     # SSL คือจุดต่ำที่ราคาเด้งขึ้นมา) ต้องมี room พอถึงจะถือว่าเป็น OB จริง ไม่ใช่
     # noise ติดขอบ range — เช็คก่อน SSL/BSL CONFLUENCE เพราะ pool ตัวเดียวกันอาจ
     # ใช้ได้ทั้งสองจุดประสงค์ (room check ใช้ nearest_bsl/ssl ฝั่งตรงข้าม)
-    _MIN_OB_ROOM = 20.0
+    _MIN_OB_ROOM = 18.0
     _room_raw = liq.get("nearest_bsl") if direction == "BUY" else liq.get("nearest_ssl")
     _room_lvl = _room_raw.get("level") if isinstance(_room_raw, dict) else _room_raw
     _room_ref = top if direction == "BUY" else bottom
