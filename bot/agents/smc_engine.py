@@ -2198,6 +2198,26 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             _psl = pool_swing_lows if pool_swing_lows is not None else result.swing_lows
             _psh = pool_swing_highs if pool_swing_highs is not None else result.swing_highs
             _bounce_bull, _bounce_bear = _detect_post_sweep_exhaustion_bounce(df, _psl, _psh, current_price)
+
+            # user feedback: swept_level เดิมใช้ swing low/high ล่าสุดเฉยๆ ไม่ผูกกับ
+            # SSL/BSL pool จริง ทำให้ trigger จาก noise เล็กๆ ที่ไม่มีนัยสำคัญ (เช่น
+            # swept ที่ 4070 ทั้งที่ SSL จริงอยู่ 4049 ห่างกันคนละเรื่อง) — บังคับว่า
+            # swept_level ต้องใกล้ SSL/BSL pool จริง: "ก่อนไม่เกิน $5 หลังไม่เกิน $15"
+            # (ก่อน = swept_level ยังไม่ถึง pool, หลัง = ทะลุ pool ไปแล้ว)
+            _liq_for_bounce = summary.get("liquidity") or {}
+            if _bounce_bull:
+                _ssl_raw = _liq_for_bounce.get("nearest_ssl")
+                _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
+                _diff = (_bounce_bull["swept_level"] - _ssl_lvl) if _ssl_lvl is not None else None
+                if _diff is None or not (-15 <= _diff <= 5):
+                    _bounce_bull = None
+            if _bounce_bear:
+                _bsl_raw = _liq_for_bounce.get("nearest_bsl")
+                _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
+                _diff = (_bsl_lvl - _bounce_bear["swept_level"]) if _bsl_lvl is not None else None
+                if _diff is None or not (-15 <= _diff <= 5):
+                    _bounce_bear = None
+
             summary["post_sweep_bounce_bull"] = _bounce_bull
             summary["post_sweep_bounce_bear"] = _bounce_bear
         except Exception:
