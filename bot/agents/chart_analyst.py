@@ -21,6 +21,45 @@ smc_m30 = SMCEngine(swing_length=50, ob_length=5)
 # ในกราฟ (indicator) ไม่ตรงกับที่บอทเห็นเลย (บอทมองไม่เห็น swing ที่ยังไม่ครบ 50 bars)
 smc_pool = SMCEngine(swing_length=15, ob_length=5)
 
+# ── Bull/Bear OB "ล็อก" ตาม room จาก BSL/SSL (user feedback) ─────────────────
+# เดิม active_bull_ob/active_bear_ob ใน smc_engine.summarize() เลือกจาก "ห่างราคา
+# ปัจจุบัน >= $3" ล้วนๆ ทำให้พอราคาไหลเข้าใกล้ OB ตัวที่กำลังดูอยู่ (เหลือ <$3) มันจะ
+# ตกคุณสมบัติทันทีแล้วกระโดดไปเลือกตัวที่ไกลกว่าแทน ดูเหมือน "OB วิ่งหนี" ทุกครั้งที่
+# ราคาเข้าใกล้ ที่ถูกต้องคือ Bull OB ต้องห่างจาก BSL (จุดสูงที่ราคาร่วงลงมา) และ
+# Bear OB ต้องห่างจาก SSL (จุดต่ำที่ราคาเด้งขึ้นมา) อย่างน้อย $18 ถึงจะถือว่ามี
+# "room สะสมแล้วกลับตัว" จริง ไม่ใช่ noise ติดขอบ range — และต้อง "ล็อก" OB ที่เลือก
+# ไว้ ไม่เปลี่ยนไปมาเรื่อยๆ ทุกครั้งที่มี SSL/BSL ใหม่โผล่ขึ้นมา (เปลี่ยนก็ต่อเมื่อ
+# OB ที่ล็อกไว้เดิมโดน mitigate ไปแล้วจริงๆ)
+_OB_ROOM_MIN = 18.0
+# ล็อกแยกต่างหากต่อ timeframe (M5/M15/M30) กันรบกวนกันเอง
+_ob_lock = {tf: {"bull_top": None, "bull_bottom": None, "bear_top": None, "bear_bottom": None}
+            for tf in ("M5", "M15", "M30")}
+
+
+def _select_room_ob(obs: list, is_bull: bool, opp_liq_level: float | None, tf: str = "M5",
+                     min_room: float = _OB_ROOM_MIN):
+    """เลือก Bull/Bear OB ที่ห่างจาก BSL/SSL ฝั่งตรงข้าม >= min_room แล้ว "ล็อก" ไว้
+    ใน _ob_lock[tf] ไม่ให้เปลี่ยนทุก scan ตาม SSL/BSL ใหม่ที่โผล่มา — เปลี่ยนก็ต่อเมื่อ
+    ตัวที่ล็อกไว้เดิมไม่อยู่ใน unmitigated list แล้ว (โดน mitigate ไปแล้วจริงๆ)"""
+    valid = [ob for ob in obs if opp_liq_level is None or
+             abs((ob.top if is_bull else ob.bottom) - opp_liq_level) >= min_room]
+    if not valid:
+        return None
+
+    lock = _ob_lock[tf]
+    key_top, key_bot = ("bull_top", "bull_bottom") if is_bull else ("bear_top", "bear_bottom")
+    locked_top, locked_bottom = lock[key_top], lock[key_bot]
+    if locked_top is not None:
+        still_valid = next((ob for ob in valid
+                             if abs(ob.top - locked_top) < 0.5 and abs(ob.bottom - locked_bottom) < 0.5), None)
+        if still_valid:
+            return still_valid
+
+    # ล็อกใหม่ — เลือกตัวที่ใกล้ราคาที่สุด (top สูงสุดสำหรับ bull / bottom ต่ำสุดสำหรับ bear)
+    picked = max(valid, key=lambda ob: ob.top) if is_bull else min(valid, key=lambda ob: ob.bottom)
+    lock[key_top], lock[key_bot] = picked.top, picked.bottom
+    return picked
+
 def _get_mt5_price() -> float | None:
     """ดึงราคา mid (bid+ask)/2 จาก MT5 — ไม่ต้องเช็ค is_available() เพราะ _connect() จัดการเอง"""
     try:
@@ -214,6 +253,32 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
         summary["liquidity"]["weekly_bsl_pools"] = weekly_bsl
         summary["liquidity"]["weekly_ssl_pools"] = weekly_ssl
 
+    # ── Bull/Bear OB: แทนที่ตัวที่ summarize() เลือกไว้ (เกณฑ์ $3 จากราคา) ด้วยตัวที่
+    # ผ่านเกณฑ์ room $18 จาก BSL/SSL (weekly, unswept เท่านั้น) แล้ว "ล็อก" ไว้ —
+    # ดู _select_room_ob() ด้านบนสำหรับเหตุผลเต็ม ──────────────────────────────
+    _unswept_bsl = [p for p in weekly_bsl if not p.get("swept")]
+    _unswept_ssl = [p for p in weekly_ssl if not p.get("swept")]
+    _bsl_lvl = _unswept_bsl[0]["level"] if _unswept_bsl else None
+    _ssl_lvl = _unswept_ssl[0]["level"] if _unswept_ssl else None
+
+    def _relock_ob(res, tgt_summary, tf):
+        if res is None or tgt_summary is None:
+            return
+        bulls = [ob for ob in (res.order_blocks or []) if not ob.mitigated and ob.kind == 'bullish']
+        bears = [ob for ob in (res.order_blocks or []) if not ob.mitigated and ob.kind == 'bearish']
+        lb = _select_room_ob(bulls, True, _bsl_lvl, tf=tf)
+        lr = _select_room_ob(bears, False, _ssl_lvl, tf=tf)
+        tgt_summary["active_bull_ob"] = ({
+            "top": lb.top, "bottom": lb.bottom, "in_ob": lb.bottom <= current_price <= lb.top,
+        } if lb else None)
+        tgt_summary["active_bear_ob"] = ({
+            "top": lr.top, "bottom": lr.bottom, "in_ob": lr.bottom <= current_price <= lr.top,
+        } if lr else None)
+
+    _relock_ob(res5, summary, "M5")
+    _relock_ob(res15, m15_summary, "M15")
+    _relock_ob(res30, m30_summary, "M30")
+
     return df5, summary
 
 def _haiku_precheck(smc_summary: dict) -> dict:
@@ -367,10 +432,10 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     _now_th = _dt.now(pytz.timezone("Asia/Bangkok")).strftime("%H:%M:%S")
 
     # ── ชั้น 2: ราคาอยู่ใน OB → ผ่านทันที (OB-first logic) ──────
-    # ใช้ M15 OB เป็น primary (significant zones) + M5 เป็น fallback
+    # user feedback: M5 ต้องเป็น primary (entry timing จริงอยู่ที่ M5) M15 เป็นแค่ fallback
     m15_data = smc_summary.get("m15") or {}
-    bull_ob = m15_data.get("active_bull_ob") or smc_summary.get("active_bull_ob") or {}
-    bear_ob = m15_data.get("active_bear_ob") or smc_summary.get("active_bear_ob") or {}
+    bull_ob = smc_summary.get("active_bull_ob") or m15_data.get("active_bull_ob") or {}
+    bear_ob = smc_summary.get("active_bear_ob") or m15_data.get("active_bear_ob") or {}
     _px_now = smc_summary.get("current_price")
 
     # มีไม้เปิดอยู่แล้วทิศเดียวกับ OB นี้ → ไม่ต้องเรียก AI ซ้ำเพื่อ pyramid เพิ่ม
