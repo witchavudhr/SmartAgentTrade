@@ -1225,6 +1225,27 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             live_status = f"😴 ยังไม่มีเงื่อนไขไหนครบ (bull={_bull_sc} bear={_bear_sc}, ต้องการ ≥3 อย่างน้อย)"
 
+        # user feedback: "ขอเพิ่ม ob ที่คำนวณได้ทั้งเอามาใช้งานและไม่ได้ใช้งานด้วย"
+        # โชว์ OB ทุกตัวที่ระบบ detect ได้ (M5) ไม่ใช่แค่ active_bull/bear_ob ตัวเดียว
+        # ★ = ตัวที่ระบบเลือกมาใช้งานอยู่ตอนนี้ (ตรงกับ [python-only] log)
+        def _fmt_all_obs(obs):
+            if not obs:
+                return "  ไม่มี"
+            return "\n".join(
+                f"  {'★' if o['used'] else '·'} `{o['bottom']}–{o['top']}`"
+                for o in obs
+            )
+
+        all_bull_obs = smc.get("all_bull_obs") or []
+        all_bear_obs = smc.get("all_bear_obs") or []
+        all_obs_section = (
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"📋 *OB ทั้งหมดที่คำนวณได้ (M5)*\n"
+            f"🟢 Bull OB ({len(all_bull_obs)}):\n{_fmt_all_obs(all_bull_obs)}\n\n"
+            f"🔴 Bear OB ({len(all_bear_obs)}):\n{_fmt_all_obs(all_bear_obs)}\n"
+            f"_★=ใช้งานอยู่ ·=คำนวณได้แต่ไม่ได้ใช้_\n"
+        )
+
         src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"
         msg = (
             f"📦 *Order Blocks*\n"
@@ -1243,6 +1264,7 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"*M30:*\n"
             f"  🟢 {_fmt(m30_bull, 'Bull OB')}\n"
             f"  🔴 {_fmt(m30_bear, 'Bear OB')}\n\n"
+            f"{all_obs_section}"
             f"━━━━━━━━━━━━━━━━━\n"
             f"🌊 *Liquidity Pools — 7d*\n"
             f"*BSL* 🔵 (เหนือราคา):\n{w_bsl_lines}\n\n"
