@@ -561,6 +561,13 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         t = df.index[idx]
         return (t.strftime("%Y-%m-%d %H:%M") if hasattr(t, "strftime") else str(t)), age
 
+    # user feedback: "ทำไงให้มันเท่ากันดี" — _breached เดิมนับว่า swept ทันทีที่ราคา
+    # โผล่ทะลุแม้แต่นิดเดียว (เช่น $0.4-0.8) ทำให้ pool หลุดจาก intact list เร็วกว่า
+    # ที่ CASE F (_python_only_sweep_decision) จะยอมนับเป็น sweep จริง (ต้อง depth
+    # ≥$5) — ผลคือ nearest_bsl/ssl กระโดดไปอีก pool ทั้งที่ยังไม่มี sweep ที่เทรดได้
+    # จริงๆ เกิดขึ้นเลย ใช้เกณฑ์ depth เดียวกัน ($5) ให้สองจุดนี้สอดคล้องกัน
+    _BREACH_MIN_DEPTH = 5.0
+
     def _breached(idx, level, kind):
         """
         เช็คว่าราคาเคยวิ่งทะลุ level นี้ไปแล้วมั้ย (ไม่ว่าจะมี sweep+reversal
@@ -568,17 +575,23 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         ไม่เด้งกลับใน 8 แท่ง (เช่น trending strong ผ่านไปเลย) _find_liquidity_sweep
         จะไม่นับเป็น sweep เลย ทำให้ pool ค้างสถานะ "ยังไม่ swept" ทั้งที่ order
         ที่วางรอไว้ตรงนั้นถูก execute ไปแล้วจริงๆ ตั้งแต่ราคาแตะระดับนั้นครั้งแรก
+        ต้องทะลุลึกอย่างน้อย _BREACH_MIN_DEPTH ด้วย ไม่งั้นแค่โดนไม้จิ้มตื้นๆ ก็จะ
+        นับเป็น swept แล้ว ทั้งที่ CASE F ยังไม่ถือว่าเป็น sweep ที่เทรดได้เลย
         """
         if df is None or idx is None or idx + 1 >= len(df):
             return False
         after = df.iloc[idx + 1:]
         if kind == "low":
-            return bool((after["low"] < level).any())
-        return bool((after["high"] > level).any())
+            return bool((level - after["low"] >= _BREACH_MIN_DEPTH).any())
+        return bool((after["high"] - level >= _BREACH_MIN_DEPTH).any())
     eqh_set = set(round(v, 2) for v in (result.equal_highs or []))
     eql_set = set(round(v, 2) for v in (result.equal_lows  or []))
-    swept_highs = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_high"}
-    swept_lows  = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_low"}
+    # _find_liquidity_sweep เองก็ไม่มี min depth (นับ sweep ตั้งแต่ wick ทะลุ $0.01)
+    # กรองด้วย _BREACH_MIN_DEPTH ตรงนี้ด้วย ให้ตรงกับ _breached() ด้านบน
+    swept_highs = {round(s.level, 2) for s in (result.sweeps or [])
+                   if s.kind == "sweep_high" and (s.wick_extreme - s.level) >= _BREACH_MIN_DEPTH}
+    swept_lows  = {round(s.level, 2) for s in (result.sweeps or [])
+                   if s.kind == "sweep_low" and (s.level - s.wick_extreme) >= _BREACH_MIN_DEPTH}
 
     bsl_pools = []
     for sh in (swing_highs or []):
