@@ -1127,6 +1127,25 @@ def _log_python_only_state(smc_summary: dict) -> None:
         f"BounceBull: {_fmt_bounce(bounce_bull)} | BounceBear: {_fmt_bounce(bounce_bear)}"
     )
 
+    # user feedback: "อยากให้ใส่ ob ที่คำนวนได้ ทั้งเอามาใช้งาน และไม่ได้ใช้งานด้วย
+    # อยากรู้ว่าคำนวนถูกมั้ยทั้งหมด" — โชว์ OB ทุกตัวที่ detect ได้ (ไม่ใช่แค่ตัว
+    # active ที่ถูกเลือกไปใช้) พร้อม mark ★ ตัวที่ถูกใช้งานจริง
+    def _fmt_ob_list(obs):
+        if not obs:
+            return "ไม่มี"
+        return ", ".join(
+            f"{'★' if o['used'] else ''}{o['bottom']}-{o['top']}"
+            for o in obs
+        )
+
+    all_bull = smc_summary.get("all_bull_obs") or []
+    all_bear = smc_summary.get("all_bear_obs") or []
+    print(
+        f"[python-only] 📦 All Bull OBs ({len(all_bull)}): {_fmt_ob_list(all_bull)} | "
+        f"All Bear OBs ({len(all_bear)}): {_fmt_ob_list(all_bear)} "
+        f"(★ = ตัวที่ใช้งานอยู่)"
+    )
+
 
 def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
     """

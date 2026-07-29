@@ -1995,6 +1995,21 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
     in_bear_ob = bool(active_bear_ob and active_bear_ob.bottom <= current_price <= active_bear_ob.top)
     in_ob = in_bull_ob or in_bear_ob
 
+    # user feedback: อยากเห็น OB ทุกตัวที่ระบบคำนวณได้ (ทั้งตัวที่เอามาใช้เป็น
+    # active_bull/bear_ob และตัวที่ไม่ได้ใช้) เพื่อเช็คว่าคำนวณถูกมั้ยทั้งหมด —
+    # เก็บ list เต็มพร้อม flag "used" ไว้ให้ log/คำสั่งอื่นดึงไปโชว์ได้ (ใส่เข้า
+    # summary dict ด้านล่างหลังจาก dict ถูกสร้างแล้ว)
+    _all_bull_obs = [
+        {"top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
+         "used": ob is active_bull_ob}
+        for ob in sorted(_bull_obs, key=lambda o: abs(o.top - current_price))
+    ]
+    _all_bear_obs = [
+        {"top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
+         "used": ob is active_bear_ob}
+        for ob in sorted(_bear_obs, key=lambda o: abs(o.bottom - current_price))
+    ]
+
     # FVG ที่ยังไม่ถูก fill
     open_fvgs   = [f for f in result.fvgs if not f.filled]
     nearest_fvg = (min(open_fvgs, key=lambda f: abs((f.top + f.bottom) / 2 - current_price))
@@ -2068,6 +2083,9 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             "bottom": active_bear_ob.bottom,
             "in_ob":  in_bear_ob,
         } if active_bear_ob else None,
+
+        "all_bull_obs": _all_bull_obs,
+        "all_bear_obs": _all_bear_obs,
 
         "nearest_fvg": {
             "kind": nearest_fvg.kind,
