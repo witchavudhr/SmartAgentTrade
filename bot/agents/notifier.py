@@ -1235,8 +1235,12 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if o.get("mitigated"):
                     return "✕"
                 return "★" if o["used"] else "·"
+            def _mit_tag(o):
+                if not o.get("mitigated"):
+                    return ""
+                return f" _mitigated @ {o['mitigated_time']}_" if o.get("mitigated_time") else " _mitigated_"
             lines = [
-                f"  {_tag(o)} `{o['bottom']}-{o['top']}`{' _mitigated_' if o.get('mitigated') else ''}"
+                f"  {_tag(o)} `{o['bottom']}-{o['top']}`{_mit_tag(o)}"
                 for o in obs[:max_n]
             ]
             if len(obs) > max_n:

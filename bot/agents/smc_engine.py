@@ -26,6 +26,7 @@ class OrderBlock:
     kind: str       # 'bullish' or 'bearish'
     index: int
     mitigated: bool = False
+    mitigated_index: int = None   # bar index ที่ทำให้ mitigated (สำหรับ debug/trace)
 
 @dataclass
 class FairValueGap:
@@ -331,9 +332,11 @@ class SMCEngine:
             for i in range(ob.index + 1, n):
                 if ob.kind == 'bullish' and bull_src[i] < ob.bottom:
                     ob.mitigated = True
+                    ob.mitigated_index = i
                     break
                 elif ob.kind == 'bearish' and bear_src[i] > ob.top:
                     ob.mitigated = True
+                    ob.mitigated_index = i
                     break
 
         # เก็บ OB ต่อฝั่ง — เดิม cap 5 ตัวล่าสุด "ไม่สนใจว่า mitigated หรือยัง"
@@ -2016,17 +2019,29 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
     # ไปแล้ว หรือไม่เคยถูก detect เลย
     _all_bull_kind = [ob for ob in all_obs if ob.kind == 'bullish']
     _all_bear_kind = [ob for ob in all_obs if ob.kind == 'bearish']
+
+    def _ob_bar_time(idx):
+        if df is None or idx is None or idx < 0 or idx >= len(df):
+            return None
+        t = df.index[idx]
+        return t.strftime("%Y-%m-%d %H:%M") if hasattr(t, "strftime") else str(t)
+
+    def _ob_debug(ob):
+        return {
+            "top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
+            "anchor_time": _ob_bar_time(ob.index),
+            "mitigated_time": _ob_bar_time(ob.mitigated_index) if ob.mitigated else None,
+        }
+
     # sort: ตัวที่ยังไม่ mitigated มาก่อนเสมอ (เรียงตามระยะ) แล้วค่อยตามด้วย
     # mitigated (เรียงตามระยะ) — กัน mitigated เก่าๆ แย่งที่ตัวที่ยัง valid จริง
     # เวลา cap จำนวนแสดงผล (เช่น /ob จำกัด 8 ตัว)
     _all_bull_obs = [
-        {"top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
-         "used": ob is active_bull_ob, "mitigated": ob.mitigated}
+        {**_ob_debug(ob), "used": ob is active_bull_ob, "mitigated": ob.mitigated}
         for ob in sorted(_all_bull_kind, key=lambda o: (o.mitigated, abs(o.top - current_price)))
     ]
     _all_bear_obs = [
-        {"top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
-         "used": ob is active_bear_ob, "mitigated": ob.mitigated}
+        {**_ob_debug(ob), "used": ob is active_bear_ob, "mitigated": ob.mitigated}
         for ob in sorted(_all_bear_kind, key=lambda o: (o.mitigated, abs(o.bottom - current_price)))
     ]
 
