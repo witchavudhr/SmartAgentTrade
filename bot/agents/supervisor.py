@@ -1133,8 +1133,12 @@ def _log_python_only_state(smc_summary: dict) -> None:
     def _fmt_ob_list(obs):
         if not obs:
             return "ไม่มี"
+        def _tag(o):
+            if o.get("mitigated"):
+                return "✕"
+            return "★" if o["used"] else ""
         return ", ".join(
-            f"{'★' if o['used'] else ''}{o['bottom']}-{o['top']}"
+            f"{_tag(o)}{o['bottom']}-{o['top']}"
             for o in obs
         )
 
@@ -1143,7 +1147,7 @@ def _log_python_only_state(smc_summary: dict) -> None:
     print(
         f"[python-only] 📦 All Bull OBs ({len(all_bull)}): {_fmt_ob_list(all_bull)} | "
         f"All Bear OBs ({len(all_bear)}): {_fmt_ob_list(all_bear)} "
-        f"(★ = ตัวที่ใช้งานอยู่)"
+        f"(★ = ใช้งานอยู่, ✕ = mitigated แล้ว)"
     )
 
 

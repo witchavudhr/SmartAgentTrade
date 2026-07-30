@@ -1231,8 +1231,12 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         def _fmt_all_obs(obs, max_n=8):
             if not obs:
                 return "  ไม่มี"
+            def _tag(o):
+                if o.get("mitigated"):
+                    return "✕"
+                return "★" if o["used"] else "·"
             lines = [
-                f"  {'★' if o['used'] else '·'} `{o['bottom']}-{o['top']}`"
+                f"  {_tag(o)} `{o['bottom']}-{o['top']}`{' _mitigated_' if o.get('mitigated') else ''}"
                 for o in obs[:max_n]
             ]
             if len(obs) > max_n:
@@ -1246,7 +1250,7 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📋 *OB ทั้งหมดที่คำนวณได้ (M5)*\n"
             f"🟢 Bull OB ({len(all_bull_obs)}):\n{_fmt_all_obs(all_bull_obs)}\n\n"
             f"🔴 Bear OB ({len(all_bear_obs)}):\n{_fmt_all_obs(all_bear_obs)}\n"
-            f"_★=ใช้งานอยู่ ·=คำนวณได้แต่ไม่ได้ใช้_\n"
+            f"_★=ใช้งานอยู่ ·=คำนวณได้แต่ไม่ได้ใช้ ✕=mitigated แล้ว_\n"
         )
 
         src_icon = "🔴 yfinance (delay ~15m)" if source == "yfinance" else "🟢 MT5 (real-time)"

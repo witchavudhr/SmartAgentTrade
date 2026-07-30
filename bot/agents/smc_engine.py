@@ -2011,16 +2011,23 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
     # user feedback: อยากเห็น OB ทุกตัวที่ระบบคำนวณได้ (ทั้งตัวที่เอามาใช้เป็น
     # active_bull/bear_ob และตัวที่ไม่ได้ใช้) เพื่อเช็คว่าคำนวณถูกมั้ยทั้งหมด —
     # เก็บ list เต็มพร้อม flag "used" ไว้ให้ log/คำสั่งอื่นดึงไปโชว์ได้ (ใส่เข้า
-    # summary dict ด้านล่างหลังจาก dict ถูกสร้างแล้ว)
+    # summary dict ด้านล่างหลังจาก dict ถูกสร้างแล้ว) — รวม mitigated ด้วย (flag
+    # แยกไว้) เพื่อ debug เคสที่สงสัยว่า OB ที่เห็นบนชาร์ตหายไปเพราะ mitigated
+    # ไปแล้ว หรือไม่เคยถูก detect เลย
+    _all_bull_kind = [ob for ob in all_obs if ob.kind == 'bullish']
+    _all_bear_kind = [ob for ob in all_obs if ob.kind == 'bearish']
+    # sort: ตัวที่ยังไม่ mitigated มาก่อนเสมอ (เรียงตามระยะ) แล้วค่อยตามด้วย
+    # mitigated (เรียงตามระยะ) — กัน mitigated เก่าๆ แย่งที่ตัวที่ยัง valid จริง
+    # เวลา cap จำนวนแสดงผล (เช่น /ob จำกัด 8 ตัว)
     _all_bull_obs = [
         {"top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
-         "used": ob is active_bull_ob}
-        for ob in sorted(_bull_obs, key=lambda o: abs(o.top - current_price))
+         "used": ob is active_bull_ob, "mitigated": ob.mitigated}
+        for ob in sorted(_all_bull_kind, key=lambda o: (o.mitigated, abs(o.top - current_price)))
     ]
     _all_bear_obs = [
         {"top": round(ob.top, 2), "bottom": round(ob.bottom, 2),
-         "used": ob is active_bear_ob}
-        for ob in sorted(_bear_obs, key=lambda o: abs(o.bottom - current_price))
+         "used": ob is active_bear_ob, "mitigated": ob.mitigated}
+        for ob in sorted(_all_bear_kind, key=lambda o: (o.mitigated, abs(o.bottom - current_price)))
     ]
 
     # FVG ที่ยังไม่ถูก fill
