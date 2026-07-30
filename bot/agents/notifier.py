@@ -1228,13 +1228,16 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # user feedback: "ขอเพิ่ม ob ที่คำนวณได้ทั้งเอามาใช้งานและไม่ได้ใช้งานด้วย"
         # โชว์ OB ทุกตัวที่ระบบ detect ได้ (M5) ไม่ใช่แค่ active_bull/bear_ob ตัวเดียว
         # ★ = ตัวที่ระบบเลือกมาใช้งานอยู่ตอนนี้ (ตรงกับ [python-only] log)
-        def _fmt_all_obs(obs):
+        def _fmt_all_obs(obs, max_n=8):
             if not obs:
                 return "  ไม่มี"
-            return "\n".join(
-                f"  {'★' if o['used'] else '·'} `{o['bottom']}–{o['top']}`"
-                for o in obs
-            )
+            lines = [
+                f"  {'★' if o['used'] else '·'} `{o['bottom']}-{o['top']}`"
+                for o in obs[:max_n]
+            ]
+            if len(obs) > max_n:
+                lines.append(f"  _...และอีก {len(obs) - max_n} ตัว_")
+            return "\n".join(lines)
 
         all_bull_obs = smc.get("all_bull_obs") or []
         all_bear_obs = smc.get("all_bear_obs") or []
