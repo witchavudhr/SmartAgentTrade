@@ -994,10 +994,20 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     if pool_lvl is not None and abs(pool_lvl - ob_ref) <= 10:
         entry_zone = [round(pool_lvl - 2, 2), round(pool_lvl + 2, 2)]
 
-    entry = round((entry_zone[0] + entry_zone[1]) / 2, 2)
+    # user feedback: เจอเคสแท่งยาว/เร็ว ราคาวิ่งลึกเข้าไปในโซนก่อนบอทจะตัดสินใจทัน
+    # (เช่น entry_zone mid=4038.9 แต่ราคาจริงตอนเข้าคือ 4037.02 ใกล้ bottom มาก)
+    # เดิมใช้ entry_zone mid (ค่า theoretical) มาคำนวณ risk ทั้งที่ MT5 เปิด order
+    # ที่ราคาตลาดจริง (price) เสมอ ไม่ใช่ที่ mid — ทำให้ risk จริงแคบกว่าที่คำนวณไว้
+    # มาก SL เลยใกล้เกินไป โดนสวีปตื้นๆ หลุดออกก่อนราคาจะไปทางที่ถูกจริงๆ (ตามที่
+    # เจอ: entry 4037.02 SL 4033.23 = risk แค่ $3.79 ทั้งที่ MIN_OB_RISK ควรมากกว่านี้)
+    # ใช้ price (ราคาจริง) แทน entry_zone mid ในการคำนวณ risk เสมอ ถ้า room เหลือ
+    # น้อยเกินไป (<$10) ให้ skip รอ signal ใหม่ที่ราคาปลอดภัยกว่า ดีกว่าเข้าไม้ที่
+    # SL แคบเกินจนโดนสวีปก่อนราคาจะไปตามที่ควร
+    entry = price
     sl = round(bottom - 3.0, 2) if direction == "BUY" else round(top + 3.0, 2)
     risk = abs(sl - entry)
-    if risk <= 0:
+    _MIN_OB_RISK = 10.0
+    if risk < _MIN_OB_RISK:
         return None
 
     if direction == "BUY":
