@@ -1239,8 +1239,12 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if not o.get("mitigated"):
                     return ""
                 return f" _mitigated @ {o['mitigated_time']}_" if o.get("mitigated_time") else " _mitigated_"
+            def _anchor_tag(o):
+                # user feedback: เจอ OB ที่ไม่เคยมีอยู่จริงบน LuxAlgo เลย — ต้องเห็น
+                # เวลาที่ OB แต่ละตัวถูกสร้าง (anchor bar) เพื่อ trace กลับไปดูแท่งจริง
+                return f" _formed @ {o['anchor_time']}_" if o.get("anchor_time") else ""
             lines = [
-                f"  {_tag(o)} `{o['bottom']}-{o['top']}`{_mit_tag(o)}"
+                f"  {_tag(o)} `{o['bottom']}-{o['top']}`{_mit_tag(o)}{_anchor_tag(o)}"
                 for o in obs[:max_n]
             ]
             if len(obs) > max_n:
