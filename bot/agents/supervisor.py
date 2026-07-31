@@ -992,11 +992,17 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
 
     # SSL/BSL CONFLUENCE — ถ้า SSL (สำหรับ Bull OB) / BSL (สำหรับ Bear OB) อยู่ใกล้
     # ขอบ OB ≤$10 ให้ใช้ pool level เป็น entry แทน raw OB boundaries (แม่นกว่า)
+    # user feedback: เจอเคส in_ob=True (ราคาอยู่ใน OB จริงแล้ว 4064.86-4073.9) แต่
+    # confluence นี้ดัน override entry_zone เป็น [4062.86,4066.86] (แคบกว่า/ต่ำกว่า
+    # ราคาจริง) — notifier.py เอา entry_zone (ไม่ใช่ OB จริง) ไปเช็คว่า "ราคาถึงยัง"
+    # ก่อน execute ทำให้ trade ค้าง PENDING ทั้งที่ in_ob=True ควรเข้าทันที — ใช้
+    # confluence แค่ตอนที่ยังไม่ได้อยู่ใน OB (rej_fresh, ต้องรอราคากลับมาแตะใหม่)
+    # เท่านั้น ถ้า in_ob=True อยู่แล้วให้ใช้ raw OB boundaries เสมอ ไม่ต้อง override
     pool_raw = liq.get("nearest_ssl") if direction == "BUY" else liq.get("nearest_bsl")
     pool_lvl = pool_raw.get("level") if isinstance(pool_raw, dict) else pool_raw
     ob_ref = top if direction == "BUY" else bottom
     entry_zone = [bottom, top]
-    if pool_lvl is not None and abs(pool_lvl - ob_ref) <= 10:
+    if not in_ob and pool_lvl is not None and abs(pool_lvl - ob_ref) <= 10:
         entry_zone = [round(pool_lvl - 2, 2), round(pool_lvl + 2, 2)]
 
     # user feedback: เจอเคสแท่งยาว/เร็ว ราคาวิ่งลึกเข้าไปในโซนก่อนบอทจะตัดสินใจทัน
