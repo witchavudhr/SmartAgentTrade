@@ -275,6 +275,18 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
             "top": lr.top, "bottom": lr.bottom, "in_ob": lr.bottom <= current_price <= lr.top,
         } if lr else None)
 
+        # user feedback: "ทำไม bull ob มันเปลี่ยน เราควรจะ lock ไว้นี่นา" — ★ ใน
+        # all_bull_obs/all_bear_obs (จาก smc_engine.summarize()) mark "used" จากตัวที่
+        # เลือกไว้ก่อน relock (เกณฑ์ $3 เฉยๆ) พอ _relock_ob เปลี่ยน active_*_ob เป็น
+        # ตัวที่ผ่าน room+lock แล้ว ★ เดิมเลยค้างอยู่ผิดตัว ไม่ตรงกับที่ระบบใช้จริง
+        # ต้อง sync ★ ให้ตรงกับตัวที่ relock เลือกจริงด้วย (match ด้วย top/bottom)
+        def _resync_used(all_obs_key, picked):
+            for o in (tgt_summary.get(all_obs_key) or []):
+                o["used"] = bool(picked and abs(o["top"] - picked.top) < 0.01
+                                  and abs(o["bottom"] - picked.bottom) < 0.01)
+        _resync_used("all_bull_obs", lb)
+        _resync_used("all_bear_obs", lr)
+
     _relock_ob(res5, summary, "M5")
     _relock_ob(res15, m15_summary, "M15")
     _relock_ob(res30, m30_summary, "M30")
