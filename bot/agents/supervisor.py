@@ -832,7 +832,7 @@ def _major_pool_check(setup_type_s: str, smc_summary: dict | None) -> tuple[bool
 # ทุกสูตรก็อปมาจาก chart_analyst_agent.py's _INSTRUCTIONS ตรงๆ (SL/entry/depth/
 # pullback window) — สูตรพวกนี้เป็น deterministic อยู่แล้ว ไม่เคยต้องพึ่ง AI จริงๆ
 # เลย แค่เดิมฝากให้ AI อ่านตัวเลขแล้วทำตามกฎที่เขียนไว้ในข้อความเท่านั้นเอง
-_PY_MIN_RECOVERY = 5.0
+_PY_MIN_RECOVERY = 3.0
 _PY_SWEEP_ENTRY_WINDOW = 10.0
 _PY_MIN_RR = 1.5
 
