@@ -832,7 +832,7 @@ def _major_pool_check(setup_type_s: str, smc_summary: dict | None) -> tuple[bool
 # ทุกสูตรก็อปมาจาก chart_analyst_agent.py's _INSTRUCTIONS ตรงๆ (SL/entry/depth/
 # pullback window) — สูตรพวกนี้เป็น deterministic อยู่แล้ว ไม่เคยต้องพึ่ง AI จริงๆ
 # เลย แค่เดิมฝากให้ AI อ่านตัวเลขแล้วทำตามกฎที่เขียนไว้ในข้อความเท่านั้นเอง
-_PY_MIN_SWEEP_DEPTH = 5.0
+_PY_MIN_RECOVERY = 5.0
 _PY_SWEEP_ENTRY_WINDOW = 10.0
 _PY_MIN_RR = 1.5
 
@@ -880,8 +880,13 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     if level is None or wick is None or age is None:
         return None
 
+    # user feedback: "เอาแค่แตะ แล้วเด้งเลย ก็โอเค แต่ให้ดูตอนเด้งมากกว่าว่าไปไกล
+    # แค่ไหน" — เอา min sweep depth (ทะลุ level ต้องลึก ≥$5) ออก เปลี่ยนไปเช็คระยะ
+    # เด้งกลับจาก wick extreme (จุดต่ำสุด/สูงสุดของ sweep) มาถึงราคาปัจจุบันแทน —
+    # sweep ตื้นแค่ไหนก็ได้ ขอแค่เด้งกลับมาไกลพอ ($5) ถือว่าเป็น rejection จริง
     depth = round(abs(level - wick), 2)
-    if depth < _PY_MIN_SWEEP_DEPTH:
+    recovery = round(abs(price - wick), 2)
+    if recovery < _PY_MIN_RECOVERY:
         return None
     dist = round(abs(price - level), 1)
     if age <= 2 and dist <= _PY_SWEEP_ENTRY_WINDOW:
@@ -911,8 +916,8 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
 
     reasoning = (
         f"[PYTHON-ONLY, no AI] {setup_type}: pullback={pb_status} (age={age}bars dist={dist}pts "
-        f"depth={depth}pts), sweep level={level} recovered=True, entry={entry}, SL={sl} "
-        f"(level{'+' if direction=='SELL' else '-'}10), TP={tp} (RR-qualified pool scan), RR={rr}"
+        f"depth={depth}pts recovery=${recovery}), sweep level={level} recovered=True, entry={entry}, "
+        f"SL={sl} (level{'+' if direction=='SELL' else '-'}10), TP={tp} (RR-qualified pool scan), RR={rr}"
     )
     return {
         "signal": direction,
