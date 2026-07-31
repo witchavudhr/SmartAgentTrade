@@ -3129,7 +3129,11 @@ def _mt5_autoclose_check(ot: dict) -> dict:
 
 async def trade_monitor(ctx: ContextTypes.DEFAULT_TYPE):
     """
-    ทำงานทุก 5 นาที — เช็ค trailing stop และ re-entry opportunity
+    ทำงานทุก 30 วิ — เช็ค trailing stop และ re-entry opportunity (เดิม 5 นาที
+    ทำให้หลังไม้ถูกปิดจริง (SL/TP/pos_guard) บอทต้องรอนานถึง 5 นาทีกว่าจะเคลียร์
+    open_trade state ได้ — auto_scan เองก็ข้ามการ scan ทั้งหมดตราบใดที่ open_trade
+    ยังไม่ว่าง ทำให้พลาดโอกาส re-scan สัญญาณใหม่ไปนาน ลดเหลือ 30s ให้ทันกับ
+    auto_scan ที่รันทุก 1 นาทีอยู่แล้ว)
     """
     ot = bot_state.get("open_trade")
     if not ot:
@@ -3955,7 +3959,7 @@ def run():
     app.job_queue.run_repeating(poll_dashboard_scan, interval=5, first=10)
 
     # Trade monitor — ทุก 5 นาที ตรวจ trailing + reentry
-    app.job_queue.run_repeating(trade_monitor, interval=300, first=60)
+    app.job_queue.run_repeating(trade_monitor, interval=30, first=30)
 
     # MT5 transaction sync — ทุก 3 ชั่วโมง ดึง closed positions 4 ชม. ย้อนหลัง
     app.job_queue.run_repeating(mt5_sync_job, interval=10800, first=60)
