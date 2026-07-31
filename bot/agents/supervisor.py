@@ -1684,7 +1684,7 @@ def format_alert(result: dict) -> str:
     if setup_type == "BULL_OB_SWEEP_REJECT":
         setup_line = f"🔥 Setup: *BULL OB SWEEP+REJECT* {rev_stars} — สัญญาณแข็งที่สุด\n"
     elif setup_type == "BULL_OB_ENTRY":
-        setup_line = f"📍 Setup: *BULL OB ENTRY* (pyramid) {rev_stars}\n"
+        setup_line = f"📍 Setup: *BULL OB ENTRY* {rev_stars}\n"
     elif "SWING_OB" in str(setup_type):
         setup_line = f"🔀 Setup: *SWING OB* {rev_stars} (score {rev_score}/10)\n"
     elif setup_type:

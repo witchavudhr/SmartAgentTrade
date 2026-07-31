@@ -1798,20 +1798,11 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
             pnl_line = _format_pnl_line(existing_trade, mt5_positions, result.get("current_price"))
 
             if new_dir == ex_dir:
-                # inject lot + session ก่อนทุก path
-                _sig = result.get("analysis", {})
-                _sig["lot"]      = result.get("lot")
-                _sig["risk_pct"] = result.get("risk_pct")
-                _sig["session"]  = get_session().get("session")
-                result["analysis"] = _sig
-
-                # ราคาดีกว่าไม้แรก = auto-execute ทันที ไม่รอ approve
-                # (ราคาไม่ดี = _execute_pyramid_auto จะ skip + แจ้ง Telegram เอง)
-                confidence = int(_sig.get("confidence") or 0)
-                print(f"[notifier] 🔺 Auto-pyramid — confidence={confidence}% (no approval needed)")
+                # user feedback: "เอา pyramid ออกหน่อย" — ปิด auto-pyramid ทั้งหมด
+                # มีไม้ทิศเดียวกันเปิดอยู่แล้ว ไม่เปิดไม้ที่ 2/3 ซ้อนอีก แค่แจ้งเฉยๆ
+                print(f"[notifier] 🔺 มีไม้ {ex_dir} เปิดอยู่แล้ว — ข้าม pyramid (ปิดฟีเจอร์นี้แล้ว)")
                 if pnl_line:
                     await _safe_send(send_fn, pnl_line, parse_mode="Markdown")
-                await _execute_pyramid_auto(result, existing_trade, send_fn)
                 return
             else:
                 await _safe_send(
