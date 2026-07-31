@@ -35,6 +35,33 @@ _OB_ROOM_MIN = 18.0
 _ob_lock = {tf: {"bull_top": None, "bull_bottom": None, "bear_top": None, "bear_bottom": None}
             for tf in ("M5", "M15", "M30")}
 
+# user feedback: "เราลืมไปรึป่าว มันเปลี่ยนอีกแล้ว" — _ob_lock เดิมเก็บใน memory
+# ล้วนๆ (module-level dict) พอ restart บอท (ซึ่งเกิดบ่อยมากเวลา deploy fix ใหม่)
+# lock หายหมด แล้ว scan แรกหลัง restart ก็เลือก OB ใหม่ "สด" ไปเลย ดูเหมือน OB
+# เปลี่ยนทั้งที่ยังไม่โดน mitigate จริง — persist ลงไฟล์แยก กัน restart ทำ lock หาย
+_OB_LOCK_PATH = Path(__file__).parent.parent / "data" / "ob_lock.json"
+
+def _load_ob_lock():
+    try:
+        if _OB_LOCK_PATH.exists():
+            saved = json.loads(_OB_LOCK_PATH.read_text(encoding="utf-8"))
+            for tf in _ob_lock:
+                if tf in saved:
+                    _ob_lock[tf].update(saved[tf])
+    except Exception:
+        pass
+
+def _save_ob_lock():
+    try:
+        _OB_LOCK_PATH.parent.mkdir(exist_ok=True)
+        tmp = _OB_LOCK_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_ob_lock), encoding="utf-8")
+        tmp.replace(_OB_LOCK_PATH)
+    except Exception:
+        pass
+
+_load_ob_lock()
+
 
 def _select_room_ob(obs: list, is_bull: bool, opp_liq_level: float | None, tf: str = "M5",
                      min_room: float = _OB_ROOM_MIN):
@@ -58,6 +85,7 @@ def _select_room_ob(obs: list, is_bull: bool, opp_liq_level: float | None, tf: s
     # ล็อกใหม่ — เลือกตัวที่ใกล้ราคาที่สุด (top สูงสุดสำหรับ bull / bottom ต่ำสุดสำหรับ bear)
     picked = max(valid, key=lambda ob: ob.top) if is_bull else min(valid, key=lambda ob: ob.bottom)
     lock[key_top], lock[key_bot] = picked.top, picked.bottom
+    _save_ob_lock()
     return picked
 
 def _get_mt5_price() -> float | None:
