@@ -2060,6 +2060,14 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
 
     summary = {
         "current_price": current_price,
+        "current_bar_ohlc": ({
+            "open":  round(float(df['open'].iloc[-1]), 2),
+            "high":  round(float(df['high'].iloc[-1]), 2),
+            "low":   round(float(df['low'].iloc[-1]), 2),
+            "close": round(float(df['close'].iloc[-1]), 2),
+            "time":  (df.index[-1].strftime("%Y-%m-%d %H:%M")
+                      if hasattr(df.index[-1], "strftime") else str(df.index[-1])),
+        } if df is not None and len(df) > 0 else None),
         "bias": result.current_bias,
 
         "last_bos": {

@@ -1144,8 +1144,14 @@ def _log_python_only_state(smc_summary: dict) -> None:
     def _fmt_bounce(b):
         return "ไม่มี" if not b else f"swept={b['swept_level']} retrace={b['retrace_pct']}% bars_ago={b['bars_ago']}"
 
+    # user feedback: "อยากให้ใน log แสดง OHLC ทุกสแกน" — โชว์ OHLC ของแท่ง M5
+    # ปัจจุบัน (กำลังฟอร์มตัวอยู่) ทุกครั้งที่ scan
+    ohlc = smc_summary.get("current_bar_ohlc")
+    ohlc_str = (f"O={ohlc['open']} H={ohlc['high']} L={ohlc['low']} C={ohlc['close']} @ {ohlc['time']}"
+                if ohlc else "ไม่มี")
+
     print(
-        f"[python-only] 🔍 price={price} | "
+        f"[python-only] 🔍 price={price} | OHLC(M5): {ohlc_str} | "
         f"Bull OB: {_fmt_ob(bull_ob, True)} | Bear OB: {_fmt_ob(bear_ob, False)} | "
         f"SSL: {_fmt_lvl(ssl_lvl)} | BSL: {_fmt_lvl(bsl_lvl)} | "
         f"BounceBull: {_fmt_bounce(bounce_bull)} | BounceBear: {_fmt_bounce(bounce_bear)}"
