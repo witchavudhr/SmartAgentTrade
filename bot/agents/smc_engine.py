@@ -2379,12 +2379,16 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
                 _ob_bot, _ob_top = _bo.bottom, _bo.top
                 for _i, _row in _recent.iterrows():
                     if _row['high'] >= _ob_bot:          # wick/body แตะ Bear OB
-                        _this_bear = _row['close'] < _row['open']
+                        # user feedback: "เราบอกแล้วนี่ว่าถ้าแตะ ob เข้าเลย" — เดิม
+                        # เช็คว่าแท่งที่แตะต้อง "แดง" (close<open) ซึ่งผิด สี candle
+                        # ไม่เกี่ยวกับ rejection จริง (แท่งอาจเปิดสูง แตะโซน แล้วปิด
+                        # ต่ำกว่า bottom ได้ แม้ net เป็นแท่งเขียวเมื่อเทียบ open เดิม)
+                        # เกณฑ์ที่ถูกคือ "ราคาปิดกลับออกนอกโซนหรือยัง" ไม่ใช่สีแท่ง
+                        _this_bear = _row['close'] < _ob_bot
                         _next_bear = False
                         if _i + 1 < len(_recent):
                             _nxt = _recent.iloc[_i + 1]
-                            _next_bear = (_nxt['close'] < _nxt['open']
-                                          and _nxt['close'] < _ob_bot)
+                            _next_bear = _nxt['close'] < _ob_bot
                         if _this_bear or _next_bear:
                             _cand = {
                                 "ob_zone": [round(_ob_bot, 2), round(_ob_top, 2)],
@@ -2399,12 +2403,15 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
                 _ob_bot, _ob_top = _bo.bottom, _bo.top
                 for _i, _row in _recent.iterrows():
                     if _row['low'] <= _ob_top:           # wick/body แตะ Bull OB
-                        _this_bull = _row['close'] > _row['open']
+                        # user feedback: "เราบอกแล้วนี่ว่าถ้าแตะ ob เข้าเลย" — เกณฑ์
+                        # ที่ถูกคือ "ราคาปิดกลับออกนอกโซนหรือยัง" (close > top) ไม่ใช่
+                        # สีแท่ง (close>open) — แท่งเปิดสูง แตะโซนแล้วเด้งกลับปิดเหนือ
+                        # top ได้ แม้ net เป็นแท่งแดงเทียบ open เดิมก็ยังถือว่า reject จริง
+                        _this_bull = _row['close'] > _ob_top
                         _next_bull = False
                         if _i + 1 < len(_recent):
                             _nxt = _recent.iloc[_i + 1]
-                            _next_bull = (_nxt['close'] > _nxt['open']
-                                          and _nxt['close'] > _ob_top)
+                            _next_bull = _nxt['close'] > _ob_top
                         if _this_bull or _next_bull:
                             _cand = {
                                 "ob_zone": [round(_ob_bot, 2), round(_ob_top, 2)],
