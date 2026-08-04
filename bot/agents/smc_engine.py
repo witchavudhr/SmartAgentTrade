@@ -587,6 +587,23 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
         if kind == "low":
             return bool((level - after["low"] >= _BREACH_MIN_DEPTH).any())
         return bool((after["high"] - level >= _BREACH_MIN_DEPTH).any())
+
+    # user feedback: "นี่ไง โดนแล้ว" — ราคาเคยแตะ/ทะลุ pool ไปแล้วจริง (แม้ตื้นแค่
+    # $0.76) แต่ "swept" (ต้องลึก $5) ยังไม่ถือว่า sweep เพื่อกัน noise ตื้นๆ ในจุด
+    # ที่ใช้ตัดสินใจเข้าไม้ (CASE F) — แต่ MAJOR POOL CHECK ใช้ "swept" ตัวเดียวกัน
+    # เลยมองว่า pool นี้ "ยังไม่เคยถูกแตะเลย" ทั้งที่จริงราคาไปเยือนมาแล้ว บล็อก
+    # sell ผิดเหตุผล (คิดว่ามี liquidity ใหญ่กว่าที่ยังไม่ถูกแตะรออยู่ ทั้งที่จริง
+    # แตะไปแล้ว) — เพิ่ม "touched" แยกจาก "swept" (ไม่มี min depth เลย) ให้ major
+    # pool check ใช้แทน เพราะจุดประสงค์ต่างกัน: "swept" ใช้ตัดสินเข้าไม้ (ต้องมี
+    # นัยสำคัญ) แต่ major pool check แค่อยากรู้ว่า "เคยไปเยือนมาหรือยัง"
+    def _touched(idx, level, kind):
+        if df is None or idx is None or idx + 1 >= len(df):
+            return False
+        after = df.iloc[idx + 1:]
+        if kind == "low":
+            return bool((after["low"] < level).any())
+        return bool((after["high"] > level).any())
+
     eqh_set = set(round(v, 2) for v in (result.equal_highs or []))
     eql_set = set(round(v, 2) for v in (result.equal_lows  or []))
     # _find_liquidity_sweep เองก็ไม่มี min depth (นับ sweep ตั้งแต่ wick ทะลุ $0.01)
@@ -595,6 +612,8 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
                    if s.kind == "sweep_high" and (s.wick_extreme - s.level) >= _BREACH_MIN_DEPTH}
     swept_lows  = {round(s.level, 2) for s in (result.sweeps or [])
                    if s.kind == "sweep_low" and (s.level - s.wick_extreme) >= _BREACH_MIN_DEPTH}
+    touched_highs = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_high"}
+    touched_lows  = {round(s.level, 2) for s in (result.sweeps or []) if s.kind == "sweep_low"}
 
     bsl_pools = []
     for sh in (swing_highs or []):
@@ -603,6 +622,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             continue
         is_major = any(abs(lv - e) < 1.0 for e in eqh_set)
         swept    = any(abs(lv - s) < 1.5 for s in swept_highs) or _breached(sh.index, lv, "high")
+        touched  = swept or any(abs(lv - s) < 1.5 for s in touched_highs) or _touched(sh.index, lv, "high")
         _t, _age = _bar_meta(sh.index)
         bsl_pools.append({
             "level":     lv,
@@ -610,6 +630,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             "size":      "major" if is_major else "minor",
             "dist_pts":  round((lv - current_price) * 10, 1),
             "swept":     swept,
+            "touched":   touched,
             "timeframe": timeframe,
             "time":      _t,
             "age_bars":  _age,
@@ -622,6 +643,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             continue
         is_major = any(abs(lv - e) < 1.0 for e in eql_set)
         swept    = any(abs(lv - s) < 1.5 for s in swept_lows) or _breached(sl.index, lv, "low")
+        touched  = swept or any(abs(lv - s) < 1.5 for s in touched_lows) or _touched(sl.index, lv, "low")
         _t, _age = _bar_meta(sl.index)
         ssl_pools.append({
             "level":     lv,
@@ -629,6 +651,7 @@ def classify_liquidity(result: "SMCResult", current_price: float, timeframe: str
             "size":      "major" if is_major else "minor",
             "dist_pts":  round((current_price - lv) * 10, 1),
             "swept":     swept,
+            "touched":   touched,
             "timeframe": timeframe,
             "time":      _t,
             "age_bars":  _age,

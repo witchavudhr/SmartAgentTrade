@@ -743,18 +743,22 @@ def _major_pool_check(setup_type_s: str, smc_summary: dict | None) -> tuple[bool
         _pool_list = _liq_chk.get("weekly_ssl_pools") or []
     if _swept_lvl is None:
         return True, ""
+    # user feedback: "นี่ไง โดนแล้ว" — ราคาเคยแตะ pool ที่ไกลกว่าไปแล้วจริง (high/low
+    # ทะลุ level แล้ว) แค่ตื้นไม่ถึง $5 เลยยังไม่ถูก mark "swept" (เกณฑ์นั้นมีไว้กัน
+    # noise สำหรับ CASE F entry) — แต่ major pool check แค่อยากรู้ว่า "เคยไปเยือน
+    # หรือยัง" ใช้ "touched" (ไม่มี min depth) แทน "swept" กันบล็อกผิดเหตุผล
     if setup_type_s == "BSL_SWEEP_SELL":
-        _bigger_unswept = [p for p in _pool_list if not p.get("swept") and p.get("level", -9e9) > _swept_lvl + 1.0]
+        _bigger_unswept = [p for p in _pool_list if not p.get("touched", p.get("swept")) and p.get("level", -9e9) > _swept_lvl + 1.0]
     else:
-        _bigger_unswept = [p for p in _pool_list if not p.get("swept") and p.get("level", 9e9) < _swept_lvl - 1.0]
+        _bigger_unswept = [p for p in _pool_list if not p.get("touched", p.get("swept")) and p.get("level", 9e9) < _swept_lvl - 1.0]
     _bigger_unswept.sort(key=lambda p: abs(p.get("level", 0) - _swept_lvl))
     if _bigger_unswept:
         _bp = _bigger_unswept[0]
         return False, (
             f"🚫 MAJOR POOL CHECK: sweep ที่ {_swept_lvl} ยังมี pool ที่ {_bp.get('level')} "
-            f"อยู่ไกลกว่า (ไปทิศเดียวกัน) และยังไม่โดน sweep เลย — liquidity ที่แท้จริงกว่า "
+            f"อยู่ไกลกว่า (ไปทิศเดียวกัน) และยังไม่เคยถูกแตะเลย — liquidity ที่แท้จริงกว่า "
             f"ยังไม่ถูกกวาด premise ของ {setup_type_s} ยังไม่สมเหตุสมผล รอให้ pool ที่ "
-            f"{_bp.get('level')} โดน sweep จริงก่อน — ข้าม AI call เพื่อประหยัด"
+            f"{_bp.get('level')} โดนแตะจริงก่อน — ข้าม AI call เพื่อประหยัด"
         )
     return True, ""
 
