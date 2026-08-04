@@ -276,77 +276,8 @@ def run(balance: float = 10000.0, force_session: bool = False, context: dict = N
     # แก้แบบทั่วไป: คำนวณ "ระยะห่างจนถึงเงื่อนไข" ของทุก pattern ที่ยัง watch อยู่
     # (OB, BSL/SSL liquidity pool) แล้วเลือก label ตามตัวที่ใกล้สุด — ไม่ใช่ patch
     # ทีละ pattern แบบเดิมอีกต่อไป เพิ่ม pattern ใหม่ในอนาคตแค่เติมใน candidates list
-    def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
-        price = smc.get("current_price")
-        if price is None:
-            return []
-        cands: list[tuple[str, float, float]] = []
-
-        # เช็คทั้ง M5 และ M15 OB แล้วเอาตัวที่ระยะห่างน้อยสุดจริง — เดิม preferred
-        # M15 ก่อนเสมอ (ถ้ามี) ทำให้พลาดเคสที่ M5 OB ใกล้กว่า M15 OB จริงๆ (เช่น
-        # M15 Bull OB top=4024.38 ห่างกว่า M5 Bull OB top=4028.97 แต่ยังไปเลือก
-        # M15 มาเทียบกับ Bear OB ทำให้ผลออกมาว่า Bear OB ใกล้กว่าทั้งที่ไม่จริง)
-        # user feedback: ราคาอยู่ "ใน" OB แล้ว (in_ob=True, กรณีดีที่สุด) แต่เดิม
-        # เช็คแค่ price >= top (เฉพาะตอนยังไม่ถึง OB) พอราคาลงมาอยู่ในโซนแล้ว
-        # (ระหว่าง bottom-top) จะหลุด filter ไปเลยเพราะ price < top ทำให้ OB หายไป
-        # จาก watchlist ทั้งที่ price อยู่ในโซนพอดี (ดีกว่า "ใกล้" อีก) ต้องนับ OB
-        # ที่ price ยังไม่หลุดออกไปทั้งโซน (price >= bottom สำหรับ Bull, price <=
-        # top สำหรับ Bear) แล้ว clamp ระยะห่างที่ 0 ถ้าราคาอยู่ในโซนแล้ว
-        # user feedback: เอา M30 เข้ามาด้วยเลย ("เอา bsl/ssl ของ m15/m30 ด้วยเลยงั้น")
-        _m15w = smc.get("m15") or {}
-        _m30w = smc.get("m30") or {}
-        _bull_obs = [ob for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"), _m30w.get("active_bull_ob"))
-                     if ob and ob.get("top") is not None and ob.get("bottom") is not None]
-        _bear_obs = [ob for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"), _m30w.get("active_bear_ob"))
-                     if ob and ob.get("top") is not None and ob.get("bottom") is not None]
-        _valid_bull_obs = [ob for ob in _bull_obs if price >= ob["bottom"]]
-        _valid_bear_obs = [ob for ob in _bear_obs if price <= ob["top"]]
-        _near_bull_ob = max(_valid_bull_obs, key=lambda ob: ob["top"]) if _valid_bull_obs else None
-        _near_bear_ob = min(_valid_bear_obs, key=lambda ob: ob["bottom"]) if _valid_bear_obs else None
-        _near_bull_top = _near_bull_ob["top"] if _near_bull_ob else None
-        _near_bear_bot = _near_bear_ob["bottom"] if _near_bear_ob else None
-        _bull_dist = max(0.0, price - _near_bull_top) if _near_bull_top is not None else None
-        _bear_dist = max(0.0, _near_bear_bot - price) if _near_bear_bot is not None else None
-
-        # user feedback: nearest_ssl/nearest_bsl เดิมมาจาก M5 ล้วนๆ ("เอา bsl/ssl
-        # ของ m15/m30 ด้วยเลยงั้น") — ใช้ weekly_ssl/bsl_pools แทน (รวม M5+M15+M30
-        # แล้ว dedup เรียงตามระยะห่างอยู่แล้วจาก get_price_data()) เลือกตัวที่ยัง
-        # ไม่ swept ที่ใกล้ที่สุด
-        _liqw = smc.get("liquidity") or {}
-        _weekly_ssl = [p for p in (_liqw.get("weekly_ssl_pools") or []) if not p.get("swept")]
-        _weekly_bsl = [p for p in (_liqw.get("weekly_bsl_pools") or []) if not p.get("swept")]
-        if _weekly_ssl:
-            _ssl_lvl = _weekly_ssl[0]["level"]
-        else:
-            _ssl_raw = _liqw.get("nearest_ssl")
-            _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
-        if _weekly_bsl:
-            _bsl_lvl = _weekly_bsl[0]["level"]
-        else:
-            _bsl_raw = _liqw.get("nearest_bsl")
-            _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
-
-        # user feedback: เกณฑ์ $20 เดิมเช็คผิดจุด (ห่างระหว่าง Bull OB กับ Bear OB
-        # คนละฝั่ง) ที่จริงต้องเช็คว่า OB นั้นห่างจาก SSL/BSL (จุดสูงสุด/ต่ำสุดที่ราคา
-        #วิ่งมาจาก) อย่างน้อย $20 ถึงจะมี "room สะสมแล้วกลับตัว" จริง ไม่ใช่แค่ noise
-        # ติดขอบ range (เช่น Bear OB 3991 แต่ SSL ที่มันวิ่งขึ้นมาจากอยู่แค่ 3973 ห่าง
-        # แค่ $18 → sideway โดนหลอกง่าย ข้ามไปเลย) — Bear OB เทียบกับ SSL (จุดต่ำที่
-        # ราคาเด้งขึ้นมา), Bull OB เทียบกับ BSL (จุดสูงที่ราคาร่วงลงมา)
-        _MIN_OB_ROOM = 18.0
-        _bull_has_room = (_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False
-        _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
-
-        if _near_bull_top is not None and _bull_has_room:
-            cands.append(("NEAR_BULL_OB", _bull_dist, _near_bull_top))
-        if _near_bear_bot is not None and _bear_has_room:
-            cands.append(("NEAR_BEAR_OB", _bear_dist, _near_bear_bot))
-
-        if _ssl_lvl is not None and price >= _ssl_lvl:
-            cands.append(("APPROACHING_SSL", price - _ssl_lvl, _ssl_lvl))
-        if _bsl_lvl is not None and price <= _bsl_lvl:
-            cands.append(("APPROACHING_BSL", _bsl_lvl - price, _bsl_lvl))
-
-        return cands
+    # (ย้ายเป็น module-level function ชื่อ _watchlist_candidates ด้านล่างแล้ว —
+    # ใช้ร่วมกับ _log_python_only_state ด้วย)
 
     # user feedback: 100pts (=$100) กว้างเกินไป — เจอเคส label โชว์ "approaching"
     # ทั้งที่จริงยังห่างอยู่มาก ไม่ค่อยมีประโยชน์ ให้แจ้งเตือนเฉพาะตอนใกล้จริงๆ
@@ -1113,6 +1044,85 @@ def _python_only_exhaustion_decision(smc_summary: dict, direction: str) -> dict 
     }
 
 
+def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
+    """
+    คำนวณ "ระยะห่างจนถึงเงื่อนไข" ของทุก pattern ที่ยัง watch อยู่ (OB, BSL/SSL
+    liquidity pool) — คืน list ของ (label, distance, level) เรียงตามที่เจอ (ยังไม่
+    sort) ใช้ทั้งใน run() (เลือก label ตามตัวที่ใกล้สุด) และ _log_python_only_state
+    (โชว์เป็น "แผนที่รออยู่" ใน console log)
+    """
+    price = smc.get("current_price")
+    if price is None:
+        return []
+    cands: list[tuple[str, float, float]] = []
+
+    # เช็คทั้ง M5 และ M15 OB แล้วเอาตัวที่ระยะห่างน้อยสุดจริง — เดิม preferred
+    # M15 ก่อนเสมอ (ถ้ามี) ทำให้พลาดเคสที่ M5 OB ใกล้กว่า M15 OB จริงๆ (เช่น
+    # M15 Bull OB top=4024.38 ห่างกว่า M5 Bull OB top=4028.97 แต่ยังไปเลือก
+    # M15 มาเทียบกับ Bear OB ทำให้ผลออกมาว่า Bear OB ใกล้กว่าทั้งที่ไม่จริง)
+    # user feedback: ราคาอยู่ "ใน" OB แล้ว (in_ob=True, กรณีดีที่สุด) แต่เดิม
+    # เช็คแค่ price >= top (เฉพาะตอนยังไม่ถึง OB) พอราคาลงมาอยู่ในโซนแล้ว
+    # (ระหว่าง bottom-top) จะหลุด filter ไปเลยเพราะ price < top ทำให้ OB หายไป
+    # จาก watchlist ทั้งที่ price อยู่ในโซนพอดี (ดีกว่า "ใกล้" อีก) ต้องนับ OB
+    # ที่ price ยังไม่หลุดออกไปทั้งโซน (price >= bottom สำหรับ Bull, price <=
+    # top สำหรับ Bear) แล้ว clamp ระยะห่างที่ 0 ถ้าราคาอยู่ในโซนแล้ว
+    # user feedback: เอา M30 เข้ามาด้วยเลย ("เอา bsl/ssl ของ m15/m30 ด้วยเลยงั้น")
+    _m15w = smc.get("m15") or {}
+    _m30w = smc.get("m30") or {}
+    _bull_obs = [ob for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"), _m30w.get("active_bull_ob"))
+                 if ob and ob.get("top") is not None and ob.get("bottom") is not None]
+    _bear_obs = [ob for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"), _m30w.get("active_bear_ob"))
+                 if ob and ob.get("top") is not None and ob.get("bottom") is not None]
+    _valid_bull_obs = [ob for ob in _bull_obs if price >= ob["bottom"]]
+    _valid_bear_obs = [ob for ob in _bear_obs if price <= ob["top"]]
+    _near_bull_ob = max(_valid_bull_obs, key=lambda ob: ob["top"]) if _valid_bull_obs else None
+    _near_bear_ob = min(_valid_bear_obs, key=lambda ob: ob["bottom"]) if _valid_bear_obs else None
+    _near_bull_top = _near_bull_ob["top"] if _near_bull_ob else None
+    _near_bear_bot = _near_bear_ob["bottom"] if _near_bear_ob else None
+    _bull_dist = max(0.0, price - _near_bull_top) if _near_bull_top is not None else None
+    _bear_dist = max(0.0, _near_bear_bot - price) if _near_bear_bot is not None else None
+
+    # user feedback: nearest_ssl/nearest_bsl เดิมมาจาก M5 ล้วนๆ ("เอา bsl/ssl
+    # ของ m15/m30 ด้วยเลยงั้น") — ใช้ weekly_ssl/bsl_pools แทน (รวม M5+M15+M30
+    # แล้ว dedup เรียงตามระยะห่างอยู่แล้วจาก get_price_data()) เลือกตัวที่ยัง
+    # ไม่ swept ที่ใกล้ที่สุด
+    _liqw = smc.get("liquidity") or {}
+    _weekly_ssl = [p for p in (_liqw.get("weekly_ssl_pools") or []) if not p.get("swept")]
+    _weekly_bsl = [p for p in (_liqw.get("weekly_bsl_pools") or []) if not p.get("swept")]
+    if _weekly_ssl:
+        _ssl_lvl = _weekly_ssl[0]["level"]
+    else:
+        _ssl_raw = _liqw.get("nearest_ssl")
+        _ssl_lvl = _ssl_raw.get("level") if isinstance(_ssl_raw, dict) else _ssl_raw
+    if _weekly_bsl:
+        _bsl_lvl = _weekly_bsl[0]["level"]
+    else:
+        _bsl_raw = _liqw.get("nearest_bsl")
+        _bsl_lvl = _bsl_raw.get("level") if isinstance(_bsl_raw, dict) else _bsl_raw
+
+    # user feedback: เกณฑ์ $20 เดิมเช็คผิดจุด (ห่างระหว่าง Bull OB กับ Bear OB
+    # คนละฝั่ง) ที่จริงต้องเช็คว่า OB นั้นห่างจาก SSL/BSL (จุดสูงสุด/ต่ำสุดที่ราคา
+    #วิ่งมาจาก) อย่างน้อย $20 ถึงจะมี "room สะสมแล้วกลับตัว" จริง ไม่ใช่แค่ noise
+    # ติดขอบ range (เช่น Bear OB 3991 แต่ SSL ที่มันวิ่งขึ้นมาจากอยู่แค่ 3973 ห่าง
+    # แค่ $18 → sideway โดนหลอกง่าย ข้ามไปเลย) — Bear OB เทียบกับ SSL (จุดต่ำที่
+    # ราคาเด้งขึ้นมา), Bull OB เทียบกับ BSL (จุดสูงที่ราคาร่วงลงมา)
+    _MIN_OB_ROOM = 18.0
+    _bull_has_room = (_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False
+    _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
+
+    if _near_bull_top is not None and _bull_has_room:
+        cands.append(("NEAR_BULL_OB", _bull_dist, _near_bull_top))
+    if _near_bear_bot is not None and _bear_has_room:
+        cands.append(("NEAR_BEAR_OB", _bear_dist, _near_bear_bot))
+
+    if _ssl_lvl is not None and price >= _ssl_lvl:
+        cands.append(("APPROACHING_SSL", price - _ssl_lvl, _ssl_lvl))
+    if _bsl_lvl is not None and price <= _bsl_lvl:
+        cands.append(("APPROACHING_BSL", _bsl_lvl - price, _bsl_lvl))
+
+    return cands
+
+
 def _log_python_only_state(smc_summary: dict) -> None:
     """
     user feedback: "console log ต้องบอกตลอดว่า ssl/bsl bull/bear ob อยู่ตรงไหน
@@ -1179,6 +1189,25 @@ def _log_python_only_state(smc_summary: dict) -> None:
         f"All Bear OBs ({len(all_bear)}): {_fmt_ob_list(all_bear)} "
         f"(★ = ใช้งานอยู่, ✕ = mitigated แล้ว)"
     )
+
+    # user feedback: "อยากใส่ว่ามีแผนอะไรรออยู่ เช่น รอเข้า buy ที่เท่าไร รอราคามา
+    # ถึงตรงนี้แล้วจะ sell" — โชว์ watchlist (จาก _watchlist_candidates เดียวกับที่
+    # ใช้ตัดสิน label NEAR_BULL_OB/APPROACHING_SSL ฯลฯ) เป็น "แผน" ใน log ทุก scan
+    _plan_labels = {
+        "NEAR_BULL_OB":    "🟢 รอราคาแตะ Bull OB แล้ว BUY",
+        "NEAR_BEAR_OB":    "🔴 รอราคาแตะ Bear OB แล้ว SELL",
+        "APPROACHING_SSL": "🟢 รอราคาลงไป sweep SSL แล้ว BUY",
+        "APPROACHING_BSL": "🔴 รอราคาขึ้นไป sweep BSL แล้ว SELL",
+    }
+    _watch = sorted(_watchlist_candidates(smc_summary), key=lambda x: x[1])
+    if _watch:
+        _plan_str = " | ".join(
+            f"{_plan_labels.get(lbl, lbl)} @ {lvl} (ห่าง ${round(dist, 2)})"
+            for lbl, dist, lvl in _watch[:3]
+        )
+        print(f"[python-only] 🗺️ แผนที่รออยู่: {_plan_str}")
+    else:
+        print("[python-only] 🗺️ แผนที่รออยู่: ไม่มี (ไม่มี OB/SSL/BSL ที่ราคากำลังเข้าใกล้)")
 
 
 def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
