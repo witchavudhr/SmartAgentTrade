@@ -65,27 +65,26 @@ _load_ob_lock()
 
 def _select_room_ob(obs: list, is_bull: bool, opp_liq_level: float | None, tf: str = "M5",
                      min_room: float = _OB_ROOM_MIN):
-    """เลือก Bull/Bear OB ที่ห่างจาก BSL/SSL ฝั่งตรงข้าม >= min_room แล้ว "ล็อก" ไว้
-    ใน _ob_lock[tf] ไม่ให้เปลี่ยนทุก scan ตาม SSL/BSL ใหม่ที่โผล่มา — เปลี่ยนก็ต่อเมื่อ
-    ตัวที่ล็อกไว้เดิมไม่อยู่ใน unmitigated list แล้ว (โดน mitigate ไปแล้วจริงๆ)"""
+    """เลือก Bull/Bear OB ที่ห่างจาก BSL/SSL ฝั่งตรงข้าม >= min_room เสมอเลือกตัวที่
+    ใกล้ราคาที่สุดในบรรดาตัวที่ผ่านเกณฑ์ (top สูงสุดสำหรับ bull / bottom ต่ำสุดสำหรับ
+    bear) — เก็บ "ล็อก" ไว้ใน _ob_lock[tf] เผื่อ list ตัวที่ใช้อยู่หายไปจาก data
+    ชั่วคราว (กัน flicker) แต่ถ้ามีตัวที่ใกล้กว่าตัวล็อกเดิมโผล่มาจริง (formed ใหม่
+    หรือ mitigate ไปแล้ว) จะอัพเดตล็อกไปตัวที่ใกล้กว่าเสมอ ไม่ค้างอยู่กับตัวเก่าที่
+    ไกลราคาทั้งที่มีตัวใกล้กว่าที่ผ่านเกณฑ์ room เหมือนกัน (user feedback: "มันมีตัว
+    ใกล้กว่านั้น" — เดิมค้าง lock ไว้ตัวเก่าตลอดแม้จะมีตัวใหม่ที่ดีกว่า)"""
     valid = [ob for ob in obs if opp_liq_level is None or
              abs((ob.top if is_bull else ob.bottom) - opp_liq_level) >= min_room]
     if not valid:
         return None
 
+    picked = max(valid, key=lambda ob: ob.top) if is_bull else min(valid, key=lambda ob: ob.bottom)
+
     lock = _ob_lock[tf]
     key_top, key_bot = ("bull_top", "bull_bottom") if is_bull else ("bear_top", "bear_bottom")
-    locked_top, locked_bottom = lock[key_top], lock[key_bot]
-    if locked_top is not None:
-        still_valid = next((ob for ob in valid
-                             if abs(ob.top - locked_top) < 0.5 and abs(ob.bottom - locked_bottom) < 0.5), None)
-        if still_valid:
-            return still_valid
-
-    # ล็อกใหม่ — เลือกตัวที่ใกล้ราคาที่สุด (top สูงสุดสำหรับ bull / bottom ต่ำสุดสำหรับ bear)
-    picked = max(valid, key=lambda ob: ob.top) if is_bull else min(valid, key=lambda ob: ob.bottom)
-    lock[key_top], lock[key_bot] = picked.top, picked.bottom
-    _save_ob_lock()
+    changed = lock[key_top] is None or abs(lock[key_top] - picked.top) > 0.01
+    if changed:
+        lock[key_top], lock[key_bot] = picked.top, picked.bottom
+        _save_ob_lock()
     return picked
 
 def _get_mt5_price() -> float | None:
