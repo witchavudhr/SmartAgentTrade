@@ -172,6 +172,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/scan — สแกนหา setup (auto-execute ถ้าผ่าน) · 7 windows/day\n"
         "/testscan — ดู vote ทุก agent โดยไม่เปิด trade\n"
         "/ob — ดู Bull OB / Bear OB ปัจจุบัน (M5 + M15)\n"
+        "/plan — ดูแผนที่รออยู่ (เป้าหมาย BUY/SELL ที่ใกล้ราคาที่สุด)\n"
         "/bias — ดู HTF direction H1/H4/Daily\n"
         "/news — เช็คข่าว Economic Calendar + ข่าวถัดไป\n\n"
         "⚙️ <b>Control</b>\n"
@@ -1290,6 +1291,44 @@ async def cmd_ob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"เหนือราคา:\n{zone_res_lines}\n\n"
             f"ใต้ราคา:\n{zone_sup_lines}\n"
             f"_ราคาเทสซ้ำๆ หลายชม./ข้ามวัน — เป้าหมายที่ราคามักวิ่งไปกินก่อน sweep SSL/BSL_"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/plan — โชว์ "แผนที่รออยู่" (เป้าหมาย BUY/SELL ที่ใกล้ราคาที่สุด) เหมือนใน console log"""
+    await update.message.reply_text("🗺️ กำลังคำนวณแผน...")
+    try:
+        from agents.chart_analyst import get_price_data
+        from agents.supervisor import _watchlist_candidates
+        _, smc = await asyncio.get_event_loop().run_in_executor(None, get_price_data)
+        if smc is None:
+            await update.message.reply_text("❌ ดึงข้อมูลราคาไม่ได้")
+            return
+
+        price = smc.get("current_price")
+        _plan_labels = {
+            "NEAR_BULL_OB":    ("🟢", "รอราคาแตะ Bull OB แล้ว BUY"),
+            "NEAR_BEAR_OB":    ("🔴", "รอราคาแตะ Bear OB แล้ว SELL"),
+            "APPROACHING_SSL": ("🟢", "รอราคาลงไป sweep SSL แล้ว BUY"),
+            "APPROACHING_BSL": ("🔴", "รอราคาขึ้นไป sweep BSL แล้ว SELL"),
+        }
+        watch = sorted(_watchlist_candidates(smc), key=lambda x: x[1])
+
+        if not watch:
+            lines = ["_ไม่มี OB/SSL/BSL ที่ราคากำลังเข้าใกล้ตอนนี้_"]
+        else:
+            lines = []
+            for lbl, dist, lvl in watch:
+                icon, desc = _plan_labels.get(lbl, ("⚪", lbl))
+                lines.append(f"{icon} `{lvl}` — {desc} (ห่าง `${round(dist, 2)}`)")
+
+        msg = (
+            f"🗺️ *แผนที่รออยู่*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"💰 ราคาปัจจุบัน: `{price}`\n\n" +
+            "\n".join(lines)
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
@@ -3900,6 +3939,7 @@ def run():
     app.add_handler(CommandHandler("mt5", cmd_mt5))
     app.add_handler(CommandHandler("posguard", cmd_posguard))
     app.add_handler(CommandHandler("ob", cmd_ob))
+    app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("barcheck", cmd_barcheck))
 
     # Callback (ปุ่ม)
