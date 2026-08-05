@@ -1070,12 +1070,16 @@ def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
     # จาก watchlist ทั้งที่ price อยู่ในโซนพอดี (ดีกว่า "ใกล้" อีก) ต้องนับ OB
     # ที่ price ยังไม่หลุดออกไปทั้งโซน (price >= bottom สำหรับ Bull, price <=
     # top สำหรับ Bear) แล้ว clamp ระยะห่างที่ 0 ถ้าราคาอยู่ในโซนแล้ว
-    # user feedback: เอา M30 เข้ามาด้วยเลย ("เอา bsl/ssl ของ m15/m30 ด้วยเลยงั้น")
-    _m15w = smc.get("m15") or {}
-    _m30w = smc.get("m30") or {}
-    _bull_obs = [ob for ob in (smc.get("active_bull_ob"), _m15w.get("active_bull_ob"), _m30w.get("active_bull_ob"))
+    # user feedback: "ตอนนี้คือเน้น ob m5 ก่อนใช่มั้ย พอดีในตัวติดดาว กับ plan มัน
+    # แย้งกันเอง" — _python_only_ob_decision (ตัวตัดสินใจเข้าไม้ CASE B จริง) อ่านแค่
+    # active_bull_ob/active_bear_ob ของ M5 เท่านั้น ไม่เคยดู M15/M30 เลย แต่ตรงนี้
+    # เดิมผสม M5+M15+M30 มาเทียบหาตัวใกล้สุด ทำให้ /plan โชว์เป้าที่มาจาก M15/M30
+    # (เช่น "อยู่ในโซนแล้ว ห่าง $0") ทั้งที่บอทจริงจะไม่มีวันเข้าไม้จาก OB นั้นเลย
+    # เพราะ CASE B ไม่รู้จัก OB ตัวนั้น (มองแค่ M5) — ตัด M15/M30 ออก ใช้ M5 อย่างเดียว
+    # ให้ตรงกับที่ระบบเทรดจริง ★ ใน /ob (M5 list) จะได้ไม่ขัดกับ /plan อีก
+    _bull_obs = [ob for ob in (smc.get("active_bull_ob"),)
                  if ob and ob.get("top") is not None and ob.get("bottom") is not None]
-    _bear_obs = [ob for ob in (smc.get("active_bear_ob"), _m15w.get("active_bear_ob"), _m30w.get("active_bear_ob"))
+    _bear_obs = [ob for ob in (smc.get("active_bear_ob"),)
                  if ob and ob.get("top") is not None and ob.get("bottom") is not None]
     _valid_bull_obs = [ob for ob in _bull_obs if price >= ob["bottom"]]
     _valid_bear_obs = [ob for ob in _bear_obs if price <= ob["top"]]
