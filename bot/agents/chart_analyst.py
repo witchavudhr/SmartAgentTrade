@@ -601,6 +601,21 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         print(f"[has_signal] ✅ {_now_th} SWEEP+REJECTION (CASE F, no OB needed) — low={_sweep_low_confirmed} high={_sweep_high_confirmed}")
         return True
 
+    # ── ชั้น 3a2: OB Rejection สดจริง (CASE B) — ไม่ต้องรอ OB_MIN_DISPLACEMENT ──
+    # user feedback: เจอเคสราคาแตะ OB แล้วเด้งกลับออกมาจริง (close ปิดพ้นขอบ OB
+    # แล้ว) แต่ displacement ยังใกล้มาก (เพิ่งเด้งออกมา $1-2) ไม่ถึงเกณฑ์
+    # OB_MIN_DISPLACEMENT=25 ที่ตั้งไว้สำหรับเคส "กำลังเข้าใกล้" (ยังไม่แตะ) —
+    # เอามาเช็คกับเคส "เพิ่งแตะแล้วเด้งออก" ผิดจุด ทำให้ rejection สดๆ ที่ CASE B
+    # ควรเข้าได้เลย กลับโดน pre-filter บล็อกเพราะ score ไม่ถึง 3/4 (has_ob_nearby
+    # เป็น False เพราะ displacement น้อยไป) เหมือนกับที่แก้ sweep+rejection ไปแล้ว
+    _bear_rej_fresh = smc_summary.get("recent_bear_ob_rejection")
+    _bull_rej_fresh = smc_summary.get("recent_bull_ob_rejection")
+    _bear_rej_ok = bool(_bear_rej_fresh) and _bear_rej_fresh.get("bars_ago") is not None and _bear_rej_fresh["bars_ago"] <= 2
+    _bull_rej_ok = bool(_bull_rej_fresh) and _bull_rej_fresh.get("bars_ago") is not None and _bull_rej_fresh["bars_ago"] <= 2
+    if _bear_rej_ok or _bull_rej_ok:
+        print(f"[has_signal] ✅ {_now_th} OB REJECTION (CASE B, no displacement needed) — bear={_bear_rej_ok} bull={_bull_rej_ok}")
+        return True
+
     # ob_nearby ต้องมี "displacement" อย่างน้อย OB_MIN_DISPLACEMENT (ตรงกับ
     # OB MIN DISTANCE rule ที่ chart_analyst_agent ใช้จริง — ราคาต้องห่างจาก OB
     # อย่างน้อย 15 จุดถึงจะมี room ให้เป็น setup ที่ valid) ไม่ใช่แค่ "ใกล้ๆ" เฉยๆ
