@@ -242,17 +242,10 @@ def evaluate(
     # 1. Loss streak — ปิดการ VETO, แค่เก็บ streak ไว้แสดงใน notes
     streak = check_loss_streak()
 
-    # 2. Daily loss limit
+    # 2. Daily loss limit — user feedback: "ไม่ต้อง block เลยก็ได้ บางทีมันเสีย
+    # โอกาสดีๆ" — ปิดการ VETO เหมือน loss streak ด้านบน แค่เก็บ daily_pnl ไว้
+    # คำนวณ/แสดงผลเฉยๆ ไม่บล็อกการเทรดอีกต่อไป
     daily_pnl = get_daily_pnl_pct(balance)
-    if daily_pnl <= -3.0:
-        return {
-            "approved": False,
-            "veto": True,
-            "veto_reason": f"🚫 Daily loss {daily_pnl:.1f}% — หยุดเทรดวันนี้",
-            "lot": 0,
-            "risk_pct": 0,
-            "notes": "กลับมาพรุ่งนี้"
-        }
 
     # 3. SL ไม่มีหรือ signal ไม่ชัด
     if signal == "NO_TRADE" or not sl or sl_pips <= 0:
