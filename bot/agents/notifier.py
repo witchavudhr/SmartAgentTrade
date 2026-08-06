@@ -2081,6 +2081,18 @@ async def _handle_scan_result(result: dict, send_fn, quiet: bool = False):
             _bias_d = _bias_s.get("trade_direction") or _bias_s.get("overall_bias") or "?"
             print(f"[notifier] 📡 chart={_chart_signal} setup={_setup} | reject: {_sup_r[:120]}")
 
+            # user feedback: "เอาออกหน่อยน" — Daily loss limit veto ซ้ำทุก scan
+            # (ทุก 1 นาที) ไม่มีประโยชน์ ตราบใดที่ยัง daily loss เกิน จะ reject
+            # เหมือนเดิมทุกครั้งจนกว่าจะข้ามวัน — ส่ง Telegram ครั้งเดียวพอ (log
+            # console แทนในรอบถัดๆ ไป) เหมือนที่ทำกับ NO_MEANINGFUL_SIGNAL ไปแล้ว
+            if "Daily loss" in _sup_r:
+                _last_dl_notice = bot_state.get("_last_daily_loss_notice")
+                _today_str = datetime.now().strftime("%Y-%m-%d")
+                if _last_dl_notice == _today_str:
+                    print(f"[notifier] 🔇 Daily loss veto ซ้ำ (แจ้งไปแล้ววันนี้) — {_sup_r[:100]}")
+                    return
+                state_manager.set_field(bot_state, "_last_daily_loss_notice", _today_str)
+
             # entry / SL / TP / RR
             _entry_raw = _analysis.get("entry_zone") or _analysis.get("entry")
             _sl  = _analysis.get("stop_loss") or _analysis.get("sl")
