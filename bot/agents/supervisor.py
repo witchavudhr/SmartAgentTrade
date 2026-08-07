@@ -887,11 +887,21 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
 
     # user feedback: "ถ้าทุกๆ momentum มัน buy หมด ต่อให้เข้า bear ob เราจะยังไม่
     # sell แต่เราจะรอให้ย่อลงมา ob buy เพื่อหา buy แทน ทางฝั่ง sell ก็เช่นกัน แต่ถ้า
-    # mix trend ให้ทำงานตามเดิม" — ห้ามเทรดสวน bias ที่ชัดเจน (bullish/bearish)
-    # ผ่าน CASE B เลย ต่อให้ราคาเข้า OB ฝั่งตรงข้ามก็ตาม รอ pullback มา OB ทิศตาม
-    # bias แทน — ถ้า bias="neutral" (mix trend) ทำงานปกติทั้งสองทิศ
-    _bias = smc_summary.get("bias", "neutral")
-    if (direction == "SELL" and _bias == "bullish") or (direction == "BUY" and _bias == "bearish"):
+    # mix trend ให้ทำงานตามเดิม" + "ไม่ๆ bias ต้องแบบ D1 H1 H4 ไปทางเดียวกันนะ" —
+    # ห้ามใช้ smc_summary["bias"] (แค่ M5 structural bias จาก BOS/CHoCH ล่าสุด ไม่ใช่
+    # เทรนด์จริง) ต้องเช็ค D1+H1+H4 (จาก advanced_signals, price vs midpoint ของ
+    # แต่ละ timeframe) เห็นตรงกันทั้ง 3 ตัวถึงจะถือว่า "momentum ชัดเจน" — ถ้าไม่ตรง
+    # กันทั้งหมด (mix) ถือเป็น neutral ทำงานปกติทั้งสองทิศ
+    _d1_bull = smc_summary.get("d1_bull")
+    _h1_bull = smc_summary.get("h1_bull")
+    _h4_bull = smc_summary.get("h4_bull")
+    if _d1_bull is True and _h1_bull is True and _h4_bull is True:
+        _htf_bias = "bullish"
+    elif _d1_bull is False and _h1_bull is False and _h4_bull is False:
+        _htf_bias = "bearish"
+    else:
+        _htf_bias = "neutral"
+    if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
         return None
 
     if direction == "BUY":

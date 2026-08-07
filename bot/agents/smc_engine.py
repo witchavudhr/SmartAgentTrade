@@ -861,12 +861,17 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
     # ── HTF Bias via price/range midpoint ────────────────────
     # H1 = 12 M5 bars × 20 H1 candles = 240 bars
     # H4 = 48 M5 bars × 20 H4 candles = 960 bars
+    # D1 = 288 M5 bars × 20 daily candles = 5760 bars — user feedback: "bias ต้อง
+    # แบบ D1 H1 H4 ไปทางเดียวกันนะ" ต้องมี D1 มาเทียบด้วย ไม่ใช่แค่ H1/H4
     h1_w = min(240, n)
     h4_w = min(960, n)
+    d1_w = min(5760, n)
     h1_mid = (df['high'].iloc[-h1_w:].max() + df['low'].iloc[-h1_w:].min()) / 2
     h4_mid = (df['high'].iloc[-h4_w:].max() + df['low'].iloc[-h4_w:].min()) / 2
+    d1_mid = (df['high'].iloc[-d1_w:].max() + df['low'].iloc[-d1_w:].min()) / 2
     h1_bull = current_close > h1_mid
     h4_bull = current_close > h4_mid
+    d1_bull = current_close > d1_mid
 
     # ── Confirmation Candle ───────────────────────────────────
     body   = abs(last['close'] - last['open'])
@@ -1061,8 +1066,10 @@ def advanced_signals(df: pd.DataFrame, result: SMCResult) -> dict:
         # HTF Bias (data-driven, ไม่ต้องเรียก Claude)
         "h1_bull": h1_bull,
         "h4_bull": h4_bull,
+        "d1_bull": d1_bull,
         "h1_mid":  round(h1_mid, 2),
         "h4_mid":  round(h4_mid, 2),
+        "d1_mid":  round(d1_mid, 2),
 
         # Candle
         "bull_candle": bull_candle,
@@ -2326,6 +2333,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             summary["short_stars"]       = adv.get("short_stars")
             summary["h1_bull"]           = adv.get("h1_bull")
             summary["h4_bull"]           = adv.get("h4_bull")
+            summary["d1_bull"]           = adv.get("d1_bull")
             summary["momentum_bear"]     = adv.get("momentum_bear")
             summary["momentum_bull"]     = adv.get("momentum_bull")
             summary["tradeable_session"] = sess.get("tradeable", True)
