@@ -555,10 +555,12 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
     # user feedback: ต้องเข้าใน 1-2 แท่งแรกหลัง sweep ไม่รอ 3-4 แท่ง (ราคาวิ่งไปไกล
     # แล้วไม่ใช่ entry ที่ดี) — ต้องตรงกับ window เดียวกับที่ chart_analyst_agent.py
     # ใช้ตัดสินจริง ไม่งั้น pre-filter จะยัง "เห็น signal" ทั้งที่ AI จะตอบ EXPIRED แน่ๆ
-    # user feedback: sideways/ranging price packs bull/bear structure right next to
-    # each other — a wick that barely pokes past a level (shallow depth) is noise,
-    # not a real liquidity grab. Require depth >= 5pts ก่อนนับเป็น sweep ที่ valid
-    _MIN_SWEEP_DEPTH = 5.0
+    # user feedback: "เอาแค่แตะ แล้วเด้งเลย ก็โอเค แต่ให้ดูตอนเด้งมากกว่าว่าไปไกล
+    # แค่ไหน" — เอา min sweep depth ($5) ออก (เคยเปลี่ยนใน supervisor.py's CASE F
+    # ไปแล้วแต่ลืม sync จุดนี้ ทำให้ has_signal() เองยัง gate ด้วย depth เดิมอยู่
+    # บล็อก sweep ตื้นๆ ไม่ให้ไปถึง CASE B decision เลยทั้งที่ supervisor.py ยอมรับ
+    # แล้ว) เปลี่ยนไปเช็คระยะเด้งกลับจาก wick แทน ($3 ตรงกับ _PY_MIN_RECOVERY)
+    _MIN_SWEEP_RECOVERY = 3.0
     # user feedback: SL ผูกกับ level ที่โดน sweep (+ buffer) ไม่ได้ผูกกับราคาที่เข้า
     # ยิ่ง entry ห่างจาก level เท่าไร risk ยิ่งบวมเท่านั้น — window เดิม
     # max(15, depth*2.5) ยอมให้ห่างได้ถึง $31.85 (ตอน depth=12.74) ทำให้เจอ signal
@@ -573,8 +575,8 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
             return False
         _lvl  = sw.get("level") or 0
         _wick = sw.get("wick_extreme")
-        _depth = round(abs(_lvl - _wick), 2) if (_lvl and _wick is not None) else 0
-        if _depth < _MIN_SWEEP_DEPTH:
+        _recovery = round(abs(price - _wick), 2) if _wick is not None else 0
+        if _recovery < _MIN_SWEEP_RECOVERY:
             return False
         _dist  = abs(price - _lvl) if _lvl else 9999
         if _age is not None and _age <= 2 and _dist <= _SWEEP_ENTRY_WINDOW:
