@@ -884,6 +884,16 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     price = smc_summary.get("current_price")
     if price is None:
         return None
+
+    # user feedback: "ถ้าทุกๆ momentum มัน buy หมด ต่อให้เข้า bear ob เราจะยังไม่
+    # sell แต่เราจะรอให้ย่อลงมา ob buy เพื่อหา buy แทน ทางฝั่ง sell ก็เช่นกัน แต่ถ้า
+    # mix trend ให้ทำงานตามเดิม" — ห้ามเทรดสวน bias ที่ชัดเจน (bullish/bearish)
+    # ผ่าน CASE B เลย ต่อให้ราคาเข้า OB ฝั่งตรงข้ามก็ตาม รอ pullback มา OB ทิศตาม
+    # bias แทน — ถ้า bias="neutral" (mix trend) ทำงานปกติทั้งสองทิศ
+    _bias = smc_summary.get("bias", "neutral")
+    if (direction == "SELL" and _bias == "bullish") or (direction == "BUY" and _bias == "bearish"):
+        return None
+
     if direction == "BUY":
         ob  = smc_summary.get("active_bull_ob") or {}
         rej = smc_summary.get("recent_bull_ob_rejection")
