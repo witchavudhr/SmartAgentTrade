@@ -939,12 +939,20 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     # SSL คือจุดต่ำที่ราคาเด้งขึ้นมา) ต้องมี room พอถึงจะถือว่าเป็น OB จริง ไม่ใช่
     # noise ติดขอบ range — เช็คก่อน SSL/BSL CONFLUENCE เพราะ pool ตัวเดียวกันอาจ
     # ใช้ได้ทั้งสองจุดประสงค์ (room check ใช้ nearest_bsl/ssl ฝั่งตรงข้าม)
+    # user feedback: "ถ้าตรงกันทั้งสามตัว เอา min 18$ ob ออกด้วย เช่น ถ้า H1 H4 D1
+    # = bull หมด แล้ว bull ob ห่างแค่ 10$ ก็ใช้ตัวนี้ได้ ... แต่ถ้า mix ก็แบบเดิม"
+    # — D1+H4+H1 ตรงกันหมด (เทรดตามเทรนด์จริง ไม่ใช่สวน) ไม่ต้องบังคับ room $18
+    # อีกต่อไป มีแค่ตอน mix (_htf_bias="neutral") เท่านั้นที่ยังต้องเช็ค room เพื่อกัน
+    # noise ติดขอบ range (เหตุผลเดิมของเกณฑ์นี้ใช้ได้แค่ตอนไม่มีเทรนด์ชัดเจนมาหนุน)
+    _trend_aligned = (direction == "BUY" and _htf_bias == "bullish") or \
+                      (direction == "SELL" and _htf_bias == "bearish")
     _MIN_OB_ROOM = 18.0
-    _room_raw = liq.get("nearest_bsl") if direction == "BUY" else liq.get("nearest_ssl")
-    _room_lvl = _room_raw.get("level") if isinstance(_room_raw, dict) else _room_raw
-    _room_ref = top if direction == "BUY" else bottom
-    if _room_lvl is not None and abs(_room_ref - _room_lvl) < _MIN_OB_ROOM:
-        return None
+    if not _trend_aligned:
+        _room_raw = liq.get("nearest_bsl") if direction == "BUY" else liq.get("nearest_ssl")
+        _room_lvl = _room_raw.get("level") if isinstance(_room_raw, dict) else _room_raw
+        _room_ref = top if direction == "BUY" else bottom
+        if _room_lvl is not None and abs(_room_ref - _room_lvl) < _MIN_OB_ROOM:
+            return None
 
     # SSL/BSL CONFLUENCE — ถ้า SSL (สำหรับ Bull OB) / BSL (สำหรับ Bear OB) อยู่ใกล้
     # ขอบ OB ≤$10 ให้ใช้ pool level เป็น entry แทน raw OB boundaries (แม่นกว่า)
