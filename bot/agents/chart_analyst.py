@@ -20,6 +20,14 @@ smc_m30 = SMCEngine(swing_length=50, ob_length=5)
 # เหมือน struct swing — เดิม Python ใช้ length เดียวกับ struct ทำให้ pool ที่เห็น
 # ในกราฟ (indicator) ไม่ตรงกับที่บอทเห็นเลย (บอทมองไม่เห็น swing ที่ยังไม่ครบ 50 bars)
 smc_pool = SMCEngine(swing_length=15, ob_length=5)
+# D1/H4/H1 structural bias (BOS/CHoCH swing crossover, ไม่ใช่ midpoint) — ตรงกับ
+# indicator/SmartAgentTrade_Signal.pine's calc_struct_bias(5) (user feedback:
+# "แก้เป็น trend ด้วยเลย แบบ indicator" — เดิม Python ใช้ price vs 20-bar midpoint
+# ซึ่งเป็นแค่ "ครึ่งบน/ครึ่งล่างของ range" ไม่ใช่ trend จริง — indicator เปลี่ยนมาใช้
+# structural bias (swing pivot + crossover/crossunder) ไปแล้วก่อนหน้านี้ ต้อง sync)
+smc_d1 = SMCEngine(swing_length=5, ob_length=5)
+smc_h4 = SMCEngine(swing_length=5, ob_length=5)
+smc_h1 = SMCEngine(swing_length=5, ob_length=5)
 
 # ── Bull/Bear OB "ล็อก" ตาม room จาก BSL/SSL (user feedback) ─────────────────
 # เดิม active_bull_ob/active_bear_ob ใน smc_engine.summarize() เลือกจาก "ห่างราคา
@@ -214,6 +222,25 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
                                  pool_sweeps=res30_pool.sweeps)
         m30_summary["timeframe"] = "M30"
 
+    # ── D1/H4/H1 structural bias (BOS/CHoCH, swing_length=5) — ตรงกับ indicator ──
+    # user feedback: "แก้เป็น trend ด้วยเลย แบบ indicator แล้วใส่เพิ่มไปด้วยว่า bot
+    # มองเห็น trend เป็นอะไรบ้างในแต่ละ TF" — ใช้ current_bias (structural) แทน
+    # midpoint เดิม แล้วเก็บไว้ทั้ง 3 TF ให้ log/telegram โชว์ได้ครบ
+    from agents.bar_cache import resample_h1, resample_h4, resample_d1
+    def _tf_bias(df_tf, engine):
+        if df_tf is None or df_tf.empty or len(df_tf) < 12:
+            return None
+        try:
+            return engine.analyze(df_tf).current_bias  # 'bullish' / 'bearish' / 'neutral'
+        except Exception:
+            return None
+    df_h1 = resample_h1(df5)
+    df_h4 = resample_h4(df5)
+    df_d1 = resample_d1(df5)
+    d1_bias = _tf_bias(df_d1, smc_d1)
+    h4_bias = _tf_bias(df_h4, smc_h4)
+    h1_bias = _tf_bias(df_h1, smc_h1)
+
     # ── M5 summary ─────────────────────────────────────────────────
     mt5_price = _get_mt5_price() if price_source == "MT5" else None
     current_price = mt5_price or round(df5['close'].iloc[-1], 2)
@@ -231,6 +258,14 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     summary["pair"]         = pair
     summary["timeframe"]    = "M5"
     summary["analyzed_at"]  = now_str
+    # user feedback: "ใส่เพิ่มไปด้วยว่า bot มองเห็น trend เป็นอะไรบ้างในแต่ละ TF
+    # ตั้งแต่ D1, H4, H1, M15, M5" — เก็บ bias structural ของทุก TF ไว้ในที่เดียว
+    # ('bullish'/'bearish'/'neutral') ให้ log/console/telegram ดึงไปโชว์ได้ครบ
+    summary["d1_bias"]  = d1_bias
+    summary["h4_bias"]  = h4_bias
+    summary["h1_bias"]  = h1_bias
+    summary["m15_bias"] = (m15_summary or {}).get("bias")
+    summary["m5_bias"]  = summary.get("bias")
     summary["price_source"] = price_source
     summary["m15"]          = m15_summary
     summary["m30"]          = m30_summary

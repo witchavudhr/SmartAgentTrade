@@ -887,17 +887,18 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
 
     # user feedback: "ถ้าทุกๆ momentum มัน buy หมด ต่อให้เข้า bear ob เราจะยังไม่
     # sell แต่เราจะรอให้ย่อลงมา ob buy เพื่อหา buy แทน ทางฝั่ง sell ก็เช่นกัน แต่ถ้า
-    # mix trend ให้ทำงานตามเดิม" + "ไม่ๆ bias ต้องแบบ D1 H1 H4 ไปทางเดียวกันนะ" —
-    # ห้ามใช้ smc_summary["bias"] (แค่ M5 structural bias จาก BOS/CHoCH ล่าสุด ไม่ใช่
-    # เทรนด์จริง) ต้องเช็ค D1+H1+H4 (จาก advanced_signals, price vs midpoint ของ
-    # แต่ละ timeframe) เห็นตรงกันทั้ง 3 ตัวถึงจะถือว่า "momentum ชัดเจน" — ถ้าไม่ตรง
-    # กันทั้งหมด (mix) ถือเป็น neutral ทำงานปกติทั้งสองทิศ
-    _d1_bull = smc_summary.get("d1_bull")
-    _h1_bull = smc_summary.get("h1_bull")
-    _h4_bull = smc_summary.get("h4_bull")
-    if _d1_bull is True and _h1_bull is True and _h4_bull is True:
+    # mix trend ให้ทำงานตามเดิม" + "ไม่ๆ bias ต้องแบบ D1 H1 H4 ไปทางเดียวกันนะ" +
+    # "แก้เป็น trend ด้วยเลย แบบ indicator" — ใช้ d1_bias/h4_bias/h1_bias (structural
+    # BOS/CHoCH swing_length=5 ตรงกับ indicator's calc_struct_bias(5) เป๊ะ) แทน
+    # midpoint เดิม (ครึ่งบน/ครึ่งล่างของ range ไม่ใช่ trend จริง) — ต้องตรงกันทั้ง
+    # 3 TF ถึงจะถือว่า "momentum ชัดเจน" ถ้าไม่ตรงกันหมด (mix) ถือเป็น neutral
+    # ทำงานปกติทั้งสองทิศ
+    _d1_bias = smc_summary.get("d1_bias")
+    _h4_bias = smc_summary.get("h4_bias")
+    _h1_bias = smc_summary.get("h1_bias")
+    if _d1_bias == "bullish" and _h4_bias == "bullish" and _h1_bias == "bullish":
         _htf_bias = "bullish"
-    elif _d1_bull is False and _h1_bull is False and _h4_bull is False:
+    elif _d1_bias == "bearish" and _h4_bias == "bearish" and _h1_bias == "bearish":
         _htf_bias = "bearish"
     else:
         _htf_bias = "neutral"
@@ -1159,6 +1160,20 @@ def _log_python_only_state(smc_summary: dict) -> None:
     price = smc_summary.get("current_price")
     if price is None:
         return
+
+    # user feedback: "ใส่เพิ่มไปด้วยว่า bot มองเห็น trend เป็นอะไรบ้างในแต่ละ TF
+    # ตั้งแต่ D1, H4, H1, M15, M5" — โชว์ trend structural ทุก TF ทุก scan
+    def _fmt_bias(b):
+        return {"bullish": "🟢BULL", "bearish": "🔴BEAR"}.get(b, "⚪N/A")
+    print(
+        f"[python-only] 📈 Trend: "
+        f"D1={_fmt_bias(smc_summary.get('d1_bias'))} "
+        f"H4={_fmt_bias(smc_summary.get('h4_bias'))} "
+        f"H1={_fmt_bias(smc_summary.get('h1_bias'))} "
+        f"M15={_fmt_bias(smc_summary.get('m15_bias'))} "
+        f"M5={_fmt_bias(smc_summary.get('m5_bias'))}"
+    )
+
     bull_ob = smc_summary.get("active_bull_ob") or {}
     bear_ob = smc_summary.get("active_bear_ob") or {}
     liq = smc_summary.get("liquidity") or {}

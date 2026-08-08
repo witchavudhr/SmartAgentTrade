@@ -1324,10 +1324,19 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 icon, desc = _plan_labels.get(lbl, ("⚪", lbl))
                 lines.append(f"{icon} `{lvl}` — {desc} (ห่าง `${round(dist, 2)}`)")
 
+        def _fmt_bias(b):
+            return {"bullish": "🟢 BULL", "bearish": "🔴 BEAR"}.get(b, "⚪ N/A")
+        trend_lines = (
+            f"D1: {_fmt_bias(smc.get('d1_bias'))} | H4: {_fmt_bias(smc.get('h4_bias'))} | "
+            f"H1: {_fmt_bias(smc.get('h1_bias'))}\n"
+            f"M15: {_fmt_bias(smc.get('m15_bias'))} | M5: {_fmt_bias(smc.get('m5_bias'))}"
+        )
+
         msg = (
             f"🗺️ *แผนที่รออยู่*\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"💰 ราคาปัจจุบัน: `{price}`\n\n" +
+            f"💰 ราคาปัจจุบัน: `{price}`\n\n"
+            f"📈 *Trend แต่ละ TF:*\n{trend_lines}\n\n" +
             "\n".join(lines)
         )
         await update.message.reply_text(msg, parse_mode="Markdown")

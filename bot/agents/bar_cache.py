@@ -142,6 +142,39 @@ def resample_m30(df_m5: pd.DataFrame) -> pd.DataFrame:
     return m30
 
 
+def resample_h1(df_m5: pd.DataFrame) -> pd.DataFrame:
+    """แปลง M5 bars เป็น H1 (aggregate) — ใช้สำหรับ H1 structural bias"""
+    if df_m5 is None or df_m5.empty:
+        return df_m5
+    d = df_m5.set_index("time") if "time" in df_m5.columns else df_m5
+    h1 = d.resample("60min").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+    }).dropna()
+    return h1
+
+
+def resample_h4(df_m5: pd.DataFrame) -> pd.DataFrame:
+    """แปลง M5 bars เป็น H4 (aggregate) — ใช้สำหรับ H4 structural bias"""
+    if df_m5 is None or df_m5.empty:
+        return df_m5
+    d = df_m5.set_index("time") if "time" in df_m5.columns else df_m5
+    h4 = d.resample("240min").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+    }).dropna()
+    return h4
+
+
+def resample_d1(df_m5: pd.DataFrame) -> pd.DataFrame:
+    """แปลง M5 bars เป็น D1 (aggregate) — ใช้สำหรับ D1 structural bias"""
+    if df_m5 is None or df_m5.empty:
+        return df_m5
+    d = df_m5.set_index("time") if "time" in df_m5.columns else df_m5
+    d1 = d.resample("1D").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+    }).dropna()
+    return d1
+
+
 def today_summary(date_str: str, session_start: str = "06:00", session_end: str = None) -> dict:
     """
     สรุปข้อมูลของวันนี้ที่สะสมไว้ — ใช้ตอบคำสั่ง Telegram
