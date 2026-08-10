@@ -5,6 +5,7 @@ MT5 Executor — เปิด/ปิด trade ใน MetaTrader 5 โดยต�
 pip install MetaTrader5
 """
 
+import threading
 import time
 from config.settings import (
     MT5_LOGIN, MT5_PASSWORD, MT5_SERVER,
@@ -17,6 +18,16 @@ try:
     _MT5_AVAILABLE = True
 except ImportError:
     _MT5_AVAILABLE = False
+
+# user feedback: "ทำไมไปใช้ yfinance" — MetaTrader5 package เป็น connection
+# แชร์ตัวเดียวต่อ process (ไม่ใช่ connection แยกต่อ call) แต่โค้ดทุกจุดเรียก
+# mt5.initialize()/mt5.shutdown() แบบไม่มี lock เลย พอมีหลาย thread เรียกพร้อมกัน
+# (auto_scan ทุก 1 นาที + /ob + /plan + dashboard poll ทุก 5s ฯลฯ) thread นึง
+# shutdown() ตัดคอนเนกชันตอน thread อื่นกำลัง fetch อยู่พอดี ทำให้ copy_rates_from_pos
+# fail แล้ว get_price_data() เข้าใจว่า MT5 ใช้ไม่ได้ fallback ไป yfinance (delay
+# 15 นาที) ทั้งที่ MT5 จริงๆ ใช้งานได้ปกติ — ใช้ lock กัน race นี้สำหรับ read path
+# (data fetch) ที่เรียกถี่สุดและชนกันบ่อยสุด
+mt5_lock = threading.Lock()
 
 
 # ── Connection ────────────────────────────────────────────────────────────────

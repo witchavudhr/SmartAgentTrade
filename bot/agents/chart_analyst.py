@@ -101,11 +101,14 @@ def _get_mt5_price() -> float | None:
         import MetaTrader5 as mt5
         from agents import mt5_executor
         from config.settings import MT5_SYMBOL
-        ok, _ = mt5_executor._connect()
-        if not ok:
-            return None
-        tick = mt5.symbol_info_tick(MT5_SYMBOL)
-        mt5_executor.disconnect()
+        with mt5_executor.mt5_lock:
+            ok, _ = mt5_executor._connect()
+            if not ok:
+                return None
+            try:
+                tick = mt5.symbol_info_tick(MT5_SYMBOL)
+            finally:
+                mt5_executor.disconnect()
         if tick:
             return round((tick.bid + tick.ask) / 2, 2)
     except Exception:
@@ -119,11 +122,19 @@ def _get_mt5_ohlcv(timeframe_mt5, count: int) -> pd.DataFrame | None:
         from agents import mt5_executor
         from config.settings import MT5_SYMBOL
         import MetaTrader5 as mt5
-        ok, _ = mt5_executor._connect()
-        if not ok:
-            return None
-        rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
-        mt5_executor.disconnect()
+        # user feedback: "ทำไมไปใช้ yfinance" — MT5 connection แชร์ตัวเดียวต่อ
+        # process, ถ้าไม่ lock หลาย thread (auto_scan/ob/plan/dashboard poll) จะแย่ง
+        # connect/disconnect กันจนบางรอบ fetch fail แล้ว fallback ไป yfinance ทั้งที่
+        # MT5 จริงใช้ได้ปกติ — lock ทั้ง connect→fetch→disconnect ไว้ด้วยกัน และใช้
+        # try/finally กัน connection ค้างเปิดไม่ปล่อย lock ถ้า fetch พังกลางทาง
+        with mt5_executor.mt5_lock:
+            ok, _ = mt5_executor._connect()
+            if not ok:
+                return None
+            try:
+                rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
+            finally:
+                mt5_executor.disconnect()
         if rates is None or len(rates) == 0:
             return None
         df = pd.DataFrame(rates)
