@@ -359,24 +359,15 @@ def get_price_data(pair: str = TRADING_PAIR, period: str = "5d", interval: str =
     _bsl_lvl = _unswept_bsl[0]["level"] if _unswept_bsl else None
     _ssl_lvl = _unswept_ssl[0]["level"] if _unswept_ssl else None
 
-    # user feedback: "เราคุยกันว่า ถ้า trend ด้านเดียวกัน เราเอาทุก ob ป่ะนะ" —
-    # ก่อนหน้านี้ปลด room $18 ให้แค่ตอน _python_only_ob_decision (supervisor.py)
-    # เช็คซ้ำรอบสอง แต่ active_bull_ob/active_bear_ob เองถูกกรองด้วย room $18 มา
-    # ตั้งแต่ตรงนี้แล้ว (ก่อนถึง CASE B ด้วยซ้ำ) OB ที่ room ไม่ถึง $18 เลยไม่มีทาง
-    # กลายเป็น active_*_ob ได้เลยไม่ว่า trend จะ align แค่ไหนก็ตาม — ต้องปลด room
-    # ที่จุดนี้ด้วย ถ้า H4+H1 ตรงกับทิศของ OB นั้น (bull→bullish, bear→bearish)
-    _h4_h1_bull = h4_bias == "bullish" and h1_bias == "bullish"
-    _h4_h1_bear = h4_bias == "bearish" and h1_bias == "bearish"
-
+    # user feedback: "เอาตัว room 18$ กลับมาดีกว่า" — ยกเลิกการปลด room ตอน trend
+    # align กลับมาบังคับ room $18 เสมอเหมือนเดิม (ไม่ต้องเช็ค h4_bias/h1_bias แล้ว)
     def _relock_ob(res, tgt_summary, tf):
         if res is None or tgt_summary is None:
             return
         bulls = [ob for ob in (res.order_blocks or []) if not ob.mitigated and ob.kind == 'bullish']
         bears = [ob for ob in (res.order_blocks or []) if not ob.mitigated and ob.kind == 'bearish']
-        _bull_room = 0.0 if _h4_h1_bull else _OB_ROOM_MIN
-        _bear_room = 0.0 if _h4_h1_bear else _OB_ROOM_MIN
-        lb = _select_room_ob(bulls, True, _bsl_lvl, tf=tf, min_room=_bull_room)
-        lr = _select_room_ob(bears, False, _ssl_lvl, tf=tf, min_room=_bear_room)
+        lb = _select_room_ob(bulls, True, _bsl_lvl, tf=tf)
+        lr = _select_room_ob(bears, False, _ssl_lvl, tf=tf)
         tgt_summary["active_bull_ob"] = ({
             "top": lb.top, "bottom": lb.bottom, "in_ob": lb.bottom <= current_price <= lb.top,
         } if lb else None)

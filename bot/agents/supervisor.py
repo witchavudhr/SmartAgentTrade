@@ -946,20 +946,15 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     # SSL คือจุดต่ำที่ราคาเด้งขึ้นมา) ต้องมี room พอถึงจะถือว่าเป็น OB จริง ไม่ใช่
     # noise ติดขอบ range — เช็คก่อน SSL/BSL CONFLUENCE เพราะ pool ตัวเดียวกันอาจ
     # ใช้ได้ทั้งสองจุดประสงค์ (room check ใช้ nearest_bsl/ssl ฝั่งตรงข้าม)
-    # user feedback: "ถ้าตรงกันทั้งสามตัว เอา min 18$ ob ออกด้วย เช่น ถ้า H1 H4 D1
-    # = bull หมด แล้ว bull ob ห่างแค่ 10$ ก็ใช้ตัวนี้ได้ ... แต่ถ้า mix ก็แบบเดิม"
-    # — D1+H4+H1 ตรงกันหมด (เทรดตามเทรนด์จริง ไม่ใช่สวน) ไม่ต้องบังคับ room $18
-    # อีกต่อไป มีแค่ตอน mix (_htf_bias="neutral") เท่านั้นที่ยังต้องเช็ค room เพื่อกัน
-    # noise ติดขอบ range (เหตุผลเดิมของเกณฑ์นี้ใช้ได้แค่ตอนไม่มีเทรนด์ชัดเจนมาหนุน)
-    _trend_aligned = (direction == "BUY" and _htf_bias == "bullish") or \
-                      (direction == "SELL" and _htf_bias == "bearish")
+    # user feedback: "เอาตัว room 18$ กลับมาดีกว่า" — ยกเลิกการปลด room ตอน trend
+    # align (ที่เคยแก้ไปก่อนหน้า) กลับมาบังคับ room $18 เสมอไม่ว่า trend จะ align
+    # หรือไม่ก็ตาม
     _MIN_OB_ROOM = 18.0
-    if not _trend_aligned:
-        _room_raw = liq.get("nearest_bsl") if direction == "BUY" else liq.get("nearest_ssl")
-        _room_lvl = _room_raw.get("level") if isinstance(_room_raw, dict) else _room_raw
-        _room_ref = top if direction == "BUY" else bottom
-        if _room_lvl is not None and abs(_room_ref - _room_lvl) < _MIN_OB_ROOM:
-            return None
+    _room_raw = liq.get("nearest_bsl") if direction == "BUY" else liq.get("nearest_ssl")
+    _room_lvl = _room_raw.get("level") if isinstance(_room_raw, dict) else _room_raw
+    _room_ref = top if direction == "BUY" else bottom
+    if _room_lvl is not None and abs(_room_ref - _room_lvl) < _MIN_OB_ROOM:
+        return None
 
     # SSL/BSL CONFLUENCE — ถ้า SSL (สำหรับ Bull OB) / BSL (สำหรับ Bear OB) อยู่ใกล้
     # ขอบ OB ≤$10 ให้ใช้ pool level เป็น entry แทน raw OB boundaries (แม่นกว่า)
@@ -1150,18 +1145,11 @@ def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
     # ติดขอบ range (เช่น Bear OB 3991 แต่ SSL ที่มันวิ่งขึ้นมาจากอยู่แค่ 3973 ห่าง
     # แค่ $18 → sideway โดนหลอกง่าย ข้ามไปเลย) — Bear OB เทียบกับ SSL (จุดต่ำที่
     # ราคาเด้งขึ้นมา), Bull OB เทียบกับ BSL (จุดสูงที่ราคาร่วงลงมา)
-    # user feedback: "กลายเป็นแผนเข้าที่ ob หายเลย" — จุดนี้ (watchlist สำหรับ /plan
-    # และ label NEAR_BULL_OB/NEAR_BEAR_OB) มี room check $18 ของตัวเองแยกต่างหาก
-    # จาก _select_room_ob ใน chart_analyst.py — พอ active_bull_ob เปลี่ยนไปเป็นตัว
-    # ใกล้กว่า (room <$18) เพราะ trend align แล้ว จุดนี้ยังใช้เกณฑ์ $18 เดิมไม่รู้
-    # เรื่อง trend เลย เลยกรอง OB ตัวเดียวกันทิ้งไปอีกที ทำให้หายจาก watchlist —
-    # ต้องปลด room เหมือนกันถ้า H4+H1 ตรงกับทิศนั้น
-    _h4b_w, _h1b_w = smc.get("h4_bias"), smc.get("h1_bias")
-    _wl_bull_aligned = _h4b_w == "bullish" and _h1b_w == "bullish"
-    _wl_bear_aligned = _h4b_w == "bearish" and _h1b_w == "bearish"
+    # user feedback: "เอาตัว room 18$ กลับมาดีกว่า" — ยกเลิกการปลด room ตอน trend
+    # align กลับมาบังคับ room $18 เสมอเหมือนเดิม
     _MIN_OB_ROOM = 18.0
-    _bull_has_room = _wl_bull_aligned or ((_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False)
-    _bear_has_room = _wl_bear_aligned or ((_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False)
+    _bull_has_room = (_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False
+    _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
 
     if _near_bull_top is not None and _bull_has_room:
         cands.append(("NEAR_BULL_OB", _bull_dist, _near_bull_top))
