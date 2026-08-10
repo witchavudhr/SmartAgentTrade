@@ -102,8 +102,9 @@ def _get_mt5_price() -> float | None:
         from agents import mt5_executor
         from config.settings import MT5_SYMBOL
         with mt5_executor.mt5_lock:
-            ok, _ = mt5_executor._connect()
+            ok, err = mt5_executor._connect()
             if not ok:
+                print(f"[mt5] ⚠️ _get_mt5_price connect failed: {err}")
                 return None
             try:
                 tick = mt5.symbol_info_tick(MT5_SYMBOL)
@@ -111,8 +112,9 @@ def _get_mt5_price() -> float | None:
                 mt5_executor.disconnect()
         if tick:
             return round((tick.bid + tick.ask) / 2, 2)
-    except Exception:
-        pass
+        print("[mt5] ⚠️ _get_mt5_price: symbol_info_tick คืน None")
+    except Exception as e:
+        print(f"[mt5] ⚠️ _get_mt5_price exception: {e}")
     return None
 
 
@@ -128,21 +130,24 @@ def _get_mt5_ohlcv(timeframe_mt5, count: int) -> pd.DataFrame | None:
         # MT5 จริงใช้ได้ปกติ — lock ทั้ง connect→fetch→disconnect ไว้ด้วยกัน และใช้
         # try/finally กัน connection ค้างเปิดไม่ปล่อย lock ถ้า fetch พังกลางทาง
         with mt5_executor.mt5_lock:
-            ok, _ = mt5_executor._connect()
+            ok, err = mt5_executor._connect()
             if not ok:
+                print(f"[mt5] ⚠️ _get_mt5_ohlcv connect failed (tf={timeframe_mt5}): {err}")
                 return None
             try:
                 rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
             finally:
                 mt5_executor.disconnect()
         if rates is None or len(rates) == 0:
+            print(f"[mt5] ⚠️ _get_mt5_ohlcv (tf={timeframe_mt5}): copy_rates_from_pos คืนว่าง — {mt5.last_error()}")
             return None
         df = pd.DataFrame(rates)
         df['time'] = pd.to_datetime(df['time'], unit='s')
         df = df.set_index('time')
         df = df.rename(columns={'tick_volume': 'volume'})[['open', 'high', 'low', 'close', 'volume']]
         return df.dropna()
-    except Exception:
+    except Exception as e:
+        print(f"[mt5] ⚠️ _get_mt5_ohlcv exception (tf={timeframe_mt5}): {e}")
         return None
 
 
