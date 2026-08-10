@@ -1142,9 +1142,18 @@ def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
     # ติดขอบ range (เช่น Bear OB 3991 แต่ SSL ที่มันวิ่งขึ้นมาจากอยู่แค่ 3973 ห่าง
     # แค่ $18 → sideway โดนหลอกง่าย ข้ามไปเลย) — Bear OB เทียบกับ SSL (จุดต่ำที่
     # ราคาเด้งขึ้นมา), Bull OB เทียบกับ BSL (จุดสูงที่ราคาร่วงลงมา)
+    # user feedback: "กลายเป็นแผนเข้าที่ ob หายเลย" — จุดนี้ (watchlist สำหรับ /plan
+    # และ label NEAR_BULL_OB/NEAR_BEAR_OB) มี room check $18 ของตัวเองแยกต่างหาก
+    # จาก _select_room_ob ใน chart_analyst.py — พอ active_bull_ob เปลี่ยนไปเป็นตัว
+    # ใกล้กว่า (room <$18) เพราะ trend align แล้ว จุดนี้ยังใช้เกณฑ์ $18 เดิมไม่รู้
+    # เรื่อง trend เลย เลยกรอง OB ตัวเดียวกันทิ้งไปอีกที ทำให้หายจาก watchlist —
+    # ต้องปลด room เหมือนกันถ้า H4+H1 ตรงกับทิศนั้น
+    _h4b_w, _h1b_w = smc.get("h4_bias"), smc.get("h1_bias")
+    _wl_bull_aligned = _h4b_w == "bullish" and _h1b_w == "bullish"
+    _wl_bear_aligned = _h4b_w == "bearish" and _h1b_w == "bearish"
     _MIN_OB_ROOM = 18.0
-    _bull_has_room = (_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False
-    _bear_has_room = (_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False
+    _bull_has_room = _wl_bull_aligned or ((_bsl_lvl is None or abs(_near_bull_top - _bsl_lvl) >= _MIN_OB_ROOM) if _near_bull_top is not None else False)
+    _bear_has_room = _wl_bear_aligned or ((_ssl_lvl is None or abs(_near_bear_bot - _ssl_lvl) >= _MIN_OB_ROOM) if _near_bear_bot is not None else False)
 
     if _near_bull_top is not None and _bull_has_room:
         cands.append(("NEAR_BULL_OB", _bull_dist, _near_bull_top))
