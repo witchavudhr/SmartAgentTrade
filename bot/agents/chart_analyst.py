@@ -1,6 +1,7 @@
 import yfinance as yf
 import anthropic
 import json
+import time
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -107,6 +108,7 @@ def _get_mt5_price() -> float | None:
                 print(f"[mt5] ⚠️ _get_mt5_price connect failed: {err}")
                 return None
             try:
+                mt5.symbol_select(MT5_SYMBOL, True)
                 tick = mt5.symbol_info_tick(MT5_SYMBOL)
             finally:
                 mt5_executor.disconnect()
@@ -135,11 +137,20 @@ def _get_mt5_ohlcv(timeframe_mt5, count: int) -> pd.DataFrame | None:
                 print(f"[mt5] ⚠️ _get_mt5_ohlcv connect failed (tf={timeframe_mt5}): {err}")
                 return None
             try:
+                # user feedback log: "copy_rates_from_pos คืนว่าง — (1, 'Success')"
+                # last_error()="Success" แต่ rates ว่าง = MT5 quirk ที่รู้จักกันดี —
+                # ถ้า symbol ไม่ได้ select ไว้ใน Market Watch (หรือเพิ่ง connect ใหม่
+                # ทุกครั้งเพราะเรา disconnect หลัง fetch เสร็จเสมอ) terminal จะยังไม่มี
+                # rate cache พร้อมให้ทันที ต้อง symbol_select ก่อน + retry สั้นๆ
+                mt5.symbol_select(MT5_SYMBOL, True)
                 rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
+                if rates is None or len(rates) == 0:
+                    time.sleep(0.3)
+                    rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
             finally:
                 mt5_executor.disconnect()
         if rates is None or len(rates) == 0:
-            print(f"[mt5] ⚠️ _get_mt5_ohlcv (tf={timeframe_mt5}): copy_rates_from_pos คืนว่าง — {mt5.last_error()}")
+            print(f"[mt5] ⚠️ _get_mt5_ohlcv (tf={timeframe_mt5}): copy_rates_from_pos คืนว่าง แม้ retry แล้ว — {mt5.last_error()}")
             return None
         df = pd.DataFrame(rates)
         df['time'] = pd.to_datetime(df['time'], unit='s')
