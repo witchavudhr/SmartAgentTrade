@@ -887,18 +887,17 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
 
     # user feedback: "ถ้าทุกๆ momentum มัน buy หมด ต่อให้เข้า bear ob เราจะยังไม่
     # sell แต่เราจะรอให้ย่อลงมา ob buy เพื่อหา buy แทน ทางฝั่ง sell ก็เช่นกัน แต่ถ้า
-    # mix trend ให้ทำงานตามเดิม" + "ไม่ๆ bias ต้องแบบ D1 H1 H4 ไปทางเดียวกันนะ" +
-    # "แก้เป็น trend ด้วยเลย แบบ indicator" — ใช้ d1_bias/h4_bias/h1_bias (structural
-    # BOS/CHoCH swing_length=5 ตรงกับ indicator's calc_struct_bias(5) เป๊ะ) แทน
-    # midpoint เดิม (ครึ่งบน/ครึ่งล่างของ range ไม่ใช่ trend จริง) — ต้องตรงกันทั้ง
-    # 3 TF ถึงจะถือว่า "momentum ชัดเจน" ถ้าไม่ตรงกันหมด (mix) ถือเป็น neutral
-    # ทำงานปกติทั้งสองทิศ
-    _d1_bias = smc_summary.get("d1_bias")
+    # mix trend ให้ทำงานตามเดิม" + "แก้เป็น trend ด้วยเลย แบบ indicator" — ใช้
+    # h4_bias/h1_bias (structural BOS/CHoCH swing_length=5 ตรงกับ indicator's
+    # calc_struct_bias(5) เป๊ะ) แทน midpoint เดิม — user feedback: "ไม่เป็นไร ให้ดู
+    # H1 H4 เป็นหลักแทน ... ตัด D1 condition ออกเลย น่าจะเก็บ data ไม่พอ" — เอา D1
+    # ออก (ข้อมูล D1 ย้อนหลังสะสมไม่พอ มักขึ้น N/A) เหลือแค่ H4+H1 ต้องตรงกันทั้ง 2
+    # TF ถึงจะถือว่า "momentum ชัดเจน" ถ้าไม่ตรงกัน (mix) ถือเป็น neutral ทำงานปกติ
     _h4_bias = smc_summary.get("h4_bias")
     _h1_bias = smc_summary.get("h1_bias")
-    if _d1_bias == "bullish" and _h4_bias == "bullish" and _h1_bias == "bullish":
+    if _h4_bias == "bullish" and _h1_bias == "bullish":
         _htf_bias = "bullish"
-    elif _d1_bias == "bearish" and _h4_bias == "bearish" and _h1_bias == "bearish":
+    elif _h4_bias == "bearish" and _h1_bias == "bearish":
         _htf_bias = "bearish"
     else:
         _htf_bias = "neutral"
