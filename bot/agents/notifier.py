@@ -1332,6 +1332,17 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"M15: {_fmt_bias(smc.get('m15_bias'))} | M5: {_fmt_bias(smc.get('m5_bias'))}"
         )
 
+        # user feedback: "ใส่เพิ่มด้วยว่า ตอนนี้ trend อะไรชัด เลยรอเข้าที่ไหน" —
+        # ใช้เกณฑ์เดียวกับ _python_only_ob_decision (H4+H1 ตรงกันถึงจะถือว่าชัด)
+        # แล้วสรุปเป็นประโยคเดียวว่าตอนนี้อนุญาตทิศไหน
+        _h4b, _h1b = smc.get("h4_bias"), smc.get("h1_bias")
+        if _h4b == "bullish" and _h1b == "bullish":
+            trend_verdict = "🟢 *เทรนด์ชัดเจน: ขาขึ้น* (H4+H1 ตรงกัน) — รอเข้า BUY เท่านั้น สวนทาง SELL จะไม่เข้าให้"
+        elif _h4b == "bearish" and _h1b == "bearish":
+            trend_verdict = "🔴 *เทรนด์ชัดเจน: ขาลง* (H4+H1 ตรงกัน) — รอเข้า SELL เท่านั้น สวนทาง BUY จะไม่เข้าให้"
+        else:
+            trend_verdict = "⚪ *เทรนด์ยังไม่ชัด (mix)* — เข้าได้ทั้ง BUY/SELL ตามเงื่อนไข OB/SSL/BSL ปกติ"
+
         # user feedback: "ในแผนน่าจะบอกเลยว่า เราไม่เข้าอะไร เพราะอะไรนะ" — ดึง
         # reject_reason จาก scan_log ล่าสุด (ที่ auto_scan บันทึกไว้ทุก 1 นาทีอยู่
         # แล้วจาก supervisor.run() ตัวจริง) มาโชว์ตรงๆ แทนที่จะรัน decision logic
@@ -1345,7 +1356,14 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if _last:
                 _reason = (_last[-1].get("reject_reason") or "").strip()
                 if _reason:
-                    why_not = f"\n\n❓ *ทำไมยังไม่เข้า:*\n_{_reason[:300]}_"
+                    # user feedback: "error แก้หน่อย" — legacy Markdown parse_mode
+                    # ของ Telegram พัง ถ้า reason มี underscore ฝังอยู่ (เช่น
+                    # "APPROACHING_SSL") เพราะ _..._ (italic) ตีความ underscore
+                    # ในคำเป็น delimiter ไปด้วย — ใช้ code block (```) แทน ปลอดภัย
+                    # กว่า ไม่ต้องกังวล underscore/asterisk ข้างในเลย (กัน backtick
+                    # ในข้อความเองด้วยเผื่อหลุดมา)
+                    _safe_reason = _reason[:300].replace("`", "'")
+                    why_not = f"\n\n❓ *ทำไมยังไม่เข้า:*\n```\n{_safe_reason}\n```"
         except Exception:
             pass
 
@@ -1353,7 +1371,8 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🗺️ *แผนที่รออยู่*\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"💰 ราคาปัจจุบัน: `{price}`\n\n"
-            f"📈 *Trend แต่ละ TF:*\n{trend_lines}\n\n" +
+            f"📈 *Trend แต่ละ TF:*\n{trend_lines}\n\n"
+            f"{trend_verdict}\n\n" +
             "\n".join(lines) +
             why_not
         )
