@@ -1335,11 +1335,21 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # user feedback: "ใส่เพิ่มด้วยว่า ตอนนี้ trend อะไรชัด เลยรอเข้าที่ไหน" —
         # ใช้เกณฑ์เดียวกับ _python_only_ob_decision (H4+H1 ตรงกันถึงจะถือว่าชัด)
         # แล้วสรุปเป็นประโยคเดียวว่าตอนนี้อนุญาตทิศไหน
+        # user feedback: "รอเข้า buy ที่เท่าไรด้วย" — หาเป้าที่ใกล้สุดฝั่งเดียวกับ
+        # เทรนด์ (BUY-side: NEAR_BULL_OB/APPROACHING_SSL, SELL-side: NEAR_BEAR_OB/
+        # APPROACHING_BSL) จาก watchlist ที่คำนวณไว้แล้ว มาบอกราคาตรงๆ ในบรรทัดเดียว
+        _buy_labels  = ("NEAR_BULL_OB", "APPROACHING_SSL")
+        _sell_labels = ("NEAR_BEAR_OB", "APPROACHING_BSL")
+        _nearest_buy  = next((lvl for lbl, dist, lvl in watch if lbl in _buy_labels), None)
+        _nearest_sell = next((lvl for lbl, dist, lvl in watch if lbl in _sell_labels), None)
+
         _h4b, _h1b = smc.get("h4_bias"), smc.get("h1_bias")
         if _h4b == "bullish" and _h1b == "bullish":
-            trend_verdict = "🟢 *เทรนด์ชัดเจน: ขาขึ้น* (H4+H1 ตรงกัน) — รอเข้า BUY เท่านั้น สวนทาง SELL จะไม่เข้าให้"
+            _tgt = f" รอเข้า BUY ที่ `{_nearest_buy}`" if _nearest_buy is not None else " (ยังไม่มีเป้า BUY ที่ชัดเจนตอนนี้)"
+            trend_verdict = f"🟢 *เทรนด์ชัดเจน: ขาขึ้น* (H4+H1 ตรงกัน) —{_tgt} สวนทาง SELL จะไม่เข้าให้"
         elif _h4b == "bearish" and _h1b == "bearish":
-            trend_verdict = "🔴 *เทรนด์ชัดเจน: ขาลง* (H4+H1 ตรงกัน) — รอเข้า SELL เท่านั้น สวนทาง BUY จะไม่เข้าให้"
+            _tgt = f" รอเข้า SELL ที่ `{_nearest_sell}`" if _nearest_sell is not None else " (ยังไม่มีเป้า SELL ที่ชัดเจนตอนนี้)"
+            trend_verdict = f"🔴 *เทรนด์ชัดเจน: ขาลง* (H4+H1 ตรงกัน) —{_tgt} สวนทาง BUY จะไม่เข้าให้"
         else:
             trend_verdict = "⚪ *เทรนด์ยังไม่ชัด (mix)* — เข้าได้ทั้ง BUY/SELL ตามเงื่อนไข OB/SSL/BSL ปกติ"
 
