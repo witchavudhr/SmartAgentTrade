@@ -1332,12 +1332,30 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"M15: {_fmt_bias(smc.get('m15_bias'))} | M5: {_fmt_bias(smc.get('m5_bias'))}"
         )
 
+        # user feedback: "ในแผนน่าจะบอกเลยว่า เราไม่เข้าอะไร เพราะอะไรนะ" — ดึง
+        # reject_reason จาก scan_log ล่าสุด (ที่ auto_scan บันทึกไว้ทุก 1 นาทีอยู่
+        # แล้วจาก supervisor.run() ตัวจริง) มาโชว์ตรงๆ แทนที่จะรัน decision logic
+        # ซ้ำใน /plan เอง (เสี่ยงไปทริกเกอร์เข้าไม้จริงถ้าเผลอเรียก run() ตรงๆ)
+        why_not = ""
+        try:
+            from agents.trade_log import get_last_n_scans_detailed
+            _last = await asyncio.get_event_loop().run_in_executor(
+                None, get_last_n_scans_detailed, 1
+            )
+            if _last:
+                _reason = (_last[-1].get("reject_reason") or "").strip()
+                if _reason:
+                    why_not = f"\n\n❓ *ทำไมยังไม่เข้า:*\n_{_reason[:300]}_"
+        except Exception:
+            pass
+
         msg = (
             f"🗺️ *แผนที่รออยู่*\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"💰 ราคาปัจจุบัน: `{price}`\n\n"
             f"📈 *Trend แต่ละ TF:*\n{trend_lines}\n\n" +
-            "\n".join(lines)
+            "\n".join(lines) +
+            why_not
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
