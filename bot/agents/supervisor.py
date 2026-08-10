@@ -836,8 +836,16 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     if not _mp_ok:
         return None
 
+    # user feedback: "จุด SL ไม่คมเลย ทำไงดี" + "มันไม่โดนจุดสำคัญ เช่น รอหลุด
+    # ตรงไหน ถึง SL" — เดิม SL = level ± $10 คงที่ (ระยะจาก level ที่โดน sweep
+    # ไม่ใช่จุดที่ราคาไปจริงๆ) ถ้า sweep ตื้น SL จะห่างเกินจำเป็น ถ้า sweep ลึกกว่า
+    # $10 SL จะอยู่ในจุดที่ราคาเคยไปแล้ว (ไม่มีความหมายเป็นจุด invalidate) — จุดที่
+    # "สำคัญจริง" คือ wick_extreme (ราคาสุดที่ sweep ไปถึงจริง) ไม่ใช่ level เดิม
+    # ใช้ wick + buffer เล็กๆ ($3) แทน ให้ SL อยู่เหนือ/ใต้จุดที่ราคาเคยไปเป๊ะๆ —
+    # ถ้าหลุดจุดนี้จริงแปลว่า sweep thesis พังจริง ไม่ใช่แค่ noise
     entry = price
-    sl = round(level + 10.0, 2) if direction == "SELL" else round(level - 10.0, 2)
+    _SWEEP_SL_BUFFER = 3.0
+    sl = round(wick + _SWEEP_SL_BUFFER, 2) if direction == "SELL" else round(wick - _SWEEP_SL_BUFFER, 2)
     risk = abs(sl - entry)
     if risk <= 0:
         return None
@@ -852,7 +860,7 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     reasoning = (
         f"[PYTHON-ONLY, no AI] {setup_type}: pullback={pb_status} (age={age}bars dist={dist}pts "
         f"depth={depth}pts recovery=${recovery}), sweep level={level} recovered=True, entry={entry}, "
-        f"SL={sl} (level{'+' if direction=='SELL' else '-'}10), TP={tp} (RR-qualified pool scan), RR={rr}"
+        f"SL={sl} (wick{'+' if direction=='SELL' else '-'}{_SWEEP_SL_BUFFER}), TP={tp} (RR-qualified pool scan), RR={rr}"
     )
     return {
         "signal": direction,
