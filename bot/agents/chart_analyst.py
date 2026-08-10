@@ -138,19 +138,28 @@ def _get_mt5_ohlcv(timeframe_mt5, count: int) -> pd.DataFrame | None:
                 return None
             try:
                 # user feedback log: "copy_rates_from_pos คืนว่าง — (1, 'Success')"
-                # last_error()="Success" แต่ rates ว่าง = MT5 quirk ที่รู้จักกันดี —
-                # ถ้า symbol ไม่ได้ select ไว้ใน Market Watch (หรือเพิ่ง connect ใหม่
-                # ทุกครั้งเพราะเรา disconnect หลัง fetch เสร็จเสมอ) terminal จะยังไม่มี
-                # rate cache พร้อมให้ทันที ต้อง symbol_select ก่อน + retry สั้นๆ
-                mt5.symbol_select(MT5_SYMBOL, True)
-                rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
-                if rates is None or len(rates) == 0:
-                    time.sleep(0.3)
+                # ยังว่างอยู่แม้ retry 1 ครั้ง (0.3s) แล้ว — เพิ่ม diagnostic ให้ครบ
+                # (symbol_select return value, symbol_info, terminal_info) เพื่อหา
+                # สาเหตุจริง เผื่อ symbol resolve ไม่ตรง หรือ terminal ยังไม่ sync
+                sel = mt5.symbol_select(MT5_SYMBOL, True)
+                rates = None
+                for _attempt in range(3):
                     rates = mt5.copy_rates_from_pos(MT5_SYMBOL, timeframe_mt5, 0, count)
+                    if rates is not None and len(rates) > 0:
+                        break
+                    time.sleep(1.0)
+                if rates is None or len(rates) == 0:
+                    sym_info = mt5.symbol_info(MT5_SYMBOL)
+                    term_info = mt5.terminal_info()
+                    print(
+                        f"[mt5] 🔎 diag (tf={timeframe_mt5}): symbol_select={sel} "
+                        f"symbol_info={'None' if sym_info is None else 'OK visible=' + str(sym_info.visible)} "
+                        f"terminal_info={'None' if term_info is None else 'connected=' + str(term_info.connected) + ' trade_allowed=' + str(term_info.trade_allowed)}"
+                    )
             finally:
                 mt5_executor.disconnect()
         if rates is None or len(rates) == 0:
-            print(f"[mt5] ⚠️ _get_mt5_ohlcv (tf={timeframe_mt5}): copy_rates_from_pos คืนว่าง แม้ retry แล้ว — {mt5.last_error()}")
+            print(f"[mt5] ⚠️ _get_mt5_ohlcv (tf={timeframe_mt5}): copy_rates_from_pos คืนว่าง แม้ retry 3 ครั้งแล้ว — {mt5.last_error()}")
             return None
         df = pd.DataFrame(rates)
         df['time'] = pd.to_datetime(df['time'], unit='s')
