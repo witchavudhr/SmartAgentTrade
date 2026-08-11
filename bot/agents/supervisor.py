@@ -797,6 +797,24 @@ def _select_tp(entry: float, risk: float, direction: str, pool_list: list, ob_fa
     return None, None
 
 
+def _htf_trend_bias(smc_summary: dict) -> str:
+    """
+    H4+H1 ต้องตรงกันทั้งคู่ถึงจะถือว่า "momentum ชัดเจน" — คืน 'bullish'/'bearish'/
+    'neutral' (mix) ใช้ร่วมกันทุก CASE (F/B/exhaustion) เพื่อไม่ให้เทรดสวนเทรนด์
+    user feedback: "ทุกอย่าง bull หมด แต่ไปเข้า sell" — เดิม trend filter นี้ใส่ไว้
+    แค่ CASE B (_python_only_ob_decision) เท่านั้น CASE F/exhaustion ไม่เคยเช็คเลย
+    ทำให้ยิง SELL สวนทางได้ทั้งที่ H4/H1/D1 bull หมด — ต้องเช็คทุก CASE ที่ตัดสินใจ
+    เข้าไม้จริง ไม่ใช่แค่ CASE B
+    """
+    h4b = smc_summary.get("h4_bias")
+    h1b = smc_summary.get("h1_bias")
+    if h4b == "bullish" and h1b == "bullish":
+        return "bullish"
+    if h4b == "bearish" and h1b == "bearish":
+        return "bearish"
+    return "neutral"
+
+
 def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | None:
     """
     ตัดสินใจ CASE F (BSL/SSL sweep+rejection) แบบ Python ล้วนๆ ไม่เรียก AI เลย
@@ -806,6 +824,13 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     price = smc_summary.get("current_price")
     if price is None:
         return None
+
+    # user feedback: "ทุกอย่าง bull หมด แต่ไปเข้า sell" — ห้ามเทรดสวน H4+H1 ที่
+    # ตรงกันชัดเจนเหมือน CASE B
+    _htf_bias = _htf_trend_bias(smc_summary)
+    if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
+        return None
+
     sw = smc_summary.get("last_sweep_high") if direction == "SELL" else smc_summary.get("last_sweep_low")
     if not sw or not sw.get("recovered"):
         return None
@@ -894,21 +919,9 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
         return None
 
     # user feedback: "ถ้าทุกๆ momentum มัน buy หมด ต่อให้เข้า bear ob เราจะยังไม่
-    # sell แต่เราจะรอให้ย่อลงมา ob buy เพื่อหา buy แทน ทางฝั่ง sell ก็เช่นกัน แต่ถ้า
-    # mix trend ให้ทำงานตามเดิม" + "แก้เป็น trend ด้วยเลย แบบ indicator" — ใช้
-    # h4_bias/h1_bias (structural BOS/CHoCH swing_length=5 ตรงกับ indicator's
-    # calc_struct_bias(5) เป๊ะ) แทน midpoint เดิม — user feedback: "ไม่เป็นไร ให้ดู
-    # H1 H4 เป็นหลักแทน ... ตัด D1 condition ออกเลย น่าจะเก็บ data ไม่พอ" — เอา D1
-    # ออก (ข้อมูล D1 ย้อนหลังสะสมไม่พอ มักขึ้น N/A) เหลือแค่ H4+H1 ต้องตรงกันทั้ง 2
-    # TF ถึงจะถือว่า "momentum ชัดเจน" ถ้าไม่ตรงกัน (mix) ถือเป็น neutral ทำงานปกติ
-    _h4_bias = smc_summary.get("h4_bias")
-    _h1_bias = smc_summary.get("h1_bias")
-    if _h4_bias == "bullish" and _h1_bias == "bullish":
-        _htf_bias = "bullish"
-    elif _h4_bias == "bearish" and _h1_bias == "bearish":
-        _htf_bias = "bearish"
-    else:
-        _htf_bias = "neutral"
+    # sell ... ก็เคยบอกแล้วให้เอา case bsl/ssl ด้วยไง" — ใช้ _htf_trend_bias()
+    # (shared helper, H4+H1 ตรงกัน) ห้ามเทรดสวนทั้ง CASE B/F/exhaustion
+    _htf_bias = _htf_trend_bias(smc_summary)
     if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
         return None
 
@@ -1035,6 +1048,13 @@ def _python_only_exhaustion_decision(smc_summary: dict, direction: str) -> dict 
     price = smc_summary.get("current_price")
     if price is None:
         return None
+
+    # user feedback: "ทุกอย่าง bull หมด แต่ไปเข้า sell" — ห้ามเทรดสวน H4+H1 เหมือน
+    # CASE B/F
+    _htf_bias = _htf_trend_bias(smc_summary)
+    if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
+        return None
+
     bounce = smc_summary.get("post_sweep_bounce_bull" if direction == "BUY" else "post_sweep_bounce_bear")
     if not bounce or bounce.get("bars_ago") is None or bounce["bars_ago"] > 2:
         return None
