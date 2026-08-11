@@ -2399,6 +2399,27 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             _bear_rej = None
             _bull_rej = None
 
+            # user feedback: "ถ้าลงมาแตะ...ทะลุไปเลย...เด้งกลับมาในแท่ง 5 นาทีนั้น
+            # ก็ถือว่าเด้งเลย ...ในครั้งแรกที่โดน sweep แล้ว rejection เราควรใช้ไง"
+            # — เดิม scan เฉพาะ OB ที่ยัง "ไม่ mitigated" เท่านั้น แต่ถ้าแท่งเดียว
+            # ทะลุ bottom (mitigate ทันที) แล้วเด้งกลับปิดเหนือ top ในแท่งถัดไป OB
+            # นั้นจะหลุดจาก _bull_obs ไปแล้วตั้งแต่ก่อนเช็ค rejection เลย พลาด sweep
+            # +reject ที่เกิดขึ้นจริงไปฟรีๆ — เพิ่ม OB ที่เพิ่ง mitigate ไปไม่เกิน
+            # lookback (12 แท่ง) เข้ามาด้วย ให้จับ "ครั้งแรก" ที่โดน sweep+reject ได้
+            # (ครั้งต่อๆ ไปจะไม่มีทางเจอ เพราะ mitigated_index เก่าเกิน lookback แล้ว)
+            _recently_mitigated_bear = [
+                ob for ob in all_obs
+                if ob.kind == 'bearish' and ob.mitigated and ob.mitigated_index is not None
+                and (len(df) - 1 - ob.mitigated_index) <= _lookback
+            ]
+            _recently_mitigated_bull = [
+                ob for ob in all_obs
+                if ob.kind == 'bullish' and ob.mitigated and ob.mitigated_index is not None
+                and (len(df) - 1 - ob.mitigated_index) <= _lookback
+            ]
+            _bear_obs_for_rej = list(_bear_obs) + _recently_mitigated_bear
+            _bull_obs_for_rej = list(_bull_obs) + _recently_mitigated_bull
+
             # เช็คทุก non-mitigated Bear/Bull OB (ไม่ใช่แค่ active_bear/bull_ob ตัว
             # เดียว) — active_bull_ob เลือกใหม่ทุก scan จาก current_price สดๆ
             # (MIN_DEP filter + "closest OB") ทำให้ scan ติดกันแค่ไม่กี่นาทีอาจ
@@ -2406,7 +2427,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
             # 4023-4028) — ถ้า rejection เกิดที่ OB ตัวหนึ่งแต่ scan รอบนั้นดัน
             # active_bull_ob ชี้ไปอีกตัว การเช็คจะพลาด touch ที่เกิดขึ้นจริงไปเลย
             # วนดูทุกตัวแทน แล้วเอา rejection ที่ bars_ago น้อยสุด (สดสุด)
-            for _bo in _bear_obs:
+            for _bo in _bear_obs_for_rej:
                 _ob_bot, _ob_top = _bo.bottom, _bo.top
                 for _i, _row in _recent.iterrows():
                     if _row['high'] >= _ob_bot:          # wick/body แตะ Bear OB
@@ -2430,7 +2451,7 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
                                 _bear_rej = _cand
                         break
 
-            for _bo in _bull_obs:
+            for _bo in _bull_obs_for_rej:
                 _ob_bot, _ob_top = _bo.bottom, _bo.top
                 for _i, _row in _recent.iterrows():
                     if _row['low'] <= _ob_top:           # wick/body แตะ Bull OB
