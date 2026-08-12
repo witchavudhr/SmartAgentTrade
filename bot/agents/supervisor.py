@@ -1128,6 +1128,65 @@ def _python_only_exhaustion_decision(smc_summary: dict, direction: str) -> dict 
     }
 
 
+_RSI_SELL_THRESHOLD = 75.0
+_RSI_BUY_THRESHOLD = 25.0
+
+
+def _python_only_rsi_decision(smc_summary: dict, direction: str) -> dict | None:
+    """
+    CASE RSI — user feedback: "ถ้า rsi ขึ้นไป > 75 ให้ sell ถ้าลงมาน้อยกว่า 25
+    ให้ buy อันนี้แยกกับเคส F, และ ob" — mean-reversion ล้วนๆ จาก RSI extreme
+    เป็น CASE แยกต่างหาก ไม่เช็ค trend filter (H4+H1)/room check เหมือน CASE
+    อื่น เพราะตัว RSI extreme เป็นสัญญาณ reversal อยู่ในตัวเองแล้ว
+    """
+    price = smc_summary.get("current_price")
+    rsi = smc_summary.get("rsi")
+    if price is None or rsi is None:
+        return None
+    if direction == "SELL" and rsi <= _RSI_SELL_THRESHOLD:
+        return None
+    if direction == "BUY" and rsi >= _RSI_BUY_THRESHOLD:
+        return None
+
+    setup_type = "RSI_OVERBOUGHT_SELL" if direction == "SELL" else "RSI_OVERSOLD_BUY"
+    entry = price
+    _RSI_SL_BUFFER = 10.0
+    sl = round(entry + _RSI_SL_BUFFER, 2) if direction == "SELL" else round(entry - _RSI_SL_BUFFER, 2)
+    risk = abs(sl - entry)
+    if risk <= 0:
+        return None
+
+    liq = smc_summary.get("liquidity") or {}
+    pool_list = (liq.get("weekly_ssl_pools") if direction == "SELL" else liq.get("weekly_bsl_pools")) or []
+    tp, rr = _select_tp(entry, risk, direction, pool_list)
+    if tp is None or rr < _PY_MIN_RR:
+        return None
+
+    reasoning = (
+        f"[PYTHON-ONLY, no AI] {setup_type}: RSI={rsi}, entry={entry}, "
+        f"SL={sl} (entry{'+' if direction=='SELL' else '-'}{_RSI_SL_BUFFER}), "
+        f"TP={tp} (RR-qualified pool scan), RR={rr}"
+    )
+    return {
+        "signal": direction,
+        "setup_type": setup_type,
+        "vote": "YES",
+        "confidence": 55,
+        "entry": entry,
+        "entry_zone": [entry, entry],
+        "stop_loss": sl,
+        "take_profit": tp,
+        "rr_ratio": rr,
+        "vote_reasoning": reasoning,
+        "reasoning": reasoning,
+        "liquidity_target": tp,
+        "bull_ob_zone": None,
+        "bear_ob_zone": None,
+        "recent_bear_ob_rejection": None,
+        "recent_bull_ob_rejection": None,
+    }
+
+
 def _watchlist_candidates(smc: dict) -> list[tuple[str, float, float]]:
     """
     คำนวณ "ระยะห่างจนถึงเงื่อนไข" ของทุก pattern ที่ยัง watch อยู่ (OB, BSL/SSL
@@ -1343,6 +1402,8 @@ def _run_python_only(result: dict, smc_summary: dict, balance: float) -> dict:
         or _python_only_ob_decision(smc_summary, "BUY")
         or _python_only_exhaustion_decision(smc_summary, "SELL")
         or _python_only_exhaustion_decision(smc_summary, "BUY")
+        or _python_only_rsi_decision(smc_summary, "SELL")
+        or _python_only_rsi_decision(smc_summary, "BUY")
     )
 
     if analysis is None:

@@ -691,6 +691,15 @@ def _evaluate_signal_conditions(smc_summary: dict) -> bool:
         print(f"[has_signal] ✅ {_now_th} OB REJECTION (CASE B, no displacement needed) — bear={_bear_rej_ok} bull={_bull_rej_ok}")
         return True
 
+    # ── ชั้น 3a3: RSI extreme (CASE RSI) — ไม่ต้องรอ sweep/OB nearby เลย ──
+    # user feedback: "ถ้า rsi ขึ้นไป > 75 ให้ sell ถ้าลงมาน้อยกว่า 25 ให้ buy
+    # อันนี้แยกกับเคส F, และ ob" — เป็น CASE อิสระ ไม่ผ่าน score-based pre-filter
+    # เดิม (ต้องอาศัย sweep/ob_nearby ซึ่งไม่เกี่ยวกับ RSI เลย) ต้อง bypass ตรงๆ
+    _rsi_val = smc_summary.get("rsi")
+    if _rsi_val is not None and (_rsi_val >= 75 or _rsi_val <= 25):
+        print(f"[has_signal] ✅ {_now_th} RSI EXTREME (CASE RSI) — rsi={_rsi_val}")
+        return True
+
     # ob_nearby ต้องมี "displacement" อย่างน้อย OB_MIN_DISPLACEMENT (ตรงกับ
     # OB MIN DISTANCE rule ที่ chart_analyst_agent ใช้จริง — ราคาต้องห่างจาก OB
     # อย่างน้อย 15 จุดถึงจะมี room ให้เป็น setup ที่ valid) ไม่ใช่แค่ "ใกล้ๆ" เฉยๆ
