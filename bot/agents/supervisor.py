@@ -815,6 +815,27 @@ def _htf_trend_bias(smc_summary: dict) -> str:
     return "neutral"
 
 
+_RSI_OVERBOUGHT = 70.0
+_RSI_OVERSOLD = 30.0
+
+
+def _rsi_blocks_entry(smc_summary: dict, direction: str) -> bool:
+    """
+    user feedback: "งั้นทำต่อคือ RSI oversold กับ overbuy" — ห้าม BUY ถ้า RSI
+    overbought (>=70, ราคาวิ่งขึ้นมาไกลเกินไปแล้ว เสี่ยงย่อ) ห้าม SELL ถ้า RSI
+    oversold (<=30, ราคาลงมาไกลเกินไปแล้ว เสี่ยงเด้ง) ใช้ร่วมกันทุก CASE (F/B/
+    exhaustion) เหมือน trend filter — คืน True ถ้าควรบล็อก
+    """
+    rsi = smc_summary.get("rsi")
+    if rsi is None:
+        return False
+    if direction == "BUY" and rsi >= _RSI_OVERBOUGHT:
+        return True
+    if direction == "SELL" and rsi <= _RSI_OVERSOLD:
+        return True
+    return False
+
+
 def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | None:
     """
     ตัดสินใจ CASE F (BSL/SSL sweep+rejection) แบบ Python ล้วนๆ ไม่เรียก AI เลย
@@ -829,6 +850,10 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     # ตรงกันชัดเจนเหมือน CASE B
     _htf_bias = _htf_trend_bias(smc_summary)
     if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
+        return None
+    # user feedback: "งั้นทำต่อคือ RSI oversold กับ overbuy" — ห้าม BUY ตอน
+    # overbought / ห้าม SELL ตอน oversold
+    if _rsi_blocks_entry(smc_summary, direction):
         return None
 
     sw = smc_summary.get("last_sweep_high") if direction == "SELL" else smc_summary.get("last_sweep_low")
@@ -923,6 +948,9 @@ def _python_only_ob_decision(smc_summary: dict, direction: str) -> dict | None:
     # (shared helper, H4+H1 ตรงกัน) ห้ามเทรดสวนทั้ง CASE B/F/exhaustion
     _htf_bias = _htf_trend_bias(smc_summary)
     if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
+        return None
+    # user feedback: "งั้นทำต่อคือ RSI oversold กับ overbuy"
+    if _rsi_blocks_entry(smc_summary, direction):
         return None
 
     if direction == "BUY":
@@ -1053,6 +1081,9 @@ def _python_only_exhaustion_decision(smc_summary: dict, direction: str) -> dict 
     # CASE B/F
     _htf_bias = _htf_trend_bias(smc_summary)
     if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
+        return None
+    # user feedback: "งั้นทำต่อคือ RSI oversold กับ overbuy"
+    if _rsi_blocks_entry(smc_summary, direction):
         return None
 
     bounce = smc_summary.get("post_sweep_bounce_bull" if direction == "BUY" else "post_sweep_bounce_bear")
