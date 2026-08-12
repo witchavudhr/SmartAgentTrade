@@ -1332,6 +1332,30 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"M15: {_fmt_bias(smc.get('m15_bias'))} | M5: {_fmt_bias(smc.get('m5_bias'))}"
         )
 
+        # user feedback: "อยากใส่เรื่องการคำนวนของ RSI เข้ามาด้วย ว่าตรงไหนมันทำ
+        # divergent" — โชว์ RSI ปัจจุบัน + divergence ล่าสุด (ถ้ามี) ใน /plan ด้วย
+        _rsi = smc.get("rsi")
+        _rsi_tag = "🔴 overbought" if (_rsi is not None and _rsi >= 70) else \
+                   "🟢 oversold" if (_rsi is not None and _rsi <= 30) else ""
+        _div_bull = smc.get("rsi_divergence_bull")
+        _div_bear = smc.get("rsi_divergence_bear")
+        _div_parts = []
+        if _div_bull:
+            _div_parts.append(
+                f"🟢 Bullish divergence — ราคา `{_div_bull['price_prev']}→{_div_bull['price_now']}` "
+                f"(low ใหม่ต่ำกว่า) แต่ RSI `{_div_bull['rsi_prev']}→{_div_bull['rsi_now']}` "
+                f"(สูงกว่าเดิม) — {_div_bull['bars_ago']} แท่งที่แล้ว"
+            )
+        if _div_bear:
+            _div_parts.append(
+                f"🔴 Bearish divergence — ราคา `{_div_bear['price_prev']}→{_div_bear['price_now']}` "
+                f"(high ใหม่สูงกว่า) แต่ RSI `{_div_bear['rsi_prev']}→{_div_bear['rsi_now']}` "
+                f"(ต่ำกว่าเดิม) — {_div_bear['bars_ago']} แท่งที่แล้ว"
+            )
+        rsi_section = f"📉 *RSI(14):* `{_rsi}` {_rsi_tag}\n" + (
+            "\n".join(_div_parts) if _div_parts else "_ไม่มี divergence ตอนนี้_"
+        )
+
         # user feedback: "ใส่เพิ่มด้วยว่า ตอนนี้ trend อะไรชัด เลยรอเข้าที่ไหน" —
         # ใช้เกณฑ์เดียวกับ _python_only_ob_decision (H4+H1 ตรงกันถึงจะถือว่าชัด)
         # แล้วสรุปเป็นประโยคเดียวว่าตอนนี้อนุญาตทิศไหน
@@ -1382,7 +1406,8 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━\n"
             f"💰 ราคาปัจจุบัน: `{price}`\n\n"
             f"📈 *Trend แต่ละ TF:*\n{trend_lines}\n\n"
-            f"{trend_verdict}\n\n" +
+            f"{trend_verdict}\n\n"
+            f"{rsi_section}\n\n" +
             "\n".join(lines) +
             why_not
         )

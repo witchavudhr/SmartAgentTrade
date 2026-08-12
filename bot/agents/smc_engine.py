@@ -1999,6 +1999,62 @@ def _detect_post_sweep_exhaustion_bounce(df: pd.DataFrame, swing_lows: list, swi
     return bull, bear
 
 
+def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """RSI มาตรฐาน (Wilder's smoothing, 14-period)"""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
+    return 100 - (100 / (1 + rs))
+
+
+def _detect_rsi_divergence(rsi: pd.Series, swing_lows: list, swing_highs: list,
+                            n: int, lookback_bars: int = 100) -> tuple[dict | None, dict | None]:
+    """
+    user feedback: "อยากใส่เรื่องการคำนวณของ RSI เข้ามาด้วย ว่าตรงไหนมันทำ
+    divergent" — เทียบ swing low/high 2 จุดล่าสุด (จาก pool_swing, swing_length=15
+    เร็วกว่า struct) กับค่า RSI ที่จุดเดียวกัน:
+      Bullish divergence: ราคาทำ low ใหม่ต่ำกว่าเดิม แต่ RSI ทำ low สูงกว่าเดิม
+      Bearish divergence: ราคาทำ high ใหม่สูงกว่าเดิม แต่ RSI ทำ high ต่ำกว่าเดิม
+    คืน (bullish, bearish) — แต่ละอันเป็น dict หรือ None ถ้าไม่เจอ
+    """
+    start = max(0, n - lookback_bars)
+    recent_lows  = sorted([s for s in (swing_lows or [])  if s.index >= start], key=lambda s: s.index)
+    recent_highs = sorted([s for s in (swing_highs or []) if s.index >= start], key=lambda s: s.index)
+
+    def _rsi_at(idx):
+        if idx is None or idx < 0 or idx >= len(rsi):
+            return None
+        v = rsi.iloc[idx]
+        return None if pd.isna(v) else float(v)
+
+    bullish = None
+    if len(recent_lows) >= 2:
+        l1, l2 = recent_lows[-2], recent_lows[-1]
+        r1, r2 = _rsi_at(l1.index), _rsi_at(l2.index)
+        if r1 is not None and r2 is not None and l2.price < l1.price and r2 > r1:
+            bullish = {
+                "price_prev": round(l1.price, 2), "price_now": round(l2.price, 2),
+                "rsi_prev": round(r1, 1), "rsi_now": round(r2, 1),
+                "bars_ago": int(n - 1 - l2.index),
+            }
+
+    bearish = None
+    if len(recent_highs) >= 2:
+        h1, h2 = recent_highs[-2], recent_highs[-1]
+        r1, r2 = _rsi_at(h1.index), _rsi_at(h2.index)
+        if r1 is not None and r2 is not None and h2.price > h1.price and r2 < r1:
+            bearish = {
+                "price_prev": round(h1.price, 2), "price_now": round(h2.price, 2),
+                "rsi_prev": round(r1, 1), "rsi_now": round(r2, 1),
+                "bars_ago": int(n - 1 - h2.index),
+            }
+
+    return bullish, bearish
+
+
 def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
               pool_swing_highs: list = None, pool_swing_lows: list = None,
               pool_sweeps: list = None) -> dict:
@@ -2314,6 +2370,23 @@ def summarize(result: SMCResult, current_price: float, df: pd.DataFrame = None,
         except Exception:
             summary["post_sweep_bounce_bull"] = None
             summary["post_sweep_bounce_bear"] = None
+
+    # ── RSI + Divergence (user feedback: "อยากใส่เรื่องการคำนวณของ RSI เข้ามา
+    # ด้วย ว่าตรงไหนมันทำ divergent") — โชว์ค่า RSI ปัจจุบัน + จุดที่เกิด
+    # divergence ล่าสุด (ถ้ามี) เป็นข้อมูลประกอบ ไม่ผูกกับการตัดสินใจเข้าไม้ตอนนี้ ──
+    if df is not None:
+        try:
+            _rsi_series = _compute_rsi(df['close'])
+            summary["rsi"] = round(float(_rsi_series.iloc[-1]), 1) if not pd.isna(_rsi_series.iloc[-1]) else None
+            _psl_rsi = pool_swing_lows if pool_swing_lows is not None else result.swing_lows
+            _psh_rsi = pool_swing_highs if pool_swing_highs is not None else result.swing_highs
+            _rsi_bull_div, _rsi_bear_div = _detect_rsi_divergence(_rsi_series, _psl_rsi, _psh_rsi, len(df))
+            summary["rsi_divergence_bull"] = _rsi_bull_div
+            summary["rsi_divergence_bear"] = _rsi_bear_div
+        except Exception:
+            summary["rsi"] = None
+            summary["rsi_divergence_bull"] = None
+            summary["rsi_divergence_bear"] = None
 
     # ── Advanced Signals + Swing Entry (จาก df) ──────────────
     if df is not None:

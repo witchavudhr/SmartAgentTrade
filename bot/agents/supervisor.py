@@ -1206,6 +1206,22 @@ def _log_python_only_state(smc_summary: dict) -> None:
         f"M5={_fmt_bias(smc_summary.get('m5_bias'))}"
     )
 
+    # user feedback: "อยากใส่เรื่องการคำนวนของ RSI เข้ามาด้วย ว่าตรงไหนมันทำ
+    # divergent" — โชว์ RSI ปัจจุบัน + divergence ล่าสุด (ถ้ามี) ทุก scan
+    _rsi = smc_summary.get("rsi")
+    _rsi_ob = "🔴OB" if (_rsi is not None and _rsi >= 70) else "🟢OS" if (_rsi is not None and _rsi <= 30) else ""
+    _div_bull = smc_summary.get("rsi_divergence_bull")
+    _div_bear = smc_summary.get("rsi_divergence_bear")
+    _div_str = "ไม่มี"
+    if _div_bull:
+        _div_str = (f"🟢 Bullish (price {_div_bull['price_prev']}→{_div_bull['price_now']}, "
+                     f"RSI {_div_bull['rsi_prev']}→{_div_bull['rsi_now']}, {_div_bull['bars_ago']}bars ago)")
+    if _div_bear:
+        _bear_str = (f"🔴 Bearish (price {_div_bear['price_prev']}→{_div_bear['price_now']}, "
+                      f"RSI {_div_bear['rsi_prev']}→{_div_bear['rsi_now']}, {_div_bear['bars_ago']}bars ago)")
+        _div_str = _bear_str if _div_str == "ไม่มี" else f"{_div_str} | {_bear_str}"
+    print(f"[python-only] 📉 RSI(14): {_rsi} {_rsi_ob} | Divergence: {_div_str}")
+
     bull_ob = smc_summary.get("active_bull_ob") or {}
     bear_ob = smc_summary.get("active_bear_ob") or {}
     liq = smc_summary.get("liquidity") or {}
