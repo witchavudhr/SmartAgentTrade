@@ -1135,9 +1135,9 @@ _RSI_BUY_THRESHOLD = 25.0
 def _python_only_rsi_decision(smc_summary: dict, direction: str) -> dict | None:
     """
     CASE RSI — user feedback: "ถ้า rsi ขึ้นไป > 75 ให้ sell ถ้าลงมาน้อยกว่า 25
-    ให้ buy อันนี้แยกกับเคส F, และ ob" — mean-reversion ล้วนๆ จาก RSI extreme
-    เป็น CASE แยกต่างหาก ไม่เช็ค trend filter (H4+H1)/room check เหมือน CASE
-    อื่น เพราะตัว RSI extreme เป็นสัญญาณ reversal อยู่ในตัวเองแล้ว
+    ให้ buy อันนี้แยกกับเคส F, และ ob" + "แต่ filter ตาม trend แบบของ case
+    อื่นๆนะ" — เป็น CASE แยกต่างหาก (เงื่อนไข entry ไม่ใช้ sweep/OB) แต่ยังต้อง
+    ผ่าน trend filter (H4+H1 ตรงกัน) เหมือน CASE F/B/exhaustion ห้ามเทรดสวนเทรนด์
     """
     price = smc_summary.get("current_price")
     rsi = smc_summary.get("rsi")
@@ -1146,6 +1146,9 @@ def _python_only_rsi_decision(smc_summary: dict, direction: str) -> dict | None:
     if direction == "SELL" and rsi <= _RSI_SELL_THRESHOLD:
         return None
     if direction == "BUY" and rsi >= _RSI_BUY_THRESHOLD:
+        return None
+    _htf_bias = _htf_trend_bias(smc_summary)
+    if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
         return None
 
     setup_type = "RSI_OVERBOUGHT_SELL" if direction == "SELL" else "RSI_OVERSOLD_BUY"
