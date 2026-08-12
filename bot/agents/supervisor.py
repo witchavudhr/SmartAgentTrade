@@ -851,10 +851,8 @@ def _python_only_sweep_decision(smc_summary: dict, direction: str) -> dict | Non
     _htf_bias = _htf_trend_bias(smc_summary)
     if (direction == "SELL" and _htf_bias == "bullish") or (direction == "BUY" and _htf_bias == "bearish"):
         return None
-    # user feedback: "งั้นทำต่อคือ RSI oversold กับ overbuy" — ห้าม BUY ตอน
-    # overbought / ห้าม SELL ตอน oversold
-    if _rsi_blocks_entry(smc_summary, direction):
-        return None
+    # user feedback: "ป่าวๆ ยังไม่เอาเข้าเงื่อนไข" — เก็บ RSI ไว้แค่คำนวณ/โชว์
+    # ใน log และ /plan เฉยๆ ยังไม่ผูกกับการตัดสินใจเข้าไม้ (ปิดไว้ก่อน)
 
     sw = smc_summary.get("last_sweep_high") if direction == "SELL" else smc_summary.get("last_sweep_low")
     if not sw or not sw.get("recovered"):
